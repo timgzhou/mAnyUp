@@ -36,3 +36,5 @@ logs/
 .out
 features
 *.out
+test
+.ipynb_checkpoints/

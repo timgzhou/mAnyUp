@@ -1,244 +1,87 @@
-<div align="center">
-<h1 align="center">🌍Any Disaster Mapping</h1>
+---
+license: cc-by-4.0
+pretty_name: ImpactMesh-Flood
+size_categories:
+- 10K<n<100K
+viewer: false
+task_categories:
+- image-feature-extraction
+---
 
-<h3>Earth Observation for Disaster Mapping: Benchmarks, Methods, Challenges and Future Perspectives</h3>
+[![arXiv](https://img.shields.io/badge/arXiv-comming_soon-b31b1b?logo=arxiv)](https://arxiv.org/abs/todo)
+[![Code](https://img.shields.io/badge/GitHub-ImpactMesh-EE4B2B?logo=github)](https://github.com/IBM/ImpactMesh)
+[![IBMblog](https://img.shields.io/badge/Blog-IBM-0F62FE)](https://research.ibm.com/blog/todo)
 
-[Hongruixuan Chen](https://scholar.google.com/citations?user=XOk4Cf0AAAAJ)<sup>1,†</sup>, [Jian Song](https://scholar.google.com/citations?user=fx-27bQAAAAJ)<sup>1,†</sup>, [Weihao Xuan](https://scholar.google.com/citations?user=7e0W-2AAAAAJ)<sup>2,1,†</sup>, [Junjue Wang](https://scholar.google.com/citations?user=H58gKSAAAAAJ)<sup>2,†</sup>, [Heli Qi](https://scholar.google.com/citations?user=CH-rTXsAAAAJ)<sup>1</sup>, [Zeqi Zhou](https://scholar.google.com/citations?user=pqG03s0AAAAJ)<sup>3</sup>, [Pengyu Dai](https://scholar.google.com/citations?user=bxKhSZgAAAAJ)<sup>1,2</sup> <br> [Olivier Dietrich](https://scholar.google.com/citations?user=st6IqcsAAAAJ)<sup>4</sup>, [Erika Gutierrez](https://www.google.com/search?q=Erika+Gutierrez&oq=Erika+Gutierrez&gs_lcrp=EgRlZGdlKgYIABBFGDsyBggAEEUYOzIGCAEQABgeMgYIAhAAGB4yBggDEAAYHjIGCAQQABgeMgYIBRAAGB4yBggGEAAYHjIGCAcQRRg8MgcICBDrBxhA0gEHMjkxajBqNKgCALACAA&sourceid=chrome&ie=UTF-8)<sup>5</sup>, [Lars Bromly](https://www.google.com/search?q=Lars+Bromly&oq=Lars+Bromly&gs_lcrp=EgRlZGdlKgYIABBFGDsyBggAEEUYOzIJCAEQABgNGIAEMggIAhAAGA0YHjIKCAMQABiABBiiBDIHCAQQABjvBTIHCAUQABjvBTIKCAYQABiABBiiBDIGCAcQRRg70gEHMjQ0ajBqN6gCALACAA&sourceid=chrome&ie=UTF-8)<sup>5</sup>, [Edoardo Nemni](https://scholar.google.com/citations?user=eUo-LuAAAAAJ)<sup>6</sup>, [Yafei Ou](https://scholar.google.com/citations?user=2SyrQ1oAAAAJ)<sup>1</sup>, [Jie Zhao](https://scholar.google.com/citations?user=snOLm2MAAAAJ)<sup>7</sup>, [Zhuo Zheng](https://scholar.google.com/citations?user=CREpn_AAAAAJ)<sup>8</sup>, [Yonghao Xu](https://scholar.google.com/citations?user=sQs2ztAAAAAJ)<sup>9</sup> <br> [Ronny Hänsch](https://scholar.google.com/citations?user=mUlpUlUAAAAJ)<sup>10</sup>, [Wenzhe Jiao](https://scholar.google.com/citations?user=1v9ooFUAAAAJ)<sup>11</sup>, [Marco Chini](https://www.researchgate.net/profile/Marco-Chini)<sup>12</sup>, [Claudio Persello](https://scholar.google.com/citations?user=CI3bxVMAAAAJ)<sup>13</sup>, [Junshi Xia](https://scholar.google.com/citations?user=n1aKdTkAAAAJ)<sup>1</sup>, [Shijian Lu](https://scholar.google.com/citations?user=uYmK-A0AAAAJ)<sup>14</sup>, [Lixin Wang](https://scholar.google.com/citations?user=pQPtUesAAAAJ)<sup>15</sup>, [Zhe Zhu](https://scholar.google.com/citations?user=9ODFYW4AAAAJ)<sup>16</sup> <br>
-[Evan Shelhamer](https://scholar.google.com/citations?user=-ltRSM0AAAAJ&hl=zh-CN)<sup>17</sup>, [Jocelyn Chanussot](https://scholar.google.com/citations?user=6owK2OQAAAAJ)<sup>18</sup>, [Konrad Schindler](https://scholar.google.com/citations?user=FZuNgqIAAAAJ)<sup>4</sup>, [Naoto Yokoya](https://scholar.google.com/citations?user=DJ2KOn8AAAAJ)<sup>2,1</sup>
 
-<sup>†</sup>Equal contribution
-<br>
-<sup>1 </sup>RIKEN AIP, <sup>2 </sup>The University of Tokyo, <sup>3 </sup>Brown University, <sup>4 </sup>ETH Zurich, <sup>5 </sup>United Nations Satellite Centre
-<br>
-<sup>6 </sup>Barcelona School of Economics, <sup>7 </sup>Technical University of Munich, <sup>8 </sup>Stanford University, <sup>9 </sup>Linköping University 
-<br>
-<sup>10 </sup>German Aerospace Center (DLR), <sup>11 </sup>Texas A&amp;M University, <sup>12 </sup>Luxembourg Institute of Science and Technology
-<br>
-<sup>13 </sup>University of Twente, <sup>14 </sup>Nanyang Technological University, <sup>15 </sup>Indiana University Indianapolis
-<br>
-<sup>16 </sup>University of Connecticut, <sup>17 </sup>The University of British Columbia, <sup>18 </sup>Université Grenoble Alpes
+# ImpactMesh-Flood
 
-[**Paper**](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6725082) | [**Installation**](#installation) | [**Dataset Preparation**](#dataset-preparation) | [**Pretrained Weights**](#pretrained-weights) | [**Quick Start**](#quick-start) | [**Repo Layout**](#repository-layout) 
+ImpactMesh is a large-scale multimodal, multitemporal dataset for flood and wildfire mapping, released by IBM, DLR, and the ESA Φ-lab. 
+It integrates **Sentinel-1 SAR**, **Sentinel-2 optical**, **Copernicus DEM**, and high-quality annotations from Copernicus EMS.
+The technical report is released soon. You find the wildfire subset here: https://huggingface.co/datasets/ibm-esa-geospatial/ImpactMesh-Fire.
 
-</div>
+![events_world](https://github.com/IBM/ImpactMesh/raw/main/assets/events_world_light.png)
 
-<!-- 
-## Contents
+---
+## Features
+- Multimodal: SAR, optical, DEM
+- Multitemporal: Four time steps (pre-month, pre-event, event, post-event)
+- Global coverage: 200+ flood events
+- Scale: 80K samples
+- License: CC-BY 4.0
 
-- [Overview](#overview)
-- [Installation](#installation)
-- [Pretrained Weights](#pretrained-weights)
-- [Quick Start](#quick-start)
-- [Repository Layout](#repository-layout)
-- [Dataset Preparation](#dataset-preparation)
-- [Architecture And Extension](#architecture-and-extension) -->
+## Quick Start
 
-## 🔭Overview
-*Any Disaster Mapping* is the official repository for our [review paper in EO-based disaster mapping](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6725082).
+Download the dataset:
+```shell
+hf download ibm-esa-geospatial/ImpactMesh-Flood --repo-type dataset --local-dir data/ImpactMesh-Flood
 
-One of our key motivations is that current disaster mapping research is highly fragmented: benchmarks, tasks, and model implementations are often inconsistent across papers, making fair evaluation, reproduction, and further development unnecessarily difficult.
+# Only download a single modality (e.g., S2L2A)
+hf download ibm-esa-geospatial/ImpactMesh-Flood --repo-type dataset --include "*/S2L2A.tar" --local-dir data/ImpactMesh-Flood
 
-This repo unifies widely used disaster mapping benchmarks and representative deep learning models across major research directions, and provides a consistent training and evaluation pipeline for:
-- Infrastructure damage
-- Flood mapping
-- Landslide segmentation
-- Wildfire analysis
-
-It is designed to help researchers:
-- Reproduce the results reported in our paper
-- Evaluate models under a unified protocol
-- Use strong baselines out of the box
-- Build and test their own improvements with minimal engineering overhead
-
-## 🛠️Installation
-
-Base environment and optional model-specific extras.
-
-```bash
-# NOTE: --index-url should match the version of your local CUDA toolkit for compiling ChangeMamba kernels (cu126 is just an example)
-pip install torch torchvision xformers --index-url https://download.pytorch.org/whl/cu126
-pip install -e .
+# Only download a single split (e.g., validation)
+hf download ibm-esa-geospatial/ImpactMesh-Flood --repo-type dataset --include "val/*" --local-dir data/ImpactMesh-Flood
 ```
 
-Some models require optional extras:
-
-- ChangeMamba selective scan kernel:
-  ```bash
-  # run `conda install -c conda-forge gcc=13 gxx=13 -y` if you meet GCC issues
-  cd src/models/ChangeMamba/kernels/selective_scan
-  pip install . --no-build-isolation
-  ```
-- Local pretrained checkpoints under `pretrained_weight/` for model families such as SegFormer, HRNet, SAM/SAM2, DINOv3, HyperSigma, SkySense, SpectralGPT, and ChangeMamba. See [Pretrained Weights](#pretrained-weights) below.
-
-## 🧪Dataset Preparation
-
-Dataset preparation guides are organized by disaster domain:
-
-- Infrastructure damage: [scripts/data_prep/infra_damage/README.md](scripts/data_prep/infra_damage/README.md)
-- Flood: [scripts/data_prep/flood/README.md](scripts/data_prep/flood/README.md)
-- Landslide: [scripts/data_prep/landslide/README.md](scripts/data_prep/landslide/README.md)
-- Wildfire: [scripts/data_prep/wildfire/README.md](scripts/data_prep/wildfire/README.md)
-
-
-## 📦Pretrained Weights
-
- Recommended local checkpoint layout for the supported model zoo.
-
-Create the local checkpoint directory first:
-
-```bash
-mkdir -p pretrained_weight
+Untar the samples:
+```shell
+mkdir data/ImpactMesh-Flood/data
+for f in data/ImpactMesh-Flood/*/*.tar; do
+  echo "Extracting $f"
+  tar -xf "$f" -C data/ImpactMesh-Flood/data
+done
 ```
 
-### Direct Downloads
-
-```bash
-# pretrain-vit-base-e199.pth
-wget -O pretrained_weight/pretrain-vit-base-e199.pth \
-  https://zenodo.org/records/7338613/files/pretrain-vit-base-e199.pth
-
-# SpectralGPT+.pth
-wget -O "pretrained_weight/SpectralGPT+.pth" \
-  "https://zenodo.org/records/8412455/files/SpectralGPT+.pth?download=1"
-
-# spec-vit-base-ultra-checkpoint-1599.pth
-wget -O pretrained_weight/spec-vit-base-ultra-checkpoint-1599.pth \
-  https://huggingface.co/WHU-Sigma/HyperSIGMA/resolve/main/spec-vit-base-ultra-checkpoint-1599.pth
-
-huggingface-cli download UTokyo-Yokoya-Lab/AnyDisaster-Pretrained_Weight \
-  vssm_tiny_0230_ckpt_epoch_262.pth --local-dir pretrained_weight --local-dir-use-symlinks False
+The samples from all splits are saved in shared folders `data/ImpactMesh-Flood/data/{modality}`. After extracting, you can delete the tars:
+```shell
+rm -r data/ImpactMesh-Flood/train
+rm -r data/ImpactMesh-Flood/val
+rm -r data/ImpactMesh-Flood/test
 ```
 
-### Additional Upstream Checkpoints
+We use [TerraTorch](https://terrastackai.github.io/terratorch/stable/) for the model fine-tuning and provide data modules for ImpactMesh. You can download the code and configs for the fine-tuning from https://github.com/IBM/ImpactMesh.
 
-- DINOv3
-  Source: https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/
-  Download and save as:
-  - `dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth` (ViT-B/16, LVD-1689M)
-  - `dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth` (ViT-L/16, LVD-1689M)
-  - `dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth` (ViT-L/16, SAT-493M)
+Alternatively, you can install the data loading code with:
 
-- SAM v1
-  Source: https://github.com/facebookresearch/segment-anything
-  Download and save as:
-  - `sam_vit_b_01ec64.pth` (SAM ViT-B)
-  - `sam_vit_l_0b3195.pth` (SAM ViT-L)
-
-- SAM 2.1
-  Source: https://github.com/facebookresearch/sam2
-  Download and save as:
-  - `sam2.1_hiera_small.pt` (SAM 2.1 Hiera-Small)
-  - `sam2.1_hiera_base_plus.pt` (SAM 2.1 Hiera-Base+)
-
-- SegFormer MiT encoders
-  Source: https://github.com/NVlabs/SegFormer
-  Download and save as:
-  - `mit_b0.pth`
-  - `mit_b1.pth`
-  - `mit_b2.pth`
-  - `mit_b3.pth`
-  - `mit_b4.pth`
-  - `mit_b5.pth`
-
-- HyperSIGMA spatial backbone
-  Source: https://huggingface.co/WHU-Sigma/HyperSIGMA
-  Download the upstream file, rename, and save as:
-  - `HSI_spatial_checkpoint-1600.pth`
-
-- SkySense backbone
-  Source:
-  - https://github.com/Jack-bo1220/SkySense
-  - https://www.notion.so/SkySense-Checkpoints-a7fcff6ce29a4647a08c7fe416910509
-  Select the `hr` (high-resolution RGB / RGBNIR) variant, not the `s2` Sentinel-2 variant.
-  Save as:
-  - `skysense_model_backbone_hr.pth`
-  For commercial use, contact the authors (`yansheng.li@whu.edu.cn`).
-
-After completing all downloads, `pretrained_weight/` should contain:
-
-```text
-pretrained_weight/
-├── dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
-├── dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
-├── dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth
-├── HSI_spatial_checkpoint-1600.pth
-├── mit_b0.pth
-├── mit_b1.pth
-├── mit_b2.pth
-├── mit_b3.pth
-├── mit_b4.pth
-├── mit_b5.pth
-├── pretrain-vit-base-e199.pth
-├── sam2.1_hiera_base_plus.pt
-├── sam2.1_hiera_small.pt
-├── sam_vit_b_01ec64.pth
-├── sam_vit_l_0b3195.pth
-├── skysense_model_backbone_hr.pth
-├── spec-vit-base-ultra-checkpoint-1599.pth
-├── SpectralGPT+.pth
-└── vssm_tiny_0230_ckpt_epoch_262.pth
+```shell
+pip install impactmesh
 ```
 
-## 🚀 Quick Start
-
-Minimal training and evaluation commands.
-
-### Train
-
-Train with a YAML config:
-
-```bash
-python train.py --config configs/infra/xbd/unet.yaml
+```shell
+terratorch fit --config configs/terramind_v1_tiny_impactmesh_flood.yaml
 ```
 
-### Evaluate
+## Citation
 
-Evaluate an experiment directory:
+Our technical report is released soon!
 
-```bash
-python test.py --exp_path results/xbd/unet
-```
+## Acknowledgement
 
-## 🗂️Repository Layout
+ImpactMesh was developed as part of the FAST‑EO project funded by the European Space Agency Φ‑Lab (contract #4000143501/23/I‑DT).
 
- Main directories and what they are responsible for:
+Sentinel-2 Level-2A data were downloaded from Microsoft Planetary Computer and are provided under Copernicus Sentinel license conditions (© European Union 2015–2025, ESA) (https://planetarycomputer.microsoft.com/dataset/sentinel-2-l2a).
 
-- `src/core/`: trainer, config loader, registry, augmentation, metrics
-- `src/tasks/`: task handlers for segmentation, change detection, and semantic change detection
-- `src/datasets/`: dataset adapters and runtime data contracts
-- `src/models/`: model wrappers and vendored third-party implementations
-- `configs/`: experiment configs grouped by domain and dataset
-- `scripts/data_prep/`: dataset preparation guides and helper scripts
-- `docs/`: architecture notes and extension guidance
+Sentinel-1 Radiometrically Terrain Corrected (RTC) SAR data were retrieved from Microsoft Planetary Computer (calibrated to GRD and terrain-corrected using PlanetDEM) under Copernicus Sentinel license terms (© European Union 2014–2025) (https://planetarycomputer.microsoft.com/dataset/sentinel-1-rtc).
 
+The DEM data is produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.
 
-## 🏗️Architecture And Extension
-
-Internal runtime design and extension entry points.
-
-- Architecture overview: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- Extension guide: [docs/EXTENSION_GUIDE.md](docs/EXTENSION_GUIDE.md)
-
-## 📜Reference
-If this code repo contributes to your research, please kindly consider citing our paper and give this repo ⭐️ :)
-```
-@misc{chen2026earthobservationdisastermapping,
-  author       = {Chen, Hongruixuan and Song, Jian and Xuan, Weihao and Wang, Junjue
-                  and Qi, Heli and Zhou, Zeqi and Dai, Pengyu and Dietrich, Olivier
-                  and Gutierrez, Erika and Bromly, Lars and Nemni, Edoardo and Ou, Yafei
-                  and Zhao, Jie and Zheng, Zhuo and Xu, Yonghao and H{\"a}nsch, Ronny
-                  and Jiao, Wenzhe and Chini, Marco and Persello, Claudio and Xia, Junshi
-                  and Lu, Shijian and Wang, Lixin and Zhu, Zhe and Shelhamer, Evan
-                  and Chanussot, Jocelyn and Schindler, Konrad and Yokoya, Naoto},
-  title        = {Earth Observation for Disaster Mapping: Benchmarks, Methods, Challenges and Future Perspectives},
-  year         = {2026},
-  month        = {may},
-  note         = {SSRN preprint},
-  doi          = {10.2139/ssrn.6725082},
-  url          = {https://ssrn.com/abstract=6725082}
-}
-```
-
-
-## 🙋Q & A
-For any questions, please feel free to leave it in the issue section or send inquiry email to qschrx@gmail.com.
+Annotations were sourced from the Copernicus Emergency Management Service (© European Union, 2012–2025), available at https://emergency.copernicus.eu/.
