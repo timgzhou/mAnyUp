@@ -73,6 +73,27 @@ AMP_DTYPE = torch.float16
 _IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
 _IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 
+TIME_POOLS = ("mean", "median")   # how a (T,...) stack is collapsed to a single frame
+
+
+def time_pool(x: torch.Tensor, mode: str = "mean", dim: int = 0) -> torch.Tensor:
+    """Collapse the time axis of a (T,...) stack to a single frame.
+
+    Guidance for UPA/UPMA/AnyUp/mAnyUp is a single image, so the PASTIS time series has to be
+    reduced first. "mean" is the historical default. "median" is the robust alternative: PASTIS
+    S2 series carry undetected cloud, haze and shadow frames, and a mean drags those bright/dark
+    outliers into the composite, softening exactly the parcel boundaries the guided upsamplers
+    key on. A per-pixel median rejects them as long as they are the minority over T.
+
+    Note this only changes the GUIDANCE composite -- the feature-side reduction stays whatever
+    the head does, so a change here is attributable to guidance quality alone.
+    """
+    if mode == "mean":
+        return x.mean(dim)
+    if mode == "median":
+        return x.median(dim).values
+    raise ValueError(f"unknown time_pool {mode!r}, expected one of {TIME_POOLS}")
+
 
 # ---------------------------------------------------------------------------
 # UPA / UPMA: per-image optimized anisotropic joint bilateral upsampling

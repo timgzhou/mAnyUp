@@ -42,6 +42,9 @@ import matplotlib
 matplotlib.use("Agg")        # headless cluster
 import matplotlib.pyplot as plt
 
+# Guidance time-pooling is shared with the UPA/UPMA/AnyUp paths (single source of truth).
+from compare_upa_anyup_oeps1 import time_pool, TIME_POOLS
+
 # ----- locate the cloned AnyUp repo and import its model + loss (reuse, don't reimplement) -----
 DEFAULT_ANYUP_REPO = "/scratch/timz/anyup"
 
@@ -63,10 +66,16 @@ S2_BANDS = 13
 # of the three sources (robust to partially-extracted feature dirs and to swapping the HR target).
 # --------------------------------------------------------------------------------------------- #
 class PairedFeatureDataset(Dataset):
-    def __init__(self, lr_dir: Path, hr_dir: Path, s2_dir: Path, split: str):
+    def __init__(self, lr_dir: Path, hr_dir: Path, s2_dir: Path, split: str,
+                 time_pool: str = "mean"):
         self.lr_dir = lr_dir / f"pastis_r_{split}"
         self.hr_dir = hr_dir / f"pastis_r_{split}"
         self.s2_dir = s2_dir / f"pastis_r_{split}" / "s2_images"
+        # Guidance pooling is baked into the learned weights: the guidance encoder adapts to
+        # whatever composite it sees here, so a checkpoint trained with mean guidance must be
+        # evaluated with mean guidance. lp_on_cached_features._load_s2_guidance mirrors this,
+        # and the ckpt name records it so the two cannot silently drift apart.
+        self.time_pool = time_pool
 
         def indices(d: Path):
             return {int(p.stem) for p in d.glob("*.pt")}
@@ -88,8 +97,8 @@ class PairedFeatureDataset(Dataset):
         # features: (T, gH, gW, D) fp16 -> mean over T -> (D, gH, gW) fp32
         lr = torch.load(self.lr_dir / f"{idx}.pt").float().mean(0).permute(2, 0, 1)   # (D, gh, gw)
         hr = torch.load(self.hr_dir / f"{idx}.pt").float().mean(0).permute(2, 0, 1)   # (D, GH, GW)
-        # guidance: (T, 13, 64, 64) fp32 -> mean over T -> (13, 64, 64)
-        s2 = torch.load(self.s2_dir / f"{idx}.pt").float().mean(0)                    # (13, 64, 64)
+        # guidance: (T, 13, 64, 64) fp32 -> pooled over T -> (13, 64, 64)
+        s2 = time_pool(torch.load(self.s2_dir / f"{idx}.pt").float(), self.time_pool)  # (13,64,64)
         s2 = _norm_guidance(s2)
         return lr, hr, s2
 
@@ -269,6 +278,11 @@ def main():
                         "guidance-driven upsampling vs. a plain linear ps4->ps1 map")
     p.add_argument("--stage_to_tmpdir", action="store_true",
                    help="copy feature/S2 dirs to $SLURM_TMPDIR for faster reads")
+    p.add_argument("--time_pool", default="mean", choices=list(TIME_POOLS),
+                   help="how the S2 series is collapsed into the guidance composite. This is "
+                        "baked into the trained weights -- a checkpoint must be EVALUATED with "
+                        "the same setting (lp_on_cached_features.py --time_pool), so it is "
+                        "recorded in the checkpoint filename and enforced at load time.")
     p.add_argument("--out_dir", default="checkpoints/manyup")
     p.add_argument("--ckpt_every", type=int, default=5, help="save every N epochs")
     p.add_argument("--sanity", action="store_true", help="one batch then exit")
@@ -291,7 +305,7 @@ def main():
         (s2_split_staged,) = stage_to_tmpdir([s2_split])
         s2_root = s2_split_staged.parent   # so PairedFeatureDataset finds pastis_r_<split>/s2_images
 
-    ds = PairedFeatureDataset(lr_dir, hr_dir, s2_root, args.split)
+    ds = PairedFeatureDataset(lr_dir, hr_dir, s2_root, args.split, time_pool=args.time_pool)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True,
                         num_workers=args.num_workers, pin_memory=True, drop_last=True)
 
@@ -299,7 +313,8 @@ def main():
     # split too; S2 test images come from the ORIGINAL data_root (only train S2 was staged).
     viz_sample = None
     try:
-        test_ds = PairedFeatureDataset(lr_dir, hr_dir, Path(args.data_root), "test")
+        test_ds = PairedFeatureDataset(lr_dir, hr_dir, Path(args.data_root), "test",
+                                       time_pool=args.time_pool)
         viz_sample = test_ds[0]   # first common test sample: (lr, hr, s2)
     except RuntimeError as e:
         print(f"viz disabled: no usable test sample ({e})")
@@ -418,7 +433,10 @@ def main():
                            viz_dir / f"test0_ep{epoch:03d}.png", epoch)
 
         if (epoch + 1) % args.ckpt_every == 0 or epoch == args.epochs - 1:
-            ckpt = out_dir / f"manyup_{args.lr_cfg}_to_{args.hr_cfg}_ep{epoch}.pth"
+            # Tag non-default guidance pooling in the name (empty for mean, so the existing
+            # mean-trained checkpoint paths keep working). vars(args) below records it either way.
+            tp = "" if args.time_pool == "mean" else f"_{args.time_pool}"
+            ckpt = out_dir / f"manyup_{args.lr_cfg}_to_{args.hr_cfg}{tp}_ep{epoch}.pth"
             torch.save({"model": model.state_dict(),
                         "proj_head": proj_head.state_dict() if proj_head else None,
                         "args": vars(args), "epoch": epoch,

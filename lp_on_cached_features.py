@@ -47,6 +47,9 @@ from olmoearth_pretrain.evals.metrics import segmentation_metrics
 # an AnyUpUpsampleProbe is actually constructed (i.e. only for the anyup heads).
 from finetune_olmoearth_pastis import AnyUpUpsampleProbe, _load_rgb_guidance
 
+# Guidance time-pooling ("mean"|"median"), shared with the UPA/UPMA/AnyUp eval paths.
+from compare_upa_anyup_oeps1 import time_pool, TIME_POOLS
+
 # Cosine annealing decays the LR from args.lr to SCHEDULER_MIN_LR over args.epochs.
 SCHEDULER_MIN_LR = 1e-6
 
@@ -93,14 +96,16 @@ HEAD_REDUCES_TIME = {
 S2_BANDS = 13   # full Sentinel-2 L2A stack used as mAnyUp guidance
 
 
-def _load_s2_guidance(split: str, idx: int) -> torch.Tensor:
-    """Full 13-band S2 guidance for mAnyUp: (T,13,64,64) -> mean over T -> (13,64,64), per-band
-    min-max normalized to [0,1]. Matches train_manyup._norm_guidance so the frozen mAnyUp sees
-    exactly the guidance distribution it trained on. Reads from finetune_olmoearth_pastis's
-    DATA_SPLITS (a module global the caller points at our data_splits)."""
+def _load_s2_guidance(split: str, idx: int, tpool: str = "mean") -> torch.Tensor:
+    """Full 13-band S2 guidance for mAnyUp: (T,13,64,64) -> pooled over T -> (13,64,64), per-band
+    min-max normalized to [0,1]. Matches train_manyup (same pooling + _norm_guidance) so the
+    frozen mAnyUp sees exactly the guidance distribution it trained on -- `tpool` MUST equal the
+    checkpoint's train-time --time_pool or the encoder gets an unseen input distribution. Reads
+    from finetune_olmoearth_pastis's DATA_SPLITS (a module global the caller points at our
+    data_splits)."""
     import finetune_olmoearth_pastis as fmod
     s2 = torch.load(Path(fmod.DATA_SPLITS) / f"pastis_r_{split}" / "s2_images" / f"{idx}.pt")
-    s2 = s2.float().mean(0)                                   # (13,64,64)
+    s2 = time_pool(s2.float(), tpool)                         # (13,64,64)
     flat = s2.reshape(s2.shape[0], -1)
     lo = flat.min(1).values.view(-1, 1, 1)
     hi = flat.max(1).values.view(-1, 1, 1)
@@ -122,11 +127,14 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
 
     def __init__(self, features_dir: Path, data_splits: Path, split: str,
                  guidance: str = "none", max_ram_gb: float = 32.0,
-                 reduce_time: bool = False):
+                 reduce_time: bool = False, time_pool: str = "mean"):
         self.feat_dir = features_dir / f"pastis_r_{split}"
         self.labels = torch.load(data_splits / f"pastis_r_{split}" / "targets.pt")
         self.split = split
         self.guidance = guidance
+        # How the S2 series is collapsed into a single guidance frame ("mean"|"median"). Only
+        # applies to the single-frame modes; "temporal" keeps every frame and ignores it.
+        self.time_pool = time_pool
         # If the head mean-pools over time, collapse (T,gH,gW,D)->(1,gH,gW,D) once here so we
         # never float-cast / ship the full T tensor per step. Keeps a singleton T so heads that
         # do feats.mean(dim=1) / feats.shape[1] stay correct unchanged.
@@ -190,8 +198,9 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
         """Guidance tensor for one sample, per self.guidance mode. mean13 -> full 13-band S2;
         mean/temporal -> 3-band RGB via the shared finetune loader."""
         if self.guidance == "mean13":
-            return _load_s2_guidance(self.split, idx)
-        return _load_rgb_guidance(self.split, idx, temporal=self.guidance == "temporal")
+            return _load_s2_guidance(self.split, idx, tpool=self.time_pool)
+        return _load_rgb_guidance(self.split, idx, temporal=self.guidance == "temporal",
+                                  time_pool=self.time_pool)
 
     def _rgb_shape(self, T: int):
         if self.guidance == "mean13":
@@ -426,13 +435,23 @@ class CachedManyUp(nn.Module):
     input_dim (13), and qk_dim."""
 
     def __init__(self, embed_dim: int, num_classes: int, patch_size: int,
-                 ckpt_path: str, use_proj: bool = True, label_size: int = LABEL_SIZE):
+                 ckpt_path: str, use_proj: bool = True, label_size: int = LABEL_SIZE,
+                 time_pool: str = "mean"):
         super().__init__()
         import sys
         sys.path.insert(0, "/scratch/timz/anyup")
         from anyup.model import AnyUp
 
         ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        # The guidance encoder adapted to whatever composite it trained on, so evaluating with a
+        # different one silently feeds it an unseen input distribution. Checkpoints written before
+        # --time_pool existed have no entry and are mean by construction.
+        trained_tp = ck.get("args", {}).get("time_pool", "mean")
+        if trained_tp != time_pool:
+            raise ValueError(
+                f"guidance time_pool mismatch: {Path(ckpt_path).name} was TRAINED with "
+                f"'{trained_tp}' but eval requested '{time_pool}'. Pass --time_pool {trained_tp}, "
+                f"or retrain with train_manyup.py --time_pool {time_pool}.")
         self.up = AnyUp(input_dim=ck.get("input_dim", S2_BANDS), qk_dim=ck.get("qk_dim", 128))
         self.up.load_state_dict(ck["model"])
         self.proj = None
@@ -465,7 +484,8 @@ class CachedManyUp(nn.Module):
 
 
 def build_cached_head(name: str, embed_dim: int, num_classes: int, patch_size: int,
-                      manyup_ckpt: str = None, manyup_use_proj: bool = True) -> nn.Module:
+                      manyup_ckpt: str = None, manyup_use_proj: bool = True,
+                      time_pool: str = "mean") -> nn.Module:
     # (class, extra kwargs). The _ens variants reuse the same wrapper but give each timestep its
     # own probe and average the per-timestep logits instead of mean-pooling features (see
     # AnyUpUpsampleProbe.ensemble). t1_ens = per-timestep features; t2_ens = shared time-pooled
@@ -484,7 +504,8 @@ def build_cached_head(name: str, embed_dim: int, num_classes: int, patch_size: i
         if not manyup_ckpt:
             raise ValueError("head_mode=manyup requires a checkpoint (--manyup discovery or --manyup_ckpt)")
         return CachedManyUp(embed_dim, num_classes, patch_size,
-                            ckpt_path=manyup_ckpt, use_proj=manyup_use_proj)
+                            ckpt_path=manyup_ckpt, use_proj=manyup_use_proj,
+                            time_pool=time_pool)
     if name not in HEADS:
         raise ValueError(f"head_mode={name!r} not in {list(HEADS)} (cached-feature heads)")
     cls, kwargs = HEADS[name]
@@ -571,7 +592,7 @@ def knn_evaluate(head, train_loader, test_loader, device, k=20,
 
 RESULT_COLUMNS = [
     "timestamp", "features", "head_mode", "eval_kind", "manyup_ckpt", "manyup_use_proj",
-    "epochs", "lr", "knn_k", "batch_size", "seed",
+    "time_pool", "epochs", "lr", "knn_k", "batch_size", "seed",
     "test_miou", "test_overall_acc", "avg_epoch_sec",
 ]
 
@@ -618,6 +639,12 @@ def main() -> None:
                    help="append run args + test metrics to this CSV (created with a header "
                         "if absent).")
     # --- mAnyUp options (head_mode=manyup) ---
+    p.add_argument("--time_pool", default="mean", choices=list(TIME_POOLS),
+                   help="how the S2 series is collapsed into the guidance image (mean|median). "
+                        "Ignored by lp_* heads (no guidance) and by the 'temporal' guidance mode "
+                        "(keeps every frame). For --manyup this MUST match the checkpoint's "
+                        "train-time --time_pool, else the frozen upsampler sees an input "
+                        "distribution it never trained on.")
     p.add_argument("--manyup", action="store_true",
                    help="head_mode=manyup + auto-discover all mAnyUp checkpoints trained to "
                         "upsample --features (the LR config) and LP over each (one CSV row per).")
@@ -660,7 +687,8 @@ def main() -> None:
     patch_size = meta["patch_size"]
     guidance = HEAD_GUIDANCE[args.head_mode]
     print(f"Features: {args.features} | shape {meta['feature_shape']} | "
-          f"patch_size {patch_size} | head {args.head_mode} | guidance {guidance}")
+          f"patch_size {patch_size} | head {args.head_mode} | guidance {guidance}"
+          + (f" | time_pool {args.time_pool}" if guidance != "none" else ""))
 
     # _load_rgb_guidance reads s2_images from finetune_olmoearth_pastis.DATA_SPLITS (a module
     # global). Point it at our data_splits so AnyUp guidance comes from the right place.
@@ -672,7 +700,8 @@ def main() -> None:
 
     def loader(split, shuffle):
         ds = CachedFeatureDataset(feat_dir, data_splits, split, guidance=guidance,
-                                  max_ram_gb=args.max_ram_gb, reduce_time=reduce_time)
+                                  max_ram_gb=args.max_ram_gb, reduce_time=reduce_time,
+                                  time_pool=args.time_pool)
         preloaded = ds._feats is not None
         # Preloaded: index RAM in-process (workers would duplicate the tensor). Disk fallback:
         # use workers + pin_memory + persistent_workers to overlap reads with GPU compute.
@@ -738,7 +767,8 @@ def run_one(args, device, embed_dim, patch_size, train_loader, val_loader, test_
         print(f"\n===== mAnyUp {tag}: {manyup_ckpt} (proj={args.manyup_use_proj}) =====")
     head = build_cached_head(args.head_mode, embed_dim, NUM_CLASSES, patch_size,
                              manyup_ckpt=manyup_ckpt,
-                             manyup_use_proj=args.manyup_use_proj).to(device)
+                             manyup_use_proj=args.manyup_use_proj,
+                             time_pool=args.time_pool).to(device)
 
     # KNN: non-parametric, no training. Extract frozen features, vote over train neighbors, log.
     if args.knn:
@@ -819,6 +849,8 @@ def _log_result(args, manyup_ckpt, test, avg_epoch_time, eval_kind="lp") -> None
         # looped runs are distinguishable in the CSV. Empty for non-manyup heads.
         "manyup_ckpt": Path(manyup_ckpt).name if manyup_ckpt else "",
         "manyup_use_proj": (args.manyup_use_proj if manyup_ckpt else ""),
+        # Blank for heads with guidance="none" (lp_*), which never build a guidance image.
+        "time_pool": (args.time_pool if HEAD_GUIDANCE[args.head_mode] != "none" else ""),
         "epochs": ("" if eval_kind == "knn" else int(args.epochs)),
         "lr": ("" if eval_kind == "knn" else f"{args.lr:g}"),
         "knn_k": (args.knn_k if eval_kind == "knn" else ""),

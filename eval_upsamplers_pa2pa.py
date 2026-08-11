@@ -34,6 +34,12 @@ kernel code).
     source env_olmo.sh
     python eval_upsamplers_pa2pa.py                       # train head, eval all 4 paths
     python eval_upsamplers_pa2pa.py --limit_test 64       # quick smoke run
+    python eval_upsamplers_pa2pa.py --time_pool median    # median guidance composite
+
+GUIDANCE TIME POOLING: the upsamplers need a single guidance image, so the S2 series is collapsed
+over T -- by mean (default, historical) or median (--time_pool median), which rejects the cloud
+and shadow frames a mean smears into the composite. The FEATURE side is always mean-pooled
+regardless, because the frozen head was trained that way; only guidance changes.
 """
 import argparse
 import csv
@@ -50,10 +56,11 @@ from torch.utils.data import DataLoader, Subset
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 # UPA/UPMA + guidance normalization come from the comparison script (no duplicate kernel code).
-from compare_upa_anyup_oeps1 import UPA, UPMA, percentile_stretch, RGB_BANDS, SURFACE_BANDS
+from compare_upa_anyup_oeps1 import (UPA, UPMA, percentile_stretch, time_pool, TIME_POOLS,
+                                     RGB_BANDS, SURFACE_BANDS)
 
 RESULTS_CSV = "upsampler_pa2pa.csv"
-CSV_FIELDS = ["timestamp", "features", "method", "guide_bands", "fit_steps",
+CSV_FIELDS = ["timestamp", "features", "method", "guide_bands", "time_pool", "fit_steps",
               "epochs", "lr", "seed", "n_test", "test_miou", "test_overall_acc", "eval_sec"]
 
 
@@ -101,28 +108,33 @@ def train_head(head, train_loader, device, epochs: int, lr: float, label_size: i
     return head
 
 
-def _upsample_features(method, feats_btgwd, s2_raw, device, fit_steps, guide_bands, anyup_model):
+def _upsample_features(method, feats_btgwd, s2_raw, device, fit_steps, guide_bands, anyup_model,
+                       tpool="mean"):
     """(1,T,gH,gW,D) cached features + (T,13,64,64) raw S2 -> (1,D,64,64) upsampled features.
 
-    Time is mean-pooled first, matching how the head consumes features and how the notebook
-    fed UPA. Returns None for the bilinear baseline (handled in the logits domain instead).
+    Features are always MEAN-pooled over time -- that is how the head was trained, so changing it
+    would invalidate the frozen probe. Only the GUIDANCE composite honours `tpool`, so a
+    mean-vs-median difference here is attributable to guidance quality alone.
+
+    Returns None for the bilinear baseline (handled in the logits domain instead).
     """
     lr_feat = feats_btgwd.mean(dim=1).permute(0, 3, 1, 2).contiguous().to(device)  # (1,D,gH,gW)
+    s2 = time_pool(s2_raw.float(), tpool)                              # (13,64,64)
 
     if method == "upa":
         # percentile-stretched display RGB, round-tripped through uint8 (UPA divides by 255)
-        rgb = s2_raw.float().mean(0)[RGB_BANDS].numpy()                # (3,64,64)
+        rgb = s2[RGB_BANDS].numpy()                                    # (3,64,64)
         rgb = percentile_stretch(rgb).transpose(1, 2, 0)               # (64,64,3) in [0,1]
         return UPA((rgb * 255).astype(np.uint8), lr_feat, fit_steps=fit_steps)
 
     if method == "upma":
-        guide = percentile_stretch(s2_raw.float().mean(0)[guide_bands].numpy())   # (Cg,64,64)
+        guide = percentile_stretch(s2[guide_bands].numpy())            # (Cg,64,64)
         return UPMA(guide, lr_feat, fit_steps=fit_steps)
 
     if method == "anyup":
         # AnyUp expects its own normalization: per-channel min-max then ImageNet standardize.
         from compare_upa_anyup_oeps1 import _norm_rgb
-        guide = _norm_rgb(s2_raw.float().mean(0)[RGB_BANDS])           # (3,64,64)
+        guide = _norm_rgb(s2[RGB_BANDS])                               # (3,64,64)
         with torch.no_grad():
             return anyup_model(guide.unsqueeze(0).to(device), lr_feat, output_size=(64, 64))
 
@@ -157,7 +169,8 @@ def evaluate_method(head, dataset, indices, method, device, args, seg_metrics,
             s2_raw = torch.load(args.data_splits / f"pastis_r_{args.split}" /
                                 "s2_images" / f"{idx}.pt")
             hr = _upsample_features(method, feats, s2_raw, device, args.fit_steps,
-                                    args.guide_band_idx, anyup_model)  # (1,D,64,64)
+                                    args.guide_band_idx, anyup_model,
+                                    tpool=args.time_pool)              # (1,D,64,64)
             with torch.no_grad():
                 logits = head(hr.float())                              # (1,C,64,64)
 
@@ -187,6 +200,11 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--fit_steps", type=int, default=50, help="UPA/UPMA test-time opt steps")
     p.add_argument("--guide_bands", default="surface", help="UPMA bands: surface|all|csv list")
+    p.add_argument("--time_pool", default="mean", choices=list(TIME_POOLS),
+                   help="how the S2 time series is collapsed into the guidance image for "
+                        "upa/upma/anyup. Features are always mean-pooled (the head was trained "
+                        "that way); this changes guidance only. median rejects cloud/shadow "
+                        "frames that a mean smears into the composite.")
     p.add_argument("--limit_test", type=int, default=None,
                    help="evaluate only the first N test images (UPA/UPMA are ~seconds each)")
     p.add_argument("--methods", default="lr_bilinear,upa,upma,anyup")
@@ -270,6 +288,8 @@ def main():
             "features": args.features,
             "method": method,
             "guide_bands": args.guide_bands if method == "upma" else "",
+            # lr_bilinear never touches the guidance image, so time_pool is not a variable for it.
+            "time_pool": args.time_pool if method != "lr_bilinear" else "",
             "fit_steps": args.fit_steps if method in ("upa", "upma") else "",
             "epochs": args.epochs, "lr": args.lr, "seed": args.seed,
             "n_test": len(indices),

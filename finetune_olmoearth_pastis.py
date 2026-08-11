@@ -125,14 +125,22 @@ def _norm_rgb(rgb: torch.Tensor) -> torch.Tensor:
     return (rgb - _IMAGENET_MEAN.view(3, 1, 1)) / _IMAGENET_STD.view(3, 1, 1)
 
 
-def _load_rgb_guidance(split: str, idx: int, temporal: bool = False) -> torch.Tensor:
+# Guidance time-pooling is shared with the UPA/UPMA/AnyUp eval paths (single source of truth).
+from compare_upa_anyup_oeps1 import time_pool as _time_pool  # noqa: E402
+
+
+def _load_rgb_guidance(split: str, idx: int, temporal: bool = False,
+                       time_pool: str = "mean") -> torch.Tensor:
     """Raw S2 -> RGB (B04/B03/B02 = idx 3/2/1 in the 13-band L1C stack), normalized.
-    temporal=False -> time-averaged (3,64,64); temporal=True -> per-timestep (T,3,64,64)."""
+    temporal=False -> time-pooled (3,64,64); temporal=True -> per-timestep (T,3,64,64).
+
+    time_pool ("mean"|"median") selects how the series is collapsed when temporal=False; it is
+    ignored for temporal=True, which keeps every frame and so has no time axis to reduce."""
     s2 = torch.load(Path(DATA_SPLITS) / f"pastis_r_{split}" / "s2_images" / f"{idx}.pt").float()
     if temporal:
-        rgb = s2[:, [3, 2, 1]]                # (T,3,64,64)
+        rgb = s2[:, [3, 2, 1]]                              # (T,3,64,64)
     else:
-        rgb = s2.mean(0)[[3, 2, 1]]           # (3,64,64)
+        rgb = _time_pool(s2, time_pool)[[3, 2, 1]]          # (3,64,64)
     return _norm_rgb(rgb)
 
 
