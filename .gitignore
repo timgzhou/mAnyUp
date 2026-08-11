@@ -10,31 +10,31 @@ AGENTS.md
 
 *.egg-info
 **/__pycache__
+.pytest_cache/
+build
 
+# data + heavy artifacts
 /data/
 /pretrained/
-/results/
-build
-/test/**/__pycache__
-/test/**/*.pyc
-.pytest_cache/
+pretrained_weight
+/features/
+/checkpoints/
+/logs/
+lightning_logs
+wandb
+*.zip
+*.out
+
+# environments (venvs are built here outside Slurm)
+/env/
+/env_olmo/
+
+# notebooks
+.ipynb_checkpoints/
+
+# results: keep the CSVs (tracked), ignore generated figures
+*.png
+!results/**/*.csv
 
 /temp
 /profiling_results
-#/tests
-
-*.zip
-lightning_logs
-pastis-test
-pretrained_weight
-wandb
-/checkpoints/
-env/
-env_olmo/
-*.png
-logs/
-.out
-features
-*.out
-test
-.ipynb_checkpoints/

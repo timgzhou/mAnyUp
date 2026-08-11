@@ -1,87 +1,69 @@
----
-license: cc-by-4.0
-pretty_name: ImpactMesh-Flood
-size_categories:
-- 10K<n<100K
-viewer: false
-task_categories:
-- image-feature-extraction
----
+# rs-change-detection
 
-[![arXiv](https://img.shields.io/badge/arXiv-comming_soon-b31b1b?logo=arxiv)](https://arxiv.org/abs/todo)
-[![Code](https://img.shields.io/badge/GitHub-ImpactMesh-EE4B2B?logo=github)](https://github.com/IBM/ImpactMesh)
-[![IBMblog](https://img.shields.io/badge/Blog-IBM-0F62FE)](https://research.ibm.com/blog/todo)
+Remote-sensing change detection and segmentation research. The repo holds two independent
+bodies of code:
 
+- **`exp/`** — OlmoEarth research: feature extraction, linear probing, and upsampler
+  (UPA / AnyUp) experiments on PASTIS and UrbanSARFloods. This is the active work.
+- **`src/`** — a config-driven benchmark framework (~15 datasets × ~40 model
+  architectures × seg/cd/scd tasks), driven by `configs/` and entered via `train.py` /
+  `test.py`.
 
-# ImpactMesh-Flood
+They share no code. Start from [docs/RUNBOOK.md](docs/RUNBOOK.md) for `exp/`, and
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for `src/`.
 
-ImpactMesh is a large-scale multimodal, multitemporal dataset for flood and wildfire mapping, released by IBM, DLR, and the ESA Φ-lab. 
-It integrates **Sentinel-1 SAR**, **Sentinel-2 optical**, **Copernicus DEM**, and high-quality annotations from Copernicus EMS.
-The technical report is released soon. You find the wildfire subset here: https://huggingface.co/datasets/ibm-esa-geospatial/ImpactMesh-Fire.
+## Layout
 
-![events_world](https://github.com/IBM/ImpactMesh/raw/main/assets/events_world_light.png)
+```
+exp/                    OlmoEarth research code (run as `python -m exp.<pkg>.<module>`)
+  common/               shared config + OlmoEarth import bootstrap
+  pastis/               PASTIS: prepare -> finetune -> extract features -> linear probe
+  urbansarfloods/       UrbanSARFloods: tile -> extract features -> linear probe
+  upsamplers/           UPA / AnyUp upsampler library, training, and evals
+  utae/                 UTAE baseline runner + visualization
+  viz/                  dataset sample plots and results plots
+  notebooks/            exploratory notebooks
 
----
-## Features
-- Multimodal: SAR, optical, DEM
-- Multitemporal: Four time steps (pre-month, pre-event, event, post-event)
-- Global coverage: 200+ flood events
-- Scale: 80K samples
-- License: CC-BY 4.0
+src/                    benchmark framework (core / datasets / models / tasks)
+configs/                YAML configs for both: defaults for exp/, full matrix for src/
+scripts/
+  slurm/                sbatch launchers: pastis/ urbansarfloods/ upsamplers/ utae/
+  data_prep/            dataset preparation for the src/ framework
+env_setup/              cluster environment setup (env.sh, env_olmo.sh, env_login.sh)
+docs/                   RUNBOOK, ARCHITECTURE, EXTENSION_GUIDE
+results/                CSVs and figures, grouped by experiment line
+reference/              kept for reference, not actively maintained (see below)
 
-## Quick Start
-
-Download the dataset:
-```shell
-hf download ibm-esa-geospatial/ImpactMesh-Flood --repo-type dataset --local-dir data/ImpactMesh-Flood
-
-# Only download a single modality (e.g., S2L2A)
-hf download ibm-esa-geospatial/ImpactMesh-Flood --repo-type dataset --include "*/S2L2A.tar" --local-dir data/ImpactMesh-Flood
-
-# Only download a single split (e.g., validation)
-hf download ibm-esa-geospatial/ImpactMesh-Flood --repo-type dataset --include "val/*" --local-dir data/ImpactMesh-Flood
+data/ features/ checkpoints/ logs/     gitignored artifacts
 ```
 
-Untar the samples:
-```shell
-mkdir data/ImpactMesh-Flood/data
-for f in data/ImpactMesh-Flood/*/*.tar; do
-  echo "Extracting $f"
-  tar -xf "$f" -C data/ImpactMesh-Flood/data
-done
-```
-
-The samples from all splits are saved in shared folders `data/ImpactMesh-Flood/data/{modality}`. After extracting, you can delete the tars:
-```shell
-rm -r data/ImpactMesh-Flood/train
-rm -r data/ImpactMesh-Flood/val
-rm -r data/ImpactMesh-Flood/test
-```
-
-We use [TerraTorch](https://terrastackai.github.io/terratorch/stable/) for the model fine-tuning and provide data modules for ImpactMesh. You can download the code and configs for the fine-tuning from https://github.com/IBM/ImpactMesh.
-
-Alternatively, you can install the data loading code with:
+## Setup
 
 ```shell
-pip install impactmesh
+source env_setup/env_olmo.sh    # OlmoEarth venv (PASTIS, UrbanSARFloods, upsamplers)
+source env_setup/env.sh         # torchgeo venv (UTAE, src/ framework)
 ```
+
+The two venvs are deliberately separate: `olmoearth-pretrain` pins `torch<2.8`, which
+conflicts with the torchgeo stack.
+
+Run everything **from the repo root**, in module form (so `exp.*` imports resolve) or via
+an sbatch launcher:
 
 ```shell
-terratorch fit --config configs/terramind_v1_tiny_impactmesh_flood.yaml
+python -u -m exp.pastis.finetune_olmoearth --set model_size=base modalities=sentinel1 head_mode=lp freeze_backbone=true
+sbatch scripts/slurm/pastis/finetune_olmoearth.sh --set model_size=base modalities=sentinel1 head_mode=lp freeze_backbone=true
 ```
 
-## Citation
+Optionally `pip install -e .` to make the packages importable from any directory.
+Note `zarr<3` is required — the ImpactMesh `.zarr.zip` archives are zarr v2 format.
 
-Our technical report is released soon!
+## `reference/`
 
-## Acknowledgement
+Kept because it may be useful, but not part of the active codebase:
 
-ImpactMesh was developed as part of the FAST‑EO project funded by the European Space Agency Φ‑Lab (contract #4000143501/23/I‑DT).
-
-Sentinel-2 Level-2A data were downloaded from Microsoft Planetary Computer and are provided under Copernicus Sentinel license conditions (© European Union 2015–2025, ESA) (https://planetarycomputer.microsoft.com/dataset/sentinel-2-l2a).
-
-Sentinel-1 Radiometrically Terrain Corrected (RTC) SAR data were retrieved from Microsoft Planetary Computer (calibrated to GRD and terrain-corrected using PlanetDEM) under Copernicus Sentinel license terms (© European Union 2014–2025) (https://planetarycomputer.microsoft.com/dataset/sentinel-1-rtc).
-
-The DEM data is produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.
-
-Annotations were sourced from the Copernicus Emergency Management Service (© European Union, 2012–2025), available at https://emergency.copernicus.eu/.
+| Path | What |
+|---|---|
+| `reference/utae_vendored/utae/` | Third-party UTAE implementation, unmodified. Used by the `exp/utae/` baseline. |
+| `reference/dead_code/` | `pastis.py`, `olmoearth_utils.py`, `test_checkpoint.py` — an earlier torchgeo/Lightning pipeline that imports `olmoearth_pretrain_minimal`, a module no longer installed. Superseded by `exp/pastis/finetune_olmoearth.py`. |
+| `reference/debug_probes/` | One-off probes (`debug_nan_tile.py`, `gpu_nan_probe.py`) from a since-resolved NaN investigation. |

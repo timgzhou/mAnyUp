@@ -1,7 +1,0 @@
-timestamp,features,method,guide_bands,fit_steps,epochs,lr,seed,n_test,test_miou,test_overall_acc,eval_sec
-2026-08-05T14:14:46,oe_base_s2_ps4_tile64,lr_bilinear,,,32,0.01,0,1984,0.5057,0.7945,3.5
-2026-08-05T14:42:18,oe_base_s2_ps4_tile64,upa,,50,32,0.01,0,1984,0.437,0.7545,1651.2
-2026-08-05T15:09:45,oe_base_s2_ps4_tile64,upma,surface,50,32,0.01,0,1984,0.4926,0.7849,1647.4
-2026-08-05T15:10:11,oe_base_s2_ps4_tile64,anyup,,,32,0.01,0,1984,0.5165,0.7999,25.7
-2026-08-11T01:30:36,oe_base_s2_ps16_tile64,lr_bilinear,,,32,0.01,0,64,0.3424,0.6577,0.1
-2026-08-11T01:31:34,oe_base_s2_ps16_tile64,upa,,50,32,0.01,0,64,0.248,0.5542,57.5
