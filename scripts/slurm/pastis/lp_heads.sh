@@ -26,6 +26,14 @@
 #                     large 64x64-grid feature sets; 0 loads in-process and avoids shm.
 #   MAX_RAM_GB        cap for preloading features into RAM (default 48). The big grids
 #                     (ps1_tile8) can OOM; lower this to force disk streaming instead.
+#   HEADS             space-separated head modes to run (default "manyup"), e.g.
+#                     HEADS="anyup manyup lp_pa2px lp_pa2pa_bu"
+#   DATA_SPLITS       prepped PASTIS dir (default data/pastis_olmoearth). Use the
+#                     --image_size 128 prep (e.g. data/pastis128_olmoearth) together with an
+#                     _img128 feature set; labels/guidance resolution follows the data.
+#   TIME_POOL         guidance time pooling: mean|median (default mean). Only affects heads
+#                     with guidance (anyup/manyup); lp_* heads ignore it. For manyup it must
+#                     MATCH the checkpoint's train-time --time_pool or the run errors out.
 
 EMAIL="tiange.zhou@outlook.com"
 export TQDM_DISABLE=1   # silence tqdm progress bars in the batch log
@@ -40,16 +48,19 @@ BATCH_SIZE="${BATCH_SIZE:-32}"
 ANYUP_BATCH_SIZE="${ANYUP_BATCH_SIZE:-4}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 MAX_RAM_GB="${MAX_RAM_GB:-48}"
+TIME_POOL="${TIME_POOL:-mean}"
+DATA_SPLITS="${DATA_SPLITS:-data/pastis_olmoearth}"
 
 cd "$SLURM_SUBMIT_DIR"
 source env_setup/env_olmo.sh
 
-HEADS=(manyup) # lp_pa2pa_bu lp_pa2px lp_pa2px_ens
+# Word-split the HEADS env var (default: manyup). Others: lp_pa2pa_bu lp_pa2px lp_pa2px_ens anyup
+read -r -a HEADS <<< "${HEADS:-manyup}"
 
 LOG="logs/oe_lp_${SLURM_JOB_ID}.out"
 
 # Email at start.
-echo "features: $FEATURES | head modes: ${HEADS[*]} | batch $BATCH_SIZE (anyup $ANYUP_BATCH_SIZE) | workers $NUM_WORKERS | max_ram ${MAX_RAM_GB}G" \
+echo "features: $FEATURES | head modes: ${HEADS[*]} | time_pool $TIME_POOL | batch $BATCH_SIZE (anyup $ANYUP_BATCH_SIZE) | workers $NUM_WORKERS | max_ram ${MAX_RAM_GB}G" \
     | mail -s "[START job $SLURM_JOB_ID] LP heads $FEATURES" "$EMAIL"
 
 for head in "${HEADS[@]}"; do
@@ -58,9 +69,10 @@ for head in "${HEADS[@]}"; do
         anyup*) bs="$ANYUP_BATCH_SIZE" ;;
         *)      bs="$BATCH_SIZE" ;;
     esac
-    echo "=== RUN features=$FEATURES head_mode=$head batch_size=$bs ==="
+    echo "=== RUN features=$FEATURES head_mode=$head batch_size=$bs time_pool=$TIME_POOL ==="
     python -u -m exp.pastis.lp_cached_features --features "$FEATURES" --head_mode "$head" \
-        --batch_size "$bs" --num_workers "$NUM_WORKERS" --max_ram_gb "$MAX_RAM_GB"
+        --batch_size "$bs" --num_workers "$NUM_WORKERS" --max_ram_gb "$MAX_RAM_GB" \
+        --time_pool "$TIME_POOL" --data_splits "$DATA_SPLITS"
     echo "=== EXIT status=$? features=$FEATURES head_mode=$head ==="
 done
 

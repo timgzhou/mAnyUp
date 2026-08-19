@@ -473,7 +473,9 @@ def _norm_rgb(rgb: torch.Tensor) -> torch.Tensor:
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent,
+    # exp/upsamplers/upa_anyup.py -> repo root is parents[2]; .parent pointed at
+    # exp/upsamplers/ and made data_splits resolve to a nonexistent path.
+    p.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2],
                    help="repo root (holds exp/ and data/)")
     p.add_argument("--features_root", type=Path,
                    default=Path("~/projects/aip-gpleiss/timz/features").expanduser())

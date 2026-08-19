@@ -14,6 +14,9 @@
 #   MODALITIES  (default sentinel2_l2a; comma-separated, e.g. sentinel2_l2a,sentinel1)
 #   PATCH_SIZE  (default 1)
 #   TILE_SIZE   (default 1)
+#   IMAGE_SIZE  (default 64) sample size on disk; 128 needs DATA_SPLITS from a
+#               prepare_data.py --image_size 128 prep. Caches for !=64 get an _img<N> suffix.
+#   DATA_SPLITS (default data/pastis_olmoearth)
 # Emails at start and finish.
 #
 # Examples:
@@ -21,6 +24,7 @@
 #   sbatch --export=ALL,PATCH_SIZE=4,TILE_SIZE=64 extract_olmoearth_features.sh
 #   sbatch --export=ALL,MODALITIES=sentinel2_l2a,sentinel1,PATCH_SIZE=4,TILE_SIZE=64 extract_olmoearth_features.sh
 #   sbatch --export=ALL,MODALITIES=sentinel2_l2a,PATCH_SIZE=4,TILE_SIZE=64 extract_olmoearth_features.sh
+#   sbatch --export=ALL,PATCH_SIZE=4,TILE_SIZE=128,IMAGE_SIZE=128,DATA_SPLITS=data/pastis128_olmoearth scripts/slurm/pastis/extract_features.sh
 
 EMAIL="tiange.zhou@outlook.com"
 export TQDM_DISABLE=1   # silence tqdm progress bars in the batch log
@@ -30,6 +34,8 @@ MODEL_SIZE="${MODEL_SIZE:-base}"
 MODALITIES="${MODALITIES:-sentinel2_l2a}"
 PATCH_SIZE="${PATCH_SIZE:-1}"
 TILE_SIZE="${TILE_SIZE:-1}"
+IMAGE_SIZE="${IMAGE_SIZE:-64}"
+DATA_SPLITS="${DATA_SPLITS:-data/pastis_olmoearth}"
 BATCH_SIZE="${BATCH_SIZE:-16}"   # lower for heavy configs (e.g. ps1 tile64) that OOM the GPU
 # Write features to project space (scratch is near quota); override with OUT_ROOT.
 OUT_ROOT="${OUT_ROOT:-$HOME/projects/aip-gpleiss/timz/features}"
@@ -37,8 +43,8 @@ OUT_ROOT="${OUT_ROOT:-$HOME/projects/aip-gpleiss/timz/features}"
 cd "$SLURM_SUBMIT_DIR"
 source env_setup/env_olmo.sh
 
-ARGS="--model_size $MODEL_SIZE --modalities $MODALITIES --patch_size $PATCH_SIZE --tile_size $TILE_SIZE --batch_size $BATCH_SIZE --out_root $OUT_ROOT"
-TAG="${MODEL_SIZE} ${MODALITIES} ps${PATCH_SIZE} tile${TILE_SIZE}"
+ARGS="--model_size $MODEL_SIZE --modalities $MODALITIES --patch_size $PATCH_SIZE --tile_size $TILE_SIZE --image_size $IMAGE_SIZE --data_splits $DATA_SPLITS --batch_size $BATCH_SIZE --out_root $OUT_ROOT"
+TAG="${MODEL_SIZE} ${MODALITIES} ps${PATCH_SIZE} tile${TILE_SIZE} img${IMAGE_SIZE}"
 
 # Email at start.
 echo "exp/pastis/extract_features.py $ARGS" \

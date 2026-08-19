@@ -94,3 +94,16 @@ timestamp,features,head_mode,eval_kind,manyup_ckpt,manyup_use_proj,time_pool,epo
 2026-07-14T17:24:14,oe_base_s2_ps4_tile4,manyup,lp,manyup_oe_base_s2_ps4_tile4_to_oe_base_s2_ps1_tile32_ep9.pth,True,mean,32,0.01,,32,0,0.50,0.79,31.46
 2026-07-14T17:36:16,oe_base_s2_ps4_tile64,manyup,lp,manyup_oe_base_s2_ps4_tile64_to_oe_base_s2_ps1_tile64_ep9.pth,True,mean,32,0.01,,32,0,0.50,0.80,28.06
 2026-07-14T17:41:18,oe_base_s2_ps4_tile4,manyup,lp,manyup_oe_base_s2_ps4_tile4_to_oe_base_s2_ps1_tile64_ep9.pth,True,mean,32,0.01,,32,0,0.48,0.78,31.75
+2026-08-12T05:40:07,oe_base_s2_ps16_tile64,lp_pa2px,lp,,,,32,0.01,,32,0,0.37,0.74,1.17
+2026-08-12T05:41:06,oe_base_s2_ps16_tile64,lp_pa2pa_bu,lp,,,,32,0.01,,32,0,0.33,0.68,1.15
+2026-08-12T05:49:23,oe_base_s2_ps16_tile64,anyup,lp,,,median,32,0.01,,4,0,0.35,0.70,13.91
+2026-08-12T13:11:50,oe_base_s2_ps16_tile64,anyup,lp,,,mean,32,0.01,,4,0,0.36,0.70,17.78
+2026-08-12T13:40:46,oe_base_s2_ps8_tile64,lp_pa2px,lp,,,,32,0.01,,32,0,0.46,0.78,4.53
+2026-08-12T14:03:46,oe_base_s2_ps8_tile64,lp_pa2px_ens,lp,,,,32,0.01,,32,0,0.54,0.81,10.29
+2026-08-12T14:20:54,oe_base_s2_ps16_tile64,lp_pa2px_ens,lp,,,,32,0.01,,32,0,0.45,0.76,6.66
+2026-08-13T03:03:30,oe_base_s2_ps8_tile64,anyup,lp,,,median,32,0.01,,4,0,0.46,0.77,18.08
+2026-08-13T03:05:59,oe_base_s2_ps8_tile64,anyup,lp,,,mean,32,0.01,,4,0,0.48,0.78,22.66
+2026-08-13T04:22:53,oe_base_s2_ps8_tile64,anyup_t1,lp,,,mean,32,0.01,,4,0,0.49,0.78,141.10
+2026-08-13T05:36:25,oe_base_s2_ps8_tile64,anyup_t2,lp,,,mean,32,0.01,,4,0,0.48,0.78,134.47
+2026-08-13T06:56:07,oe_base_s2_ps8_tile64,anyup_t1_ens,lp,,,mean,32,0.01,,4,0,0.55,0.80,146.35
+2026-08-13T08:12:08,oe_base_s2_ps8_tile64,anyup_t2_ens,lp,,,mean,32,0.01,,4,0,0.49,0.79,139.16

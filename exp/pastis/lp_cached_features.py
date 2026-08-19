@@ -129,6 +129,10 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
                  reduce_time: bool = False, time_pool: str = "mean"):
         self.feat_dir = features_dir / f"pastis_r_{split}"
         self.labels = torch.load(data_splits / f"pastis_r_{split}" / "targets.pt")
+        # Label resolution comes from the DATA, not a constant: a prepare_data.py
+        # --image_size 128 prep yields (N,128,128) targets instead of (N,64,64), and the heads
+        # upsample their logits to exactly this size.
+        self.label_size = int(self.labels.shape[-1])
         self.split = split
         self.guidance = guidance
         # How the S2 series is collapsed into a single guidance frame ("mean"|"median"). Only
@@ -170,7 +174,9 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
         # Shape actually stored per sample: (1,gH,gW,D) when the head averages over time.
         feat_shape = (1, *probe.shape[1:]) if self.reduce_time else tuple(probe.shape)
         feat_elems = int(torch.tensor(feat_shape).prod())
-        self._rgb_elems = (T * 3 * 64 * 64) if self.guidance == "temporal" else (3 * 64 * 64)
+        # Guidance RGB is at full image resolution, which equals the label resolution.
+        px = self.label_size * self.label_size
+        self._rgb_elems = (T * 3 * px) if self.guidance == "temporal" else (3 * px)
         est = self._est_gb(feat_elems)
         if est > max_ram_gb:
             print(f"[{self.split}] preload SKIPPED: est {est:.1f} GB > --max_ram_gb "
@@ -202,9 +208,10 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
                                   time_pool=self.time_pool)
 
     def _rgb_shape(self, T: int):
+        L = self.label_size                      # guidance is at image == label resolution
         if self.guidance == "mean13":
-            return (S2_BANDS, 64, 64)
-        return (T, 3, 64, 64) if self.guidance == "temporal" else (3, 64, 64)
+            return (S2_BANDS, L, L)
+        return (T, 3, L, L) if self.guidance == "temporal" else (3, L, L)
 
     def __len__(self) -> int:
         return self.n
@@ -484,7 +491,7 @@ class CachedManyUp(nn.Module):
 
 def build_cached_head(name: str, embed_dim: int, num_classes: int, patch_size: int,
                       manyup_ckpt: str = None, manyup_use_proj: bool = True,
-                      time_pool: str = "mean") -> nn.Module:
+                      time_pool: str = "mean", label_size: int = LABEL_SIZE) -> nn.Module:
     # (class, extra kwargs). The _ens variants reuse the same wrapper but give each timestep its
     # own probe and average the per-timestep logits instead of mean-pooling features (see
     # AnyUpUpsampleProbe.ensemble). t1_ens = per-timestep features; t2_ens = shared time-pooled
@@ -504,11 +511,11 @@ def build_cached_head(name: str, embed_dim: int, num_classes: int, patch_size: i
             raise ValueError("head_mode=manyup requires a checkpoint (--manyup discovery or --manyup_ckpt)")
         return CachedManyUp(embed_dim, num_classes, patch_size,
                             ckpt_path=manyup_ckpt, use_proj=manyup_use_proj,
-                            time_pool=time_pool)
+                            time_pool=time_pool, label_size=label_size)
     if name not in HEADS:
         raise ValueError(f"head_mode={name!r} not in {list(HEADS)} (cached-feature heads)")
     cls, kwargs = HEADS[name]
-    return cls(embed_dim, num_classes, patch_size, **kwargs)
+    return cls(embed_dim, num_classes, patch_size, label_size=label_size, **kwargs)
 
 
 # ----------------------------- train / eval -----------------------------
@@ -764,10 +771,14 @@ def run_one(args, device, embed_dim, patch_size, train_loader, val_loader, test_
     tag = f"{'KNN' if args.knn else 'LP'} run"
     if manyup_ckpt:
         print(f"\n===== mAnyUp {tag}: {manyup_ckpt} (proj={args.manyup_use_proj}) =====")
+    # Label size from the actual targets (64 for the default prep, 128 for an --image_size 128
+    # one) so the heads upsample their logits to whatever this dataset really uses.
+    label_size = getattr(train_loader.dataset, "label_size", LABEL_SIZE)
     head = build_cached_head(args.head_mode, embed_dim, NUM_CLASSES, patch_size,
                              manyup_ckpt=manyup_ckpt,
                              manyup_use_proj=args.manyup_use_proj,
-                             time_pool=args.time_pool).to(device)
+                             time_pool=args.time_pool,
+                             label_size=label_size).to(device)
 
     # KNN: non-parametric, no training. Extract frozen features, vote over train neighbors, log.
     if args.knn:

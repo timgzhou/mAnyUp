@@ -6,7 +6,7 @@ Two figures per run:
      printed and shown as its subplot title; all panels rendered at the same display size
      regardless of native resolution.
   2. pertimestep_img<idx>.png -- one combined grid per image: rows are the T timesteps, columns
-     are [raw RGB | one per feature dir, ordered ascending (ps, tile)]. Each feature column uses
+     are [raw RGB | one per feature dir, coarse -> fine]. Each feature column uses
      its own joint PCA across time (colors consistent down a column, not across columns).
 
 Feature -> RGB is per-image PCA: flatten (H*W, D), take the top 3 principal components,
@@ -116,12 +116,22 @@ def _ps_tile(name: str) -> tuple[int, int]:
     return ps, tile
 
 
-def feature_dirs(root: Path) -> list[Path]:
-    # Order by (patch_size, tile_size) ascending -- numeric, so tile8 precedes tile32,
-    # not the lexical order sorted() would give (tile1, tile32, tile64, tile8).
-    return sorted((d for d in root.glob("oe_*") if (d / f"pastis_r_test").exists()
+def feature_dirs(root: Path, only: list[str] | None = None) -> list[Path]:
+    # Order by (patch_size, tile_size) DESCENDING -- coarse features first, so columns run
+    # coarse -> fine left to right. Numeric, so tile32 precedes tile8, not the lexical order
+    # sorted() would give.
+    dirs = sorted((d for d in root.glob("oe_*") if (d / f"pastis_r_test").exists()
                    or any(d.glob("pastis_r_*"))),
-                  key=lambda d: _ps_tile(d.name))
+                  key=lambda d: _ps_tile(d.name), reverse=True)
+    if only:
+        # Keep the caller's requested subset (still in ps/tile order, not argument order).
+        # Warn about names that matched nothing so a typo doesn't silently drop a column.
+        found = {d.name for d in dirs}
+        for name in only:
+            if name not in found:
+                print(f"WARNING: --dirs entry {name!r} not found under {root}; skipping")
+        dirs = [d for d in dirs if d.name in set(only)]
+    return dirs
 
 
 def has_samples(d: Path, split: str, indices) -> bool:
@@ -139,11 +149,17 @@ def has_samples(d: Path, split: str, indices) -> bool:
     return True
 
 
-def fig1_meanpool(root: Path, split: str, n_images: int, out: Path) -> None:
+def s2_path(data_splits: Path, split: str, idx: int) -> Path:
+    """Raw S2 stack for one sample: data_splits/pastis_r_<split>/s2_images/<idx>.pt."""
+    return data_splits / f"pastis_r_{split}" / "s2_images" / f"{idx}.pt"
+
+
+def fig1_meanpool(root: Path, split: str, n_images: int, out: Path,
+                  data_splits: Path, only: list[str] | None = None) -> None:
     """Row per image: [raw RGB | mean-pooled PCA-RGB per feature dir]."""
     # Only keep dirs that have all n_images samples; warn+skip the incomplete ones
     # up front so the subplot grid width matches what we actually render.
-    dirs = [d for d in feature_dirs(root) if has_samples(d, split, range(n_images))]
+    dirs = [d for d in feature_dirs(root, only) if has_samples(d, split, range(n_images))]
     if not dirs:
         print("WARNING: no feature dirs with complete samples; skipping features_meanpool.png")
         return
@@ -151,8 +167,7 @@ def fig1_meanpool(root: Path, split: str, n_images: int, out: Path) -> None:
     fig, axes = plt.subplots(n_images, ncols, figsize=(2.1 * ncols, 2.3 * n_images),
                              squeeze=False)
     for r in range(n_images):
-        s2 = torch.load(root.parent / "data" / "pastis_olmoearth" / f"pastis_r_{split}"
-                        / "s2_images" / f"{r}.pt")            # (T,13,64,64)
+        s2 = torch.load(s2_path(data_splits, split, r))       # (T,13,64,64)
         ax = axes[r][0]
         ax.imshow(raw_rgb(s2.mean(0)))                        # time-averaged raw RGB
         ax.set_title("raw RGB (mean T)" if r == 0 else "", fontsize=8)
@@ -177,16 +192,16 @@ def fig1_meanpool(root: Path, split: str, n_images: int, out: Path) -> None:
     print(f"wrote {out}")
 
 
-def fig2_pertimestep(root: Path, split: str, img_idx: int, dirs: list[Path], out: Path) -> None:
+def fig2_pertimestep(root: Path, split: str, img_idx: int, dirs: list[Path], out: Path,
+                     data_splits: Path) -> None:
     """One combined figure for an image: rows = the T timesteps, columns = [raw RGB | one per
-    feature dir]. Grid is T x (1 + len(dirs)); `dirs` is already ordered ascending (ps, tile).
+    feature dir]. Grid is T x (1 + len(dirs)); `dirs` is already ordered coarse -> fine.
 
     Each feature column uses its OWN joint PCA (pca_rgb_joint) across that dir's T steps, so
     colors are consistent down the column (over time) but NOT comparable across columns -- each
     dir has its own basis, since grids/resolutions differ. Dirs missing this image's file are
     dropped with a warning (keeps the grid width honest during in-flight extraction)."""
-    s2 = torch.load(root.parent / "data" / "pastis_olmoearth" / f"pastis_r_{split}"
-                    / "s2_images" / f"{img_idx}.pt")          # (T,13,64,64)
+    s2 = torch.load(s2_path(data_splits, split, img_idx))     # (T,13,64,64)
     T = s2.shape[0]
 
     # Load each dir's per-timestep PCA up front; skip+warn any missing this image.
@@ -224,7 +239,8 @@ def fig2_pertimestep(root: Path, split: str, img_idx: int, dirs: list[Path], out
 
 
 def fig3_anyup(root: Path, split: str, n_images: int, d: Path, out: Path,
-               ref_dir: Path | None = None, pca_mode: str = "all") -> None:
+               data_splits: Path, ref_dir: Path | None = None,
+               pca_mode: str = "all") -> None:
     """AnyUp guided upsampling for one feature dir (e.g. ps4 tile64, 16x16 grid).
 
     Per image, a row of 3-4: [raw RGB | low-res mean-pooled features | AnyUp-upsampled to 64x64
@@ -264,8 +280,7 @@ def fig3_anyup(root: Path, split: str, n_images: int, d: Path, out: Path,
         lr = feat.float().mean(0)                          # (gH,gW,D) time-averaged
         gH, gW, D = lr.shape
 
-        s2 = torch.load(root.parent / "data" / "pastis_olmoearth" / f"pastis_r_{split}"
-                        / "s2_images" / f"{r}.pt")         # (T,13,64,64)
+        s2 = torch.load(s2_path(data_splits, split, r))     # (T,13,64,64)
         rgb_guide = _load_rgb_guidance(split, r, temporal=False)   # (3,64,64), normalized
         out_hw = (s2.shape[-2], s2.shape[-1])              # (64,64)
 
@@ -333,6 +348,16 @@ def fig3_anyup(root: Path, split: str, n_images: int, d: Path, out: Path,
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--features_root", default="~/projects/aip-gpleiss/timz/features")
+    ap.add_argument("--data_splits", default=None,
+                    help="dir holding pastis_r_<split>/s2_images/*.pt (the raw S2 shown in the "
+                         "left column). Defaults to <features_root>/../data/pastis_olmoearth; "
+                         "pass it explicitly when --features_root is not beside the data, e.g. "
+                         "a symlink dir used to visualize a single feature set.")
+    ap.add_argument("--dirs", default=None,
+                    help="comma-separated feature dir names to plot, e.g. "
+                         "oe_base_s2_ps1_tile1,oe_base_s2_ps4_tile64. Default: every oe_* dir "
+                         "under --features_root (which gets wide once many are extracted). "
+                         "Columns stay in ps/tile order regardless of the order given here.")
     ap.add_argument("--split", default="test")
     ap.add_argument("--n_images", type=int, default=4)
     ap.add_argument("--out_dir", default="feature_viz")
@@ -346,17 +371,30 @@ def main() -> None:
     args = ap.parse_args()
 
     root = Path(args.features_root).expanduser().resolve()   # expanduser: default uses ~
+    # Raw S2 lives beside the features by default, but --features_root may point elsewhere
+    # (e.g. a symlink dir holding one feature set), so allow overriding it independently.
+    data_splits = (Path(args.data_splits).expanduser().resolve() if args.data_splits
+                   else root.parent / "data" / "pastis_olmoearth")
+    if not data_splits.exists():
+        raise SystemExit(
+            f"ERROR: raw S2 dir not found: {data_splits}\n"
+            f"       pass --data_splits <repo>/data/pastis_olmoearth explicitly.")
+    print(f"features_root: {root}\ndata_splits:   {data_splits}")
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    dirs = feature_dirs(root)
+    only = [s for s in args.dirs.split(",") if s.strip()] if args.dirs else None
+    dirs = feature_dirs(root, only)
     print(f"{len(dirs)} feature dirs: {[d.name for d in dirs]}")
+    if not dirs:
+        raise SystemExit("ERROR: no feature dirs to plot (check --dirs / --features_root)")
 
-    fig1_meanpool(root, args.split, args.n_images, out_dir / "features_meanpool.png")
+    fig1_meanpool(root, args.split, args.n_images, out_dir / "features_meanpool.png",
+                  data_splits, only)
 
     # Per-timestep figure: one combined grid per image (rows=timesteps, cols=raw RGB + each dir).
     for r in range(args.n_images):
         fig2_pertimestep(root, args.split, r, dirs,
-                         out_dir / f"pertimestep_img{r}.png")
+                         out_dir / f"pertimestep_img{r}.png", data_splits)
 
     if args.anyup:
         ad = root / args.anyup_dir
@@ -372,7 +410,7 @@ def main() -> None:
             for mode in ("all", "lr_anyup", "independent"):
                 fig3_anyup(root, args.split, args.n_images, ad,
                            out_dir / f"anyup_{args.anyup_dir}_pca-{mode}.png",
-                           ref_dir=ref, pca_mode=mode)
+                           data_splits, ref_dir=ref, pca_mode=mode)
 
 
 if __name__ == "__main__":

@@ -30,11 +30,17 @@
 #   HEAD_CKPT    where to cache this run's probe (default checkpoints/pa2pa_head_ps16.pt)
 #   SMOKE_N      images for the smoke run (default 64; set 0 to skip straight to full)
 #   METHODS      comma-separated eval paths (default all four)
+#   TIME_POOL    guidance time pooling: mean|median (default mean). Guidance only -- the
+#                features are always mean-pooled. median rejects the cloud/shadow frames a
+#                mean smears into the composite, which is what upa/upma/anyup key on.
+#   HEAD_CKPT is NOT auto-suffixed by TIME_POOL, but the head is trained on FEATURES only
+#   (guidance never enters it), so the two time_pool runs can share one head ckpt safely.
 #
 # Examples:
 #   sbatch scripts/slurm/upsamplers/upsampler_ps16.sh
 #   sbatch --dependency=afterok:4701460 upsampler_ps16.sh    # wait for the ps16 extraction
 #   sbatch --export=ALL,FEATURES=oe_base_s2_ps8_tile64 upsampler_ps16.sh
+#   sbatch --export=ALL,TIME_POOL=median upsampler_ps16.sh   # median-guided upa/upma/anyup
 
 EMAIL="tiange.zhou@outlook.com"
 export TQDM_DISABLE=1   # silence tqdm progress bars in the batch log
@@ -43,6 +49,7 @@ FEATURES="${FEATURES:-oe_base_s2_ps16_tile64}"
 HEAD_CKPT="${HEAD_CKPT:-checkpoints/pa2pa_head_ps16.pt}"
 SMOKE_N="${SMOKE_N:-64}"
 METHODS="${METHODS:-lr_bilinear,upa,upma,anyup}"
+TIME_POOL="${TIME_POOL:-mean}"
 
 cd "$SLURM_SUBMIT_DIR"
 source env_setup/env_olmo.sh
@@ -51,7 +58,7 @@ FEAT_DIR="$HOME/projects/aip-gpleiss/timz/features/$FEATURES"
 LOG="logs/oe_ups16_${SLURM_JOB_ID}.out"
 
 # Email at start.
-echo "features: $FEATURES | head_ckpt: $HEAD_CKPT | smoke: $SMOKE_N | methods: $METHODS" \
+echo "features: $FEATURES | head_ckpt: $HEAD_CKPT | smoke: $SMOKE_N | methods: $METHODS | time_pool: $TIME_POOL" \
     | mail -s "[START job $SLURM_JOB_ID] upsampler eval $FEATURES" "$EMAIL"
 
 # Fail fast if the extraction did not actually finish. meta.json is written last by
@@ -68,12 +75,13 @@ cat "$FEAT_DIR/meta.json"
 # ---- step 2: smoke run, 64 images. Confirms the 4x4 -> 64x64 upsample path works. ----
 STATUS_SMOKE=0
 if [ "$SMOKE_N" -gt 0 ]; then
-    echo "=== SMOKE features=$FEATURES limit_test=$SMOKE_N ==="
+    echo "=== SMOKE features=$FEATURES limit_test=$SMOKE_N time_pool=$TIME_POOL ==="
     python -u -m exp.upsamplers.eval_pa2pa \
         --features "$FEATURES" \
         --head_ckpt "$HEAD_CKPT" \
         --retrain \
         --methods "$METHODS" \
+        --time_pool "$TIME_POOL" \
         --limit_test "$SMOKE_N"
     STATUS_SMOKE=$?
     echo "=== EXIT smoke status=$STATUS_SMOKE ==="
@@ -91,12 +99,13 @@ if [ "$SMOKE_N" -gt 0 ]; then
 fi
 
 # ---- step 3: full eval, all 1984 test images x 4 methods (~1.5h at ps4 timings) ----
-echo "=== FULL features=$FEATURES ==="
+echo "=== FULL features=$FEATURES time_pool=$TIME_POOL ==="
 python -u -m exp.upsamplers.eval_pa2pa \
     --features "$FEATURES" \
     --head_ckpt "$HEAD_CKPT" \
     --retrain \
-    --methods "$METHODS"
+    --methods "$METHODS" \
+    --time_pool "$TIME_POOL"
 STATUS=$?
 echo "=== EXIT full status=$STATUS ==="
 
