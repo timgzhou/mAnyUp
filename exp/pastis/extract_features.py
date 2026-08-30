@@ -264,6 +264,18 @@ def extract_split(encoder, split: str, out_dir: Path, args, device) -> int:
     idx = 0
     for batch in tqdm(loader, desc=f"extract {split}"):
         masked, _label = batch
+
+        # RESUME: skip the encoder entirely when every sample this batch would write is
+        # already on disk. Without this a partially-extracted split restarts at index 0 and
+        # re-encodes work it already has -- for the very slow configs (ps1 tile128 is ~75 s
+        # per sample) that means a resubmitted job can spend its whole walltime redoing the
+        # prefix and never advance, so a chain of jobs never converges. Indices are stable
+        # because the loader is shuffle=False.
+        batch_n = min(masked.timestamps.shape[0], max(0, n_samples - idx))
+        if batch_n and all((split_dir / f"{idx + b}.pt").exists() for b in range(batch_n)):
+            idx += batch_n
+            continue
+
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
             feats = encode_batch(encoder, masked, args.patch_size, args.tile_size, device,
                                  args.temporal_mode, args.image_size)

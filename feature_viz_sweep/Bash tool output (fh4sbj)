@@ -1,0 +1,4 @@
+full delulu MINUS distill-only  (positive = auxiliary losses help)
+  test_transfer    mean  -1.74   range -3.79..+1.61  (n=6)
+  test_peeking     mean  +1.32   range +0.46..+1.99  (n=6)
+  test_addition    mean  +1.04   range +0.69..+1.84  (n=6)

@@ -127,6 +127,29 @@ python -u -m exp.upsamplers.eval_pa2pa --help              # PASTIS -> PASTIS ev
 python -u -m exp.upsamplers.eval_usf   --help              # UrbanSARFloods eval
 ```
 
+### Cloud-aware guidance (feasibility probe)
+
+`exp/upsamplers/viz_cloud_masked_upsample.py` asks whether OmniCloudMask can make the
+guided upsamplers robust to cloud. UPA/UPMA weight each contributing LR pixel by
+*guide-image* similarity, so where the guide is cloud the kernel keys on cloud-top
+reflectance and imprints cloud edges into the feature map. The probe neutralizes the guide
+under cloud and drops cloudy pixels from the self-supervised fitting loss, then plots
+plain vs cloud-masked side by side with a difference panel.
+
+```shell
+python -u -m exp.upsamplers.viz_cloud_masked_upsample \
+    --tiles EMSR650-1-26,EMSR650-1-18,EMSR650-1-195 \
+    --roots data/GEOID-Flood-aux/geoid-flood-extracted,data/GEOID-Flood-full/geoid-flood
+```
+
+Result on GEOID: the change is **3-4x larger inside the cloud than outside** (UPMA
+localizes better than UPA in every tile tested), so the intervention is well-behaved.
+But GEOID's S2 is a cloud-FILTERED composite — median `cloud_cover` is 0.000 across all
+502k chips and only 11.7% have any cloud — so this is a fix for a small subpopulation
+here, not a general win. It matters far more where the optical input is a single
+acquisition. Pick cloudy tiles from `data_tiles_s256_st128.csv` (`cloud_cover` 0.15-0.75);
+`s2l2a`/`cloudmask` are NOT in the main download and come from `data/GEOID-Flood-aux/`.
+
 ---
 
 ## UTAE baseline
@@ -156,6 +179,7 @@ Code: `exp/viz/` — dataset samplers and results plots, plus per-experiment
 python -u -m exp.viz.visualize_lp_results          # LP result curves from results/*.csv
 python -u -m exp.viz.plot_urbansarfloods_csv       # UrbanSARFloods sweep plot
 python -u -m exp.viz.visualize_impactmesh          # ImpactMesh dataset samples
+python -u -m exp.viz.visualize_geoid_flood         # GEOID-Flood dataset samples
 python -u -m exp.viz.visualize_sen12flood
 python -u -m exp.viz.visualize_s1s2_landslide
 python -u -m exp.pastis.visualize                  # PASTIS predictions
@@ -165,6 +189,72 @@ python -u -m exp.utae.visualize                    # UTAE predictions
 Note: `exp/urbansarfloods/viz_features.py` loads a model from a hardcoded absolute path
 (`/scratch/timz/OlmoEarth-v1-Base`) at import time. That path does not currently exist;
 point it at a real checkpoint before running.
+
+---
+
+## GEOID-Flood — OlmoEarth patch-size study
+
+Code: `exp/geoidflood/` · Launcher: `scripts/slurm/geoidflood/sweep.sh` · Results: `results/geoidflood/`
+
+[GEOID-Flood](https://huggingface.co/datasets/links-ads/geoid-flood) (arXiv:2608.02315) is
+a flood-segmentation benchmark from 219 Copernicus EMS Rapid Mapping activations across 65
+countries. **It is a different dataset from ImpactMesh-Flood** (`ibm-esa-geospatial`, in
+`data/ImpactMesh-Flood/`) — different publisher, tiling, and label scheme. Easy to confuse
+because both are CEMS-derived multimodal flood sets.
+
+Layout: 1024x1024 tiles @10 m; `s1grd`/`s1rtc` pre+post (VV,VH), `s2l2a` **pre-only**,
+`dem`, plus `label` / `floodmask` / `permwater` / `validity` / `cloudmask`.
+Labels: `0` background, `1` permanent water, `2` flood, **`255` = ignore (outside the
+mapped AOI, NOT background)** — prep remaps it to `-1` and the probe passes
+`ignore_index=-1`.
+
+### The study
+
+Three configs, each giving the **same 16x16 token grid** so the probe has an identical
+token count and parameter count in every arm. Only the ground area per token and the chip
+footprint change:
+
+| Config | patch | tile | m / token | chip footprint |
+|---|---|---|---|---|
+| `ps8tile128` | 8 | 128 | 80 m | 1.28 km |
+| `ps4tile64`  | 4 | 64  | 40 m | 640 m |
+| `ps1tile16`  | 1 | 16  | 10 m | 160 m |
+
+The question: at a fixed token budget, is it better to look finely at a small area or
+coarsely at a large one?
+
+### Data (once, ~205 GB)
+
+`s1grd` + `label` + `validity` only — the full 584 GB (with `s1rtc`, `s2l2a`) does not fit,
+and S1-only keeps this comparable to the UrbanSARFloods run.
+
+```shell
+bash scripts/download_geoid_flood.sh            # -> data/GEOID-Flood-full/
+```
+
+### Run
+
+```shell
+sbatch scripts/slurm/geoidflood/sweep.sh        # all three configs x {concat, diff}
+```
+
+Or one arm at a time:
+
+```shell
+python -u -m exp.geoidflood.prep_tiles       --splits train,val --tile_size 128
+python -u -m exp.geoidflood.extract_features --splits train,val --tile_size 128 --patch_size 8
+python -u -m exp.geoidflood.lp --features geoid_base_s1_ps8_res10_t128 --weighted_ce
+```
+
+Notes:
+- `prep_tiles` converts `s1grd` from linear sigma0 to **dB** (OlmoEarth's S1 pretraining
+  units) and keeps only chips with >=1 flood pixel and >=50% mapped pixels. The flood
+  filter makes val numbers flood-conditional, but applies identically to all three arms.
+- The split is per-TILE and lives only in `data_tiles_s256_st128.csv` (51 of 210 events
+  span multiple splits), so `prep_tiles` reads it from there — the download unpacks every
+  split into one `<event>/` namespace.
+- Headline metric is mIoU over {background, flood}; permanent water is reported separately
+  because it is dark in both timesteps and so is not a change signal.
 
 ---
 

@@ -41,6 +41,11 @@ pip install $PIP_Q --no-index --ignore-installed torch==2.7.1 torchvision==0.22.
 # tacoreader->pyarrow), breaking `import lp_on_cached_features`. 0.1.0 is what we validated.
 pip install $PIP_Q olmoearth-pretrain-minimal==0.0.5 olmoearth-pretrain==0.1.0 ai2-olmo-core==2.4.0
 pip install $PIP_Q class-registry rioxarray
+# olmoearth-pretrain 0.1.0 imports its eval-dataset package at import time, which pulls in
+# pandas (data/dataset.py) and, via olmo-core -> rich, pygments. Neither is declared as a
+# hard dep, so a fresh venv imports fine until the first `from olmoearth_pretrain.evals...`
+# and then dies with ModuleNotFoundError. Install them explicitly.
+pip install $PIP_Q --no-index pandas pygments
 
 # Install h5py from the cluster wheel LAST so the olmoearth deps don't pull a
 # PyPI build with a mismatched HDF5/numpy ABI. --no-deps so it leaves numpy/torch alone.
