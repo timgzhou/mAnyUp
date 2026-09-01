@@ -87,13 +87,25 @@ class Config:
         return self.head_mode
 
     @property
+    def image_size(self) -> int:
+        """Sample size of the prepared splits, read off the data_splits path.
+        prepare_data.py --image_size 128 writes data/pastis128_olmoearth; the default
+        64 prep has no digits in its name."""
+        return 128 if "128" in os.path.basename(self.data_splits.rstrip("/")) else 64
+
+    @property
     def run_name(self) -> str:
         mods = "".join(
             {"sentinel2_l2a": "s2", "sentinel1": "s1"}[m] for m in self.input_modalities
         )
         frz = "_frozen" if self.freeze_backbone else ""
+        # image_size 64 adds no suffix (every pre-existing run/checkpoint is 64); other
+        # sizes append _img<N>. REQUIRED for correctness, not tidiness: patch_size alone
+        # does not disambiguate 64 from 128, so p8 at both sizes would otherwise share
+        # one ckpt_path and silently overwrite each other. Mirrors extract_features.cfg_name().
+        img = "" if self.image_size == 64 else f"_img{self.image_size}"
         return (f"oe_{self.dataset}_{self.model_size}_{mods}_{self.head}{frz}"
-                f"_p{self.patch_size}_lr{self.lr:g}_ep{self.epochs}")
+                f"_p{self.patch_size}{img}_lr{self.lr:g}_ep{self.epochs}")
 
     @property
     def ckpt_path(self) -> str:

@@ -151,3 +151,6 @@ timestamp,features,head_mode,eval_kind,manyup_ckpt,manyup_use_proj,time_pool,epo
 2026-08-30T16:01:09,oe_base_s2_ps2_tile16_img128,lp_pa2px,lp,,,,128,0.01,,32,0,0.52,0.81,8.38
 2026-08-30T16:42:30,oe_base_s2_ps2_tile64_img128,lp_pa2px,lp,,,,128,0.01,,32,0,0.52,0.81,8.67
 2026-08-30T18:52:13,oe_base_s2_ps2_tile128_img128,lp_pa2px,lp,,,,128,0.01,,32,0,0.45,0.78,10.18
+2026-08-31T08:58:11,oe_base_s2_ps1_tile64_img128,lp_pa2px,lp,,,,32,0.01,,32,0,0.49,0.80,395.88
+2026-08-31T12:39:56,oe_base_s2_ps8_tile128_img128,lp_pa2px,lp,,,,32,0.01,,32,0,0.42,0.76,1.71
+2026-09-01T00:22:50,oe_base_s2_ps1_tile128_img128,lp_pa2px,lp,,,,32,0.01,,32,0,0.40,0.76,393.83
