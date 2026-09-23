@@ -27,6 +27,7 @@ The AnyUp repo is imported from its clone; set --anyup_repo if it moved.
 """
 import argparse
 import os
+import re
 import shutil
 import sys
 import time
@@ -44,21 +45,36 @@ import matplotlib.pyplot as plt
 
 # Guidance time-pooling is shared with the UPA/UPMA/AnyUp paths (single source of truth).
 from exp.upsamplers.upa_anyup import time_pool, TIME_POOLS
+# Plumbing shared with train_timanyup.py -- guidance normalization and the LR schedule in
+# particular MUST stay identical across trainers (see exp/upsamplers/common.py).
+from exp.upsamplers.common import (
+    DATA_ROOT, FEATURES_ROOT, GUIDANCE_BANDS, GUIDANCE_DIRS, guidance_mod_for,
+    cfg_bits as _cfg_bits_shared, norm_guidance as _norm_guidance,
+    stage_to_tmpdir, warmup_cosine as _warmup_cosine,
+    pca_rgb_shared as _pca_rgb_shared, raw_rgb as _raw_rgb,
+)
 
 # ----- locate the cloned AnyUp repo and import its model + loss (reuse, don't reimplement) -----
-DEFAULT_ANYUP_REPO = "/scratch/timz/anyup"
+DEFAULT_ANYUP_REPO = "/scratch/timz/rs-change-detection/third_party/anyup"
 
 
-def _import_anyup(repo: str):
+def _import_anyup(repo: str, arch: str = "anyup"):
+    """Return (model_cls, Cosine_MSE) for the requested architecture.
+
+    "anyup"  -- stock AnyUp: output is attn @ v, a convex combination of the LR feature
+                vectors. A LINEAR probe on that is a linear function of the LR features, so it
+                cannot beat a linear probe on the LR features directly (measured: 0.373 vs
+                0.375 raw ps16).
+    "manyup" -- adds a nonlinear ResBlock AFTER the cross-attention, so the upsampled map is no
+                longer a linear function of the LR features and a linear probe can, in
+                principle, read something new out of it."""
     sys.path.insert(0, repo)
-    from anyup.model import AnyUp          # noqa: E402
     from anyup.loss import Cosine_MSE      # noqa: E402
+    if arch == "manyup":
+        from anyup.mAnyUp import mAnyUp    # noqa: E402
+        return mAnyUp, Cosine_MSE
+    from anyup.model import AnyUp          # noqa: E402
     return AnyUp, Cosine_MSE
-
-
-DATA_ROOT = Path("/scratch/timz/rs-change-detection/data/pastis_olmoearth")
-FEATURES_ROOT = Path("/home/timz/projects/aip-gpleiss/timz/features")
-S2_BANDS = 13
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -67,10 +83,16 @@ S2_BANDS = 13
 # --------------------------------------------------------------------------------------------- #
 class PairedFeatureDataset(Dataset):
     def __init__(self, lr_dir: Path, hr_dir: Path, s2_dir: Path, split: str,
-                 time_pool: str = "mean"):
+                 time_pool: str = "mean", guidance_mod: str = "s2", half: str = "all"):
         self.lr_dir = lr_dir / f"pastis_r_{split}"
         self.hr_dir = hr_dir / f"pastis_r_{split}"
-        self.s2_dir = s2_dir / f"pastis_r_{split}" / "s2_images"
+        # Guidance imagery. Which modality guides the upsampling is a CHOICE, not a
+        # constant: guiding S1 features with S2 imagery is a cross-modal mismatch, so this
+        # defaults to the arm the features come from (see --guidance_mod).
+        self.guidance_mod = guidance_mod
+        self.guide_dirs = [s2_dir / f"pastis_r_{split}" / f"{m}_images"
+                           for m in GUIDANCE_DIRS[guidance_mod]]
+        self.s2_dir = self.guide_dirs[0]   # index/count checks use the first
         # Guidance pooling is baked into the learned weights: the guidance encoder adapts to
         # whatever composite it sees here, so a checkpoint trained with mean guidance must be
         # evaluated with mean guidance. lp_on_cached_features._load_s2_guidance mirrors this,
@@ -83,6 +105,15 @@ class PairedFeatureDataset(Dataset):
         # Train only on indices present in ALL three sources.
         common = indices(self.lr_dir) & indices(self.hr_dir) & indices(self.s2_dir)
         self.ids = sorted(common)
+        # Optional disjoint half. The upsampler and the LP probe that reads its output are
+        # otherwise fitted on the SAME samples, so probe training sees features the upsampler
+        # has already fit -- a leak that flatters mAnyUp relative to a baseline probe trained
+        # on raw features. half="first"/"second" splits the ids so the two stages can be
+        # trained on disjoint data (the probe takes the other half via --id_half).
+        if half in ("first", "second"):
+            mid = len(self.ids) // 2
+            self.ids = self.ids[:mid] if half == "first" else self.ids[mid:]
+            print(f"[{split}] id_half={half}: {len(self.ids)} of {len(common)} samples")
         if not self.ids:
             raise RuntimeError(f"no common {split} samples across\n  {self.lr_dir}\n  {self.hr_dir}"
                                f"\n  {self.s2_dir}")
@@ -97,87 +128,20 @@ class PairedFeatureDataset(Dataset):
         # features: (T, gH, gW, D) fp16 -> mean over T -> (D, gH, gW) fp32
         lr = torch.load(self.lr_dir / f"{idx}.pt").float().mean(0).permute(2, 0, 1)   # (D, gh, gw)
         hr = torch.load(self.hr_dir / f"{idx}.pt").float().mean(0).permute(2, 0, 1)   # (D, GH, GW)
-        # guidance: (T, 13, 64, 64) fp32 -> pooled over T -> (13, 64, 64)
-        s2 = time_pool(torch.load(self.s2_dir / f"{idx}.pt").float(), self.time_pool)  # (13,64,64)
-        s2 = _norm_guidance(s2)
+        # guidance: each (T, C, 64, 64) fp32 -> pooled over T -> (C, 64, 64), normalized, then
+        # concatenated on the band axis (s2 13 + s1 2 = 15 for the s2s1 arm). Normalizing BEFORE
+        # the concat keeps each modality on its own [0,1] scale -- S1 dB and S2 reflectance have
+        # very different dynamic ranges and a joint min-max would swamp one of them.
+        s2 = torch.cat([_norm_guidance(time_pool(torch.load(d / f"{idx}.pt").float(),
+                                                 self.time_pool))
+                        for d in self.guide_dirs], dim=0)
         return lr, hr, s2
 
 
-def _norm_guidance(s2: torch.Tensor) -> torch.Tensor:
-    """Per-image, per-band min-max normalize the S2 guidance to [0,1]. No ImageNet stats -- with
-    13 bands and a from-scratch guidance encoder, a simple [0,1] scaling is the natural choice
-    (the encoder learns its own band statistics)."""
-    C = s2.shape[0]
-    flat = s2.reshape(C, -1)
-    lo = flat.min(1).values.view(C, 1, 1)
-    hi = flat.max(1).values.view(C, 1, 1)
-    return (s2 - lo) / (hi - lo + 1e-6)
-
-
 # --------------------------------------------------------------------------------------------- #
-def stage_to_tmpdir(dirs: list[Path]) -> list[Path]:
-    """Copy feature/data dirs into $SLURM_TMPDIR (node-local SSD) if set and they fit, returning
-    the new paths. Cached features + S2 images are large and moved to GPU every step, so reading
-    them from fast local disk instead of Lustre is a big speedup. No-op (returns originals) if
-    SLURM_TMPDIR is unset or the data doesn't fit in the available space."""
-    tmp = os.environ.get("SLURM_TMPDIR")
-    if not tmp:
-        print("SLURM_TMPDIR unset -> reading features in place (no staging).")
-        return dirs
-    tmp = Path(tmp)
-
-    def dir_bytes(p: Path) -> int:
-        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
-
-    total = sum(dir_bytes(d) for d in dirs)
-    free = shutil.disk_usage(tmp).free
-    if total > free * 0.95:
-        print(f"staging: need {total/1e9:.1f} GB but only {free/1e9:.1f} GB free in {tmp} "
-              f"-> reading in place.")
-        return dirs
-
-    staged = []
-    for d in dirs:
-        dst = tmp / d.name
-        if dst.exists():
-            print(f"staging: {dst} already present, reusing.")
-        else:
-            t0 = time.time()
-            shutil.copytree(d, dst)
-            print(f"staged {d} -> {dst} ({dir_bytes(d)/1e9:.1f} GB, {time.time()-t0:.0f}s)")
-        staged.append(dst)
-    return staged
-
-
-def _pca_rgb_shared(fit_chw: torch.Tensor, maps_chw: list[torch.Tensor]) -> list[np.ndarray]:
-    """Fit PCA (top-3 dirs + min-max) on `fit_chw` (C,H,W), apply the SAME basis to each map in
-    `maps_chw` -> list of (H,W,3). Shared basis so lr/manyup/hr panels are color-comparable."""
-    C = fit_chw.shape[0]
-    xf = fit_chw.reshape(C, -1).T.float().cpu().numpy()      # (H*W, C)
-    mean = xf.mean(0, keepdims=True)
-    cov = ((xf - mean).T @ (xf - mean)) / max(xf.shape[0] - 1, 1)
-    _, evecs = np.linalg.eigh(cov)
-    dirs = evecs[:, -3:][:, ::-1]                            # (C,3)
-    proj_fit = (xf - mean) @ dirs
-    lo, hi = proj_fit.min(0), proj_fit.max(0)
-    out = []
-    for m in maps_chw:
-        H, W = m.shape[-2:]
-        x = m.reshape(C, -1).T.float().cpu().numpy()
-        proj = ((x - mean) @ dirs).reshape(H, W, 3)
-        out.append(np.clip((proj - lo) / (hi - lo + 1e-6), 0, 1))
-    return out
-
-
-def _raw_rgb(s2_chw: torch.Tensor) -> np.ndarray:
-    """(13,64,64) -> (64,64,3) percentile-stretched RGB (bands 3,2,1 = B04/B03/B02)."""
-    rgb = s2_chw[[3, 2, 1]].float().cpu().numpy().transpose(1, 2, 0)
-    lo = np.percentile(rgb, 2, (0, 1)); hi = np.percentile(rgb, 98, (0, 1))
-    return np.clip((rgb - lo) / (hi - lo + 1e-6), 0, 1)
-
-
 @torch.no_grad()
-def save_epoch_viz(model, proj_head, sample, GH, GW, device, out_path, epoch) -> None:
+def save_epoch_viz(model, proj_head, sample, GH, GW, device, out_path, epoch,
+                   run_tag: str = "") -> None:
     """4-panel viz of one held-out TEST sample: raw RGB | LR feats | mAnyUp output | HR target.
     Feature panels share one PCA basis (fit on HR) so they're directly comparable. mAnyUp panel
     is the projected output (proj_head applied) -- i.e. what the HR loss actually sees."""
@@ -203,28 +167,12 @@ def save_epoch_viz(model, proj_head, sample, GH, GW, device, out_path, epoch) ->
               "mAnyUp (proj)", f"HR target ({GH}x{GW})"]
     for ax, p, t in zip(axes, panels, titles):
         ax.imshow(p); ax.set_title(t, fontsize=9); ax.set_xticks([]); ax.set_yticks([])
-    fig.suptitle(f"epoch {epoch} -- test sample (shared PCA on HR)", fontsize=11)
+    head = f"{run_tag}  --  " if run_tag else ""
+    fig.suptitle(f"{head}epoch {epoch} -- test sample (shared PCA on HR)", fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     fig.savefig(out_path, dpi=130, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved viz {out_path}")
-
-
-def _warmup_cosine(optimizer, total_steps, warmup_frac, lr, lr_min):
-    """LambdaLR: linear warmup 0->1 over the first warmup_frac of steps, then cosine decay to
-    lr_min/lr. Stepped per batch. total_steps = epochs * batches_per_epoch."""
-    import math
-    warmup_steps = max(1, int(total_steps * warmup_frac))
-    floor = lr_min / lr if lr > 0 else 0.0
-
-    def lr_lambda(step):
-        if step < warmup_steps:
-            return step / warmup_steps                       # linear 0 -> 1
-        # cosine 1 -> floor over the remaining steps
-        prog = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-        return floor + (1 - floor) * 0.5 * (1 + math.cos(math.pi * min(prog, 1.0)))
-
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 @torch.no_grad()
@@ -252,9 +200,26 @@ def main():
     p.add_argument("--hr_cfg", default="oe_base_s2_ps1_tile64",
                    help="high-res TARGET feature dir (swap to oe_base_s2_ps1_tile64 when extracted)")
     p.add_argument("--split", default="train")
+    p.add_argument("--id_half", default="all", choices=("all", "first", "second"),
+                   help="train on only one half of the split's ids, so the upsampler and the "
+                        "LP probe that consumes it can use disjoint samples")
     p.add_argument("--features_root", default=str(FEATURES_ROOT))
     p.add_argument("--data_root", default=str(DATA_ROOT))
     p.add_argument("--anyup_repo", default=DEFAULT_ANYUP_REPO)
+    p.add_argument("--arch", default="anyup", choices=("anyup", "manyup"),
+                   help="anyup = stock (output is linear in the LR features); manyup = adds a "
+                        "nonlinear ResBlock after the cross-attention so a linear probe can "
+                        "extract information the LR features do not already carry linearly.")
+    p.add_argument("--feat_dim", type=int, default=768,
+                   help="encoder feature dim the manyup transform operates on (base = 768). "
+                        "Ignored by --arch anyup.")
+    p.add_argument("--transform_depth", type=int, default=0,
+                   help="number of resblocks for feature transform after anyup")
+    p.add_argument("--window_ratio",type=float,default=1.0)
+    p.add_argument("--guidance_mod", default=None, choices=list(GUIDANCE_BANDS),
+                   help="which imagery guides the upsampling (s2 = 13-band L2A, s1 = 2-band "
+                        "VV/VH). Default: match the feature arm, so s1 features are guided by "
+                        "S1 imagery instead of cross-modally by S2.")
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--num_workers", type=int, default=8)
@@ -270,7 +235,7 @@ def main():
     p.add_argument("--qk_dim", type=int, default=128)
     p.add_argument("--down_reg", type=float, default=0.1,     # AnyUp downsampling_regularization default
                    help="weight of anyup_down loss (0 to disable)")
-    p.add_argument("--proj_head", action=argparse.BooleanOptionalAction, default=True,
+    p.add_argument("--proj_head", action=argparse.BooleanOptionalAction, default=False,
                    help="learned 1x1 conv projecting upsampled ps4-space features into the HR "
                         "target's space before anyup_hr; --no-proj_head to A/B against stock AnyUp")
     p.add_argument("--linear_baseline", action=argparse.BooleanOptionalAction, default=True,
@@ -288,24 +253,30 @@ def main():
     p.add_argument("--sanity", action="store_true", help="one batch then exit")
     args = p.parse_args()
 
-    AnyUp, Cosine_MSE = _import_anyup(args.anyup_repo)
+    AnyUp, Cosine_MSE = _import_anyup(args.anyup_repo, args.arch)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     froot = Path(args.features_root)
     lr_dir, hr_dir = froot / args.lr_cfg, froot / args.hr_cfg
-    s2_root = Path(args.data_root)
+    data_root = Path(args.data_root)
 
     # Optionally stage the big feature dirs + S2 images to node-local disk.
     if args.stage_to_tmpdir:
         lr_dir, hr_dir = stage_to_tmpdir([lr_dir, hr_dir])
         # S2 images live under data_root/pastis_r_<split>/s2_images; stage the split dir.
-        s2_split = s2_root / f"pastis_r_{args.split}"
+        s2_split = data_root / f"pastis_r_{args.split}"
         (s2_split_staged,) = stage_to_tmpdir([s2_split])
-        s2_root = s2_split_staged.parent   # so PairedFeatureDataset finds pastis_r_<split>/s2_images
+        data_root = s2_split_staged.parent   # so PairedFeatureDataset finds pastis_r_<split>/s2_images
 
-    ds = PairedFeatureDataset(lr_dir, hr_dir, s2_root, args.split, time_pool=args.time_pool)
+    if args.guidance_mod is None:
+        args.guidance_mod = guidance_mod_for(args.lr_cfg)
+    guide_bands = GUIDANCE_BANDS[args.guidance_mod]
+    print(f"guidance: {args.guidance_mod} ({guide_bands}-band) from {data_root}")
+
+    ds = PairedFeatureDataset(lr_dir, hr_dir, data_root, args.split, half=args.id_half,
+                              time_pool=args.time_pool, guidance_mod=args.guidance_mod)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True,
                         num_workers=args.num_workers, pin_memory=True, drop_last=True)
 
@@ -313,8 +284,11 @@ def main():
     # split too; S2 test images come from the ORIGINAL data_root (only train S2 was staged).
     viz_sample = None
     try:
+        # guidance_mod MUST match the train loader: the model's image encoder is built for that
+        # band count, so an s2-guided viz sample crashes an s1-guided model (13 vs 2 channels).
         test_ds = PairedFeatureDataset(lr_dir, hr_dir, Path(args.data_root), "test",
-                                       time_pool=args.time_pool)
+                                       time_pool=args.time_pool,
+                                       guidance_mod=args.guidance_mod)
         viz_sample = test_ds[0]   # first common test sample: (lr, hr, s2)
     except RuntimeError as e:
         print(f"viz disabled: no usable test sample ({e})")
@@ -326,8 +300,39 @@ def main():
     print(f"LR feats {tuple(lr0.shape)}  ->  HR target {tuple(hr0.shape)}  (upsample {gh}x{gw} -> {GH}x{GW})")
     assert lr0.shape[0] == hr0.shape[0], "LR and HR feature dims (D) must match to share the upsampler"
 
+    # Identifier for this run's artefacts. Carries the modality arm and BOTH grids, e.g.
+    #   s2_ps16_4x4_to_ps4_16x16            (mean guidance pooling, the default)
+    #   s2s1_ps16_4x4_to_ps4_16x16_median
+    # The cfg names are oe_<size>_<mods>_ps<N>_tile<M>[_img<K>], so modality and patch size
+    # are parsed straight out of them rather than passed in again.
+    lr_mods, lr_ps = _cfg_bits_shared(args.lr_cfg)
+    hr_mods, hr_ps = _cfg_bits_shared(args.hr_cfg)
+    # Arms should match; if someone crosses them, name both so the mismatch is visible.
+    mods = lr_mods if lr_mods == hr_mods else f"{lr_mods}to{hr_mods}"
+    tp_tag = "" if args.time_pool == "mean" else f"_{args.time_pool}"
+    # Tag the guidance only when it is NOT the arm's default, so existing names are unchanged.
+    g_tag = "" if args.guidance_mod == guidance_mod_for(args.lr_cfg) else f"_g{args.guidance_mod}"
+    a_tag = "" if args.arch == "anyup" else f"_{args.arch}"
+    # Attention window and consistency-loss weight change the TRAINED MODEL, not just the run,
+    # so two variants of one LR->HR pair must not share a filename. Tagged against the values
+    # every pre-flag checkpoint was trained with (AnyUp's own window 0.1 / down_reg 0.1) rather
+    # than against argparse's defaults, so existing checkpoint paths keep resolving.
+    w_tag = "" if args.window_ratio == 0.1 else f"_w{args.window_ratio:g}"
+    dr_tag = "" if args.down_reg == 0.1 else f"_dr{args.down_reg:g}"
+    var_tag = f"{tp_tag}{g_tag}{a_tag}{w_tag}{dr_tag}"
+    run_tag = f"{mods}_ps{lr_ps}_{gh}x{gw}_to_ps{hr_ps}_{GH}x{GW}{var_tag}"
+    print(f"run tag: {run_tag}")
+
     # 13-channel guidance is the ONLY architectural change vs stock AnyUp. Train from scratch.
-    model = AnyUp(input_dim=S2_BANDS, qk_dim=args.qk_dim).to(device).train()
+    mk = dict(input_dim=guide_bands, qk_dim=args.qk_dim,
+              # Both archs take window_ratio (it gates the cross-attention mask, not the
+              # architecture), so setting it only for "manyup" silently left --arch anyup on
+              # AnyUp's own 0.1 default while the checkpoint recorded the requested value.
+              window_ratio=args.window_ratio)
+    if args.arch == "manyup":
+        mk["feat_dim"] = args.feat_dim        # the post-attention transform needs the feature dim
+        mk["transform_depth"] = args.transform_depth
+    model = AnyUp(**mk).to(device).train()
 
     # Optional pixel-wise linear head (1x1 conv, D->D). AnyUp pools VALUES from the LR feats, so
     # it assumes LR and HR share a feature space -- true when they're one backbone at two
@@ -408,8 +413,8 @@ def main():
             running["down"] += float(loss_down)
             running["lin"] += float(loss_lin)
             if bi % 50 == 0:
-                print(f"epoch {epoch} batch {bi}/{len(loader)}  lr={sched.get_last_lr()[0]:.2e}  "
-                      f"hr={loss_hr.item():.4f} down={float(loss_down):.4f}"
+                print(f"epoch {epoch} batch {bi}/{len(loader)}  learning rate={sched.get_last_lr()[0]:.2e}  "
+                      f"upsampling loss={loss_hr.item():.4f} consistency loss={float(loss_down):.4f}"
                       + (f" lin={float(loss_lin):.4f}" if lin_head is not None else ""))
             if args.sanity:
                 print("sanity: one batch done, exiting.")
@@ -428,19 +433,30 @@ def main():
               f"bilinear by {vs:+.4f}){lin_str}")
 
         if viz_sample is not None:
-            viz_dir = out_dir / "viz"; viz_dir.mkdir(exist_ok=True)
+            # One folder per run instead of a single shared viz/ where every config's
+            # test0_epNNN.png collided. The folder name carries modality and both grids, so
+            # runs are distinguishable on disk without opening them.
+            viz_dir = out_dir / "viz" / run_tag
+            viz_dir.mkdir(parents=True, exist_ok=True)
             save_epoch_viz(model, proj_head, viz_sample, GH, GW, device,
-                           viz_dir / f"test0_ep{epoch:03d}.png", epoch)
+                           viz_dir / f"{run_tag}_ep{epoch:03d}.png", epoch, run_tag)
 
         if (epoch + 1) % args.ckpt_every == 0 or epoch == args.epochs - 1:
             # Tag non-default guidance pooling in the name (empty for mean, so the existing
             # mean-trained checkpoint paths keep working). vars(args) below records it either way.
-            tp = "" if args.time_pool == "mean" else f"_{args.time_pool}"
-            ckpt = out_dir / f"manyup_{args.lr_cfg}_to_{args.hr_cfg}{tp}_ep{epoch}.pth"
+            # var_tag (built once above) carries every knob that changes the trained model:
+            # time_pool, guidance_mod, arch, window_ratio, down_reg. Keeping one source of
+            # truth stops the printed run tag and the saved filename from disagreeing.
+            ckpt = out_dir / (f"manyup_{args.transform_depth}transform_{args.lr_cfg}"
+                              f"_to_{args.hr_cfg}{var_tag}_ep{epoch}.pth")
             torch.save({"model": model.state_dict(),
                         "proj_head": proj_head.state_dict() if proj_head else None,
                         "args": vars(args), "epoch": epoch,
-                        "input_dim": S2_BANDS, "qk_dim": args.qk_dim}, ckpt)
+                        "input_dim": guide_bands, "qk_dim": args.qk_dim,
+                        "arch": args.arch, "feat_dim": args.feat_dim,
+                        "transform_depth": args.transform_depth,
+                        "window_ratio": args.window_ratio},
+                       ckpt)
             print(f"saved {ckpt}")
 
 
