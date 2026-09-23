@@ -2,12 +2,12 @@ from torch import nn
 import torch.nn.functional as F
 import torch
 
-from .layers import ResBlock
-from .layers import LearnedFeatureUnification
-from .layers import setup_cross_attention_block
-from .layers import RoPE
-from .layers.attention import CrossAttentionBlock
-from .utils.img import create_coordinate
+from anyup.layers import ResBlock
+from anyup.layers import LearnedFeatureUnification
+from anyup.layers import setup_cross_attention_block
+from anyup.layers import RoPE
+from anyup.layers.attention import CrossAttentionBlock
+from anyup.utils.img import create_coordinate
 
 
 class mAnyUp(nn.Module):

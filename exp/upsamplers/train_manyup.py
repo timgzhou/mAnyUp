@@ -54,7 +54,7 @@ from exp.upsamplers.common import (
     pca_rgb_shared as _pca_rgb_shared, raw_rgb as _raw_rgb,
 )
 
-# ----- locate the cloned AnyUp repo and import its model + loss (reuse, don't reimplement) -----
+# ----- import stock AnyUp from the vendored repo; mAnyUp + loss live in ./manyup -----
 DEFAULT_ANYUP_REPO = "/scratch/timz/mAnyUp/third_party/anyup"
 
 
@@ -69,9 +69,9 @@ def _import_anyup(repo: str, arch: str = "anyup"):
                 longer a linear function of the LR features and a linear probe can, in
                 principle, read something new out of it."""
     sys.path.insert(0, repo)
-    from anyup.loss import Cosine_MSE      # noqa: E402
+    from manyup.loss import Cosine_MSE      # noqa: E402
     if arch == "manyup":
-        from anyup.mAnyUp import mAnyUp    # noqa: E402
+        from manyup.mAnyUp import mAnyUp    # noqa: E402
         return mAnyUp, Cosine_MSE
     from anyup.model import AnyUp          # noqa: E402
     return AnyUp, Cosine_MSE

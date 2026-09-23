@@ -599,7 +599,7 @@ class CachedManyUp(nn.Module):
         # Checkpoints predating the flag have no "arch" key and are stock AnyUp.
         arch = ck.get("arch", "anyup")
         if arch == "manyup":
-            from anyup.mAnyUp import mAnyUp as AnyUp   # noqa: F811
+            from manyup.mAnyUp import mAnyUp as AnyUp   # noqa: F811
         # The guidance encoder adapted to whatever composite it trained on, so evaluating with a
         # different one silently feeds it an unseen input distribution. Checkpoints written before
         # --time_pool existed have no entry and are mean by construction.
@@ -804,7 +804,7 @@ class CachedTimAnyUp(nn.Module):
         super().__init__()
         import sys
         sys.path.insert(0, "/scratch/timz/mAnyUp/third_party/anyup")
-        from anyup.timAnyUp import TimAnyUp, topk_mask, blend
+        from manyup.timAnyUp import TimAnyUp, topk_mask, blend
 
         ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         cargs = ck.get("args", {})

@@ -58,8 +58,8 @@ DEFAULT_ANYUP_REPO = "/scratch/timz/mAnyUp/third_party/anyup"
 
 def _import_timanyup(repo: str):
     sys.path.insert(0, repo)
-    from anyup.loss import Cosine_MSE, cosmse_map                      # noqa: E402
-    from anyup.timAnyUp import (TimAnyUp, topk_mask, random_mask,      # noqa: E402
+    from manyup.loss import Cosine_MSE, cosmse_map                      # noqa: E402
+    from manyup.timAnyUp import (TimAnyUp, topk_mask, random_mask,      # noqa: E402
                                 blend, rank_normalize)
     return dict(TimAnyUp=TimAnyUp, Cosine_MSE=Cosine_MSE, cosmse_map=cosmse_map,
                 topk_mask=topk_mask, random_mask=random_mask, blend=blend,

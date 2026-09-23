@@ -52,7 +52,7 @@ def load_upsampler(path: str, device):
     arch = ck.get("arch", "anyup")
     cls = AnyUp
     if arch == "manyup":
-        from anyup.mAnyUp import mAnyUp as cls  # noqa: F811
+        from manyup.mAnyUp import mAnyUp as cls  # noqa: F811
     kw = dict(input_dim=ck["input_dim"], qk_dim=ck.get("qk_dim", 128),
               window_ratio=ck.get("window_ratio", 0.1))
     if arch == "manyup":

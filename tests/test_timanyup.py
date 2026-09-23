@@ -9,8 +9,8 @@ ordering, and gradient reaching the heads that should learn (and NOT the ones th
 import sys
 import torch
 
-sys.path.insert(0, "/scratch/timz/mAnyUp/third_party/anyup")
-from anyup.timAnyUp import (TimAnyUp, QueryHead, TransformHead, topk_mask,   # noqa: E402
+sys.path.insert(0, "/scratch/timz/mAnyUp")
+from manyup.timAnyUp import (TimAnyUp, QueryHead, TransformHead, topk_mask,   # noqa: E402
                             random_mask, blend, rank_normalize)
 
 B, T, C, H, W, h, w = 2, 12, 32, 16, 16, 4, 4

@@ -11,8 +11,8 @@ failure. These tests make that loud instead.
 import sys
 import torch
 
-sys.path.insert(0, "/scratch/timz/mAnyUp/third_party/anyup")
-from anyup.loss import Cosine_MSE, cosmse_map    # noqa: E402
+sys.path.insert(0, "/scratch/timz/mAnyUp")
+from manyup.loss import Cosine_MSE, cosmse_map    # noqa: E402
 
 
 def _pair(b=2, c=768, h=16, w=16, seed=0):
