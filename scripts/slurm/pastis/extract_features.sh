@@ -17,6 +17,9 @@
 #   IMAGE_SIZE  (default 64) sample size on disk; 128 needs DATA_SPLITS from a
 #               prepare_data.py --image_size 128 prep. Caches for !=64 get an _img<N> suffix.
 #   DATA_SPLITS (default data/pastis_olmoearth)
+#   EXTRA_ARGS  extra args passed verbatim to extract_features.py, e.g.
+#               EXTRA_ARGS="--init_ckpt checkpoints/<finetune>.pt" to cache FINE-TUNED
+#               features (written to a separate _ft<tag> cache, never mixed with pretrained)
 # Emails at start and finish.
 #
 # Examples:
@@ -35,6 +38,9 @@ MODALITIES="${MODALITIES:-sentinel2_l2a}"
 PATCH_SIZE="${PATCH_SIZE:-1}"
 TILE_SIZE="${TILE_SIZE:-1}"
 IMAGE_SIZE="${IMAGE_SIZE:-64}"
+# series (default) = one encoder call on the whole T-step series, so timesteps cross-attend.
+# single = T independent T=1 calls, no cross-timestep attention; lands in a *_single cache.
+TEMPORAL_MODE="${TEMPORAL_MODE:-series}"
 DATA_SPLITS="${DATA_SPLITS:-data/pastis_olmoearth}"
 BATCH_SIZE="${BATCH_SIZE:-16}"   # lower for heavy configs (e.g. ps1 tile64) that OOM the GPU
 # Write features to project space (scratch is near quota); override with OUT_ROOT.
@@ -43,8 +49,10 @@ OUT_ROOT="${OUT_ROOT:-$HOME/projects/aip-gpleiss/timz/features}"
 cd "$SLURM_SUBMIT_DIR"
 source env_setup/env_olmo.sh
 
-ARGS="--model_size $MODEL_SIZE --modalities $MODALITIES --patch_size $PATCH_SIZE --tile_size $TILE_SIZE --image_size $IMAGE_SIZE --data_splits $DATA_SPLITS --batch_size $BATCH_SIZE --out_root $OUT_ROOT"
-TAG="${MODEL_SIZE} ${MODALITIES} ps${PATCH_SIZE} tile${TILE_SIZE} img${IMAGE_SIZE}"
+# EXTRA_ARGS is appended verbatim: --init_ckpt <finetune ckpt> extracts from FINE-TUNED
+# weights (cache gets an _ft<tag> suffix), --tiles_per_call N overrides the auto fold width.
+ARGS="--model_size $MODEL_SIZE --modalities $MODALITIES --patch_size $PATCH_SIZE --tile_size $TILE_SIZE --image_size $IMAGE_SIZE --data_splits $DATA_SPLITS --batch_size $BATCH_SIZE --out_root $OUT_ROOT --temporal_mode $TEMPORAL_MODE ${EXTRA_ARGS:-}"
+TAG="${MODEL_SIZE} ${MODALITIES} ps${PATCH_SIZE} tile${TILE_SIZE} img${IMAGE_SIZE} ${TEMPORAL_MODE}"
 
 # Email at start.
 echo "exp/pastis/extract_features.py $ARGS" \

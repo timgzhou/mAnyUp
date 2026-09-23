@@ -58,6 +58,7 @@ olmo_bootstrap.apply()
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import cast
 
@@ -79,10 +80,16 @@ from exp.pastis.finetune_olmoearth import pool_per_timestep
 POOLING_TYPE = PoolingType.MEAN          # matches finetune default
 IMAGE_SIZE = 64                          # DEFAULT sample size; override with --image_size
 SPLITS = ("train", "valid", "test")
+# Upper bound on batch items in ONE folded encoder call. Past roughly this, CUDA's attention
+# kernels hit a grid-dimension limit and raise "invalid configuration argument". Measured to
+# fail at 98,304 (1024 tiles x batch 8 x T 12); 16384 leaves comfortable headroom and still
+# collapses 1024 one-token tiles into a handful of calls instead of 1024.
+MAX_FOLDED_ITEMS = 16384
 
 
 def cfg_name(model_size: str, modalities: list[str], patch_size: int, tile_size: int,
-             temporal_mode: str = "series", image_size: int = IMAGE_SIZE) -> str:
+             temporal_mode: str = "series", image_size: int = IMAGE_SIZE,
+             ft_tag: str | None = None) -> str:
     """Stable folder name encoding the extraction params, so different settings never
     collide on disk, e.g. oe_base_s2s1_ps4_tile64.
 
@@ -97,7 +104,11 @@ def cfg_name(model_size: str, modalities: list[str], patch_size: int, tile_size:
     mods = "".join({"sentinel2_l2a": "s2", "sentinel1": "s1"}[m] for m in modalities)
     suffix = "" if temporal_mode == "series" else f"_{temporal_mode}"
     img = "" if image_size == 64 else f"_img{image_size}"
-    return f"oe_{model_size}_{mods}_ps{patch_size}_tile{tile_size}{suffix}{img}"
+    # Fine-tuned features come from DIFFERENT weights, so they must never share a directory
+    # with pretrained ones -- otherwise a second run looks "already extracted" and silently
+    # mixes two encoders in one cache.
+    ft = f"_ft{ft_tag}" if ft_tag else ""
+    return f"oe_{model_size}_{mods}_ps{patch_size}_tile{tile_size}{suffix}{img}{ft}"
 
 
 def make_loader(split: str, data_splits: str, modalities: list[str],
@@ -171,6 +182,18 @@ def _fold_time_into_batch(masked, T: int):
     return slices[0]._replace(**merged)
 
 
+def _cat_samples(slices):
+    """Concatenate a list of equally-shaped MaskedOlmoEarthSamples along the BATCH dim.
+
+    Group-major layout ([all B of slice0, all B of slice1, ...]) so a later slice of dim 0
+    recovers each input's block in order -- same convention as _fold_time_into_batch."""
+    merged = {}
+    for field in slices[0]._fields:
+        vals = [getattr(s, field) for s in slices]
+        merged[field] = None if vals[0] is None else torch.cat(vals, dim=0)
+    return slices[0]._replace(**merged)
+
+
 @torch.no_grad()
 def _encode_tile(encoder, tile, patch_size: int, temporal_mode: str) -> torch.Tensor:
     """Encode one spatial tile -> (B, tg, tg, T, D).
@@ -196,7 +219,8 @@ def _encode_tile(encoder, tile, patch_size: int, temporal_mode: str) -> torch.Te
 
 @torch.no_grad()
 def encode_batch(encoder, masked, patch_size: int, tile_size: int, device,
-                 temporal_mode: str = "series", image_size: int = IMAGE_SIZE) -> torch.Tensor:
+                 temporal_mode: str = "series", image_size: int = IMAGE_SIZE,
+                 tiles_per_call: int = 1) -> torch.Tensor:
     """Encode one batch -> (B, T, gH, gW, D), tiling spatially if tile_size < image_size.
 
     For each tile we run the encoder (see _encode_tile for the temporal_mode split) and pool
@@ -207,16 +231,47 @@ def encode_batch(encoder, masked, patch_size: int, tile_size: int, device,
     n = image_size // tile_size                         # tiles per side
     grid = image_size // patch_size                     # full token grid side
 
-    full = None  # lazily sized (B, gH, gW, T, D) once we know B, T, D
-    for ti in range(n):
-        for tj in range(n):
-            tile = _slice_tile(masked, ti * tile_size, (ti + 1) * tile_size,
-                               tj * tile_size, (tj + 1) * tile_size)
-            block = _encode_tile(encoder, tile, patch_size, temporal_mode)
-            if full is None:
-                B, _, _, T, D = block.shape
-                full = block.new_zeros((B, grid, grid, T, D))
-            full[:, ti * tg:(ti + 1) * tg, tj * tg:(tj + 1) * tg] = block
+    # Tiles are INDEPENDENT (attention never crosses a tile), identically shaped, and there
+    # can be very many of them: tile_size == patch_size gives (image_size/tile_size)^2 tiles
+    # of ONE token each -- 1024 per sample at ps2/tile2. Encoding those one at a time is
+    # 1024 serial launches of a 1-token transformer, which is pure overhead: the GPU sits
+    # idle and the theoretical FLOP saving of `single` mode never materializes (measured:
+    # ps2_tile2_single ran SLOWER than ps2_tile32 despite doing far less attention work).
+    # So fold the tile axis into the batch, exactly as _fold_time_into_batch does for time,
+    # and issue ONE call. tiles_per_call caps the fold so memory stays bounded.
+    tiles = [(ti, tj) for ti in range(n) for tj in range(n)]
+    full = None
+    if tiles_per_call <= 0:
+        # Auto: cap the folded call at ~4096 tokens per batch item, so a tiny-tile config
+        # (1 token/tile) folds many tiles into one call while a big-tile config keeps the
+        # old one-tile-at-a-time behaviour and its memory profile.
+        tok_per_tile = (tile_size // patch_size) ** 2
+        tiles_per_call = max(1, min(len(tiles), 4096 // max(tok_per_tile, 1)))
+        # Also cap the resulting BATCH WIDTH. `single` mode folds T into the batch on top of
+        # the tiles, so tiles x B x T can reach ~98k items at tile2/batch8 -- past that
+        # scaled_dot_product_attention fails with "CUDA error: invalid configuration
+        # argument" (a kernel grid-dimension limit, not OOM). Bounding items keeps the fold
+        # legal for any batch_size instead of only the small ones.
+        B0 = masked.timestamps.shape[0]
+        fold = B0 * (_num_input_timesteps(masked) if temporal_mode == "single" else 1)
+        tiles_per_call = max(1, min(tiles_per_call, MAX_FOLDED_ITEMS // max(fold, 1)))
+    chunk = max(1, tiles_per_call)
+    for c0 in range(0, len(tiles), chunk):
+        group = tiles[c0:c0 + chunk]
+        sl = [_slice_tile(masked, ti * tile_size, (ti + 1) * tile_size,
+                          tj * tile_size, (tj + 1) * tile_size) for ti, tj in group]
+        merged = _cat_samples(sl) if len(sl) > 1 else sl[0]
+        block = _encode_tile(encoder, merged, patch_size, temporal_mode)   # (G*B, tg,tg,T,D)
+        if full is None:
+            GB, _, _, T, D = block.shape
+            B = GB // len(group)
+            full = block.new_zeros((B, grid, grid, T, D))
+        else:
+            B = full.shape[0]
+        # _cat_samples stacks group-major ([all B of tile0, all B of tile1, ...]), so chunking
+        # on dim 0 recovers each tile's own (B, tg, tg, T, D) block in order.
+        for gi, (ti, tj) in enumerate(group):
+            full[:, ti * tg:(ti + 1) * tg, tj * tg:(tj + 1) * tg] = block[gi * B:(gi + 1) * B]
     return full.permute(0, 3, 1, 2, 4).contiguous()     # (B, T, gH, gW, D)
 
 
@@ -278,7 +333,8 @@ def extract_split(encoder, split: str, out_dir: Path, args, device) -> int:
 
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
             feats = encode_batch(encoder, masked, args.patch_size, args.tile_size, device,
-                                 args.temporal_mode, args.image_size)
+                                 args.temporal_mode, args.image_size,
+                                 tiles_per_call=args.tiles_per_call)
         feats = feats.half().cpu()                       # (B, T, gH, gW, D)
         for b in range(feats.shape[0]):
             if idx >= n_samples:                         # hit the limit mid-batch: stop writing
@@ -307,6 +363,21 @@ def main() -> None:
                    help="series: one encoder call per sample, tokens attend across time. "
                         "single: one encoder call per timestep, no cross-timestep attention "
                         "(T x more calls; written to a separate _single cache dir)")
+    p.add_argument("--tiles_per_call", type=int, default=0,
+                   help="how many spatial tiles to fold into ONE encoder call. Tiles never "
+                        "cross-attend, so folding them is EXACT -- it changes only GPU "
+                        "utilization. 0 (default) auto-picks ~4096 tokens per call: a tiny-"
+                        "tile config (ps2/tile2 = 1024 one-token tiles) folds them all into "
+                        "one call, while existing big-tile configs keep the old serial "
+                        "behaviour and their memory profile. Lower it if a config OOMs.")
+    p.add_argument("--init_ckpt", default=None,
+                   help="finetune checkpoint whose BACKBONE weights replace the pretrained "
+                        "ones (from finetune_olmoearth.py, keys prefixed 'backbone.'). The "
+                        "cache name gets an _ft<tag> suffix so fine-tuned features never "
+                        "share a directory with pretrained ones.")
+    p.add_argument("--ft_tag", default=None,
+                   help="short tag for the --init_ckpt cache suffix; defaults to the "
+                        "checkpoint's patch size + epochs (e.g. p16ep64)")
     p.add_argument("--data_splits", default="data/pastis_olmoearth")
     p.add_argument("--out_root", default="features")
     p.add_argument("--splits", default=",".join(SPLITS),
@@ -332,8 +403,19 @@ def main() -> None:
     if args.tile_size % args.patch_size != 0:
         raise ValueError(f"tile_size {args.tile_size} must be divisible by patch_size {args.patch_size}")
 
+    # Derive the fine-tune tag from the checkpoint filename when not given, so the cache
+    # name records WHICH finetune it came from rather than just "some finetune".
+    ft_tag = None
+    if args.init_ckpt:
+        ft_tag = args.ft_tag
+        if not ft_tag:
+            stem = Path(args.init_ckpt).stem
+            m = re.search(r"_p(\d+)(?:_img\d+)?_lr[\d.e-]+_ep(\d+)", stem)
+            ft_tag = f"p{m.group(1)}ep{m.group(2)}" if m else stem[:16]
+        ft_tag = re.sub(r"[^A-Za-z0-9]", "", ft_tag)
+
     name = cfg_name(args.model_size, args.modalities, args.patch_size, args.tile_size,
-                    args.temporal_mode, args.image_size)
+                    args.temporal_mode, args.image_size, ft_tag)
     out_dir = Path(args.out_root) / name
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Extraction config: {name}")
@@ -346,6 +428,22 @@ def main() -> None:
     model = load_model_from_id(getattr(ModelID, MODEL_SIZE_TO_ID[args.model_size]),
                                load_weights=True)
     encoder = cast(nn.Module, model.encoder if hasattr(model, "encoder") else model)
+    if args.init_ckpt:
+        # finetune_olmoearth saves the whole task model; the encoder lives under "backbone."
+        # and "_head.*" is the task head we do not want. Load STRICTLY (after stripping the
+        # prefix) so a key mismatch is an error, not a silently half-pretrained encoder.
+        sd = torch.load(args.init_ckpt, map_location="cpu", weights_only=False)
+        sd = sd.get("model", sd)
+        bb = {k[len("backbone."):]: v for k, v in sd.items() if k.startswith("backbone.")}
+        if not bb:
+            raise ValueError(f"--init_ckpt {args.init_ckpt} has no 'backbone.' keys "
+                             f"(got prefixes {sorted({k.split('.')[0] for k in sd})})")
+        missing, unexpected = encoder.load_state_dict(bb, strict=False)
+        if missing or unexpected:
+            raise ValueError(f"--init_ckpt backbone does not match the {args.model_size} "
+                             f"encoder: {len(missing)} missing, {len(unexpected)} unexpected "
+                             f"(first missing {missing[:3]}, first unexpected {unexpected[:3]})")
+        print(f"  loaded FINETUNED backbone from {args.init_ckpt} ({len(bb)} tensors)")
     encoder = encoder.to(device).eval()
     for prm in encoder.parameters():
         prm.requires_grad = False

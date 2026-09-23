@@ -1,0 +1,6 @@
+job,run_name,model_size,modalities,head_mode,patch_size,image_size,batch_size,epochs,lr,elapsed,test_miou,test_overall_acc,test_macro_acc,test_macro_f1
+5145950,oe_pastis_base_s2s1_lp_p4_lr0.001_ep64,base,s2s1,lp,4,64,8,64,0.001,18:45:33,0.645755,0.844057,0.754041,0.771107
+5145948,oe_pastis_base_s2s1_lp_p8_lr0.001_ep64,base,s2s1,lp,8,64,32,64,0.001,04:14:38,0.606684,0.826667,0.717283,0.739732
+5145949,oe_pastis_base_s2s1_lp_p16_lr0.001_ep64,base,s2s1,lp,16,64,32,64,0.001,02:02:37,0.516833,0.790872,0.624261,0.659708
+5145951,oe_pastis_base_s2s1_lp_p8_img128_lr0.001_ep64,base,s2s1,lp,8,128,8,64,0.001,05:14:44,0.603761,0.825470,0.719414,0.737741
+5145952,oe_pastis_base_s2s1_lp_p16_img128_lr0.001_ep64,base,s2s1,lp,16,128,16,64,0.001,01:35:26,0.505722,0.786993,0.617342,0.649687

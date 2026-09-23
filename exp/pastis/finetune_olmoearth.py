@@ -316,6 +316,58 @@ def pool_per_timestep(tam, t, pooling_type):
     return tam._replace(**repl).pool_unmasked_tokens(pooling_type, spatial_pooling=True)
 
 
+class TimeConcatHead(nn.Module):
+    """pa2px linear probe on time-CONCATENATED tokens instead of time-pooled ones.
+
+    BackboneWithHead's eval wrapper reduces the encoder's (B,gH,gW,T,BandSets,D) tokens
+    over BOTH bandsets and time, handing the probe (B,gH,gW,D). Here we pool bandsets the
+    same way but KEEP the time axis, flattening it into the feature dim: the probe sees
+    (B,gH,gW,T*D) and learns its own weighting over timesteps rather than being handed a
+    fixed mean.
+
+    Backbone cost is unchanged (all T timesteps were always encoded; only the reduction
+    after the encoder differs). The head grows T-fold: Linear(T*D -> C*p*p).
+
+    Caveat worth remembering when reading results: PASTIS series are not date-aligned
+    across samples, so slot t is not the same calendar time in every sample. A
+    position-wise head must cope with that, which is exactly what the mean sidesteps."""
+
+    def __init__(self, encoder: nn.Module, patch_size: int, num_classes: int,
+                 task_type: TaskType, pooling_type) -> None:
+        super().__init__()
+        self.encoder = encoder
+        self.patch_size = patch_size
+        self.num_classes = num_classes
+        self.pooling_type = pooling_type
+        self._head: nn.Module = nn.Linear(1, 1)   # real dims discovered on first forward
+        self._inited = False
+
+    @property
+    def backbone(self) -> nn.Module:
+        return self.encoder
+
+    def _tokens(self, masked):
+        """(B, gH, gW, T, D): encoder tokens with bandsets reduced, time KEPT."""
+        tam = self.encoder(masked, patch_size=self.patch_size, fast_pass=True)[
+            "tokens_and_masks"]
+        # Mean over the bandset axis per modality, then over modalities -- the same
+        # reduction pool_spatially applies, minus the time collapse.
+        per_mod = [getattr(tam, m).mean(dim=4) for m in tam.modalities]  # each (B,g,g,T,D)
+        return torch.stack(per_mod, 0).mean(0)
+
+    def forward(self, masked, label, is_train: bool = True):
+        dev = next(self.encoder.parameters()).device
+        label = label.to(dev)
+        x = self._tokens(masked)                               # (B,g,g,T,D)
+        b, gh, gw, t, d = x.shape
+        x = x.reshape(b, gh, gw, t * d)                        # concat time into features
+        if not self._inited:
+            self._head = nn.Linear(t * d, self.num_classes * self.patch_size ** 2).to(
+                dev, dtype=x.dtype)
+            self._inited = True
+        return self._head(x), label                            # (B,g,g,C*p*p)
+
+
 def build_head(head: str, encoder, patch_size, task_config):
     """Construct the segmentation head for the given mode."""
     if head == "lp":
@@ -324,6 +376,9 @@ def build_head(head: str, encoder, patch_size, task_config):
             pooling_type=POOLING_TYPE, num_classes=task_config.num_classes,
             use_pooled_tokens=False,
         )
+    if head == "lp_tcat":
+        return TimeConcatHead(encoder, patch_size, task_config.num_classes,
+                              task_config.task_type, POOLING_TYPE)
     cls = {"anyup": AnyUpHead, "anyup_t2": AnyUpHeadT2, "anyup_t1": AnyUpHeadT1}[head]
     return cls(encoder, patch_size, task_config.num_classes,
                task_config.task_type, POOLING_TYPE)

@@ -31,7 +31,9 @@ MODEL_SIZE_TO_ID = {
     "large": "OLMOEARTH_V1_LARGE",
 }
 ALLOWED_MODALITIES = ("sentinel2_l2a", "sentinel1")
-ALLOWED_HEADS = ("lp", "anyup", "anyup_t2", "anyup_t1")
+# lp_tcat = lp, but the encoder's time axis is CONCATENATED into the probe input
+# (T*D) instead of mean-pooled away. Same backbone cost; a 12x wider linear head.
+ALLOWED_HEADS = ("lp", "lp_tcat", "anyup", "anyup_t2", "anyup_t1")
 DEFAULTS_YAML = os.path.join(os.path.dirname(__file__), "configs", "defaults.yaml")
 
 # Architecture fields that MUST be set explicitly (no usable default).
@@ -43,7 +45,7 @@ class Config:
     # --- REQUIRED architecture fields (None = unset -> error) ---
     model_size: Optional[ModelSize] = None
     input_modalities: Optional[list[str]] = None
-    # head_mode: lp | anyup | anyup_t2 | anyup_t1
+    # head_mode: lp | lp_tcat | anyup | anyup_t2 | anyup_t1
     head_mode: Optional[str] = None
     # freeze_backbone: True -> encoder frozen all epochs (+ frozen AnyUp) -> only head trains.
     freeze_backbone: Optional[bool] = None

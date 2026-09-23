@@ -1,0 +1,7 @@
+regime,label,patch_size,tile_size,image_size,modalities,epochs,extract_job,extract_sec,train_sec,total_sec,total_hours,test_miou,test_overall_acc,n_runs
+lp,LP ps16/t64,16,64,64,s2,32,5160317,168,37.4,205.4,0.0571,0.37,0.74,3
+lp,LP ps8/t64,8,64,64,s2,32,4725269,254,129.3,383.3,0.1065,0.46,0.78,4
+lp,LP ps4/t64,4,64,64,s2,32,5160325,556,174.4,730.4,0.2029,0.50,0.80,3
+fft,FFT ps16/img64,16,64,64,s2s1,64,,0,7357,7357,2.0436,0.5168,0.7909,1
+fft,FFT ps8/img64,8,64,64,s2s1,64,,0,15278,15278,4.2439,0.6067,0.8267,1
+fft,FFT ps4/img64,4,64,64,s2s1,64,,0,67533,67533,18.7592,0.6458,0.8441,1

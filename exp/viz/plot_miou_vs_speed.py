@@ -41,12 +41,25 @@ import numpy as np
 
 SPEED_GLOB = "results/bench/olmoearth_ps-tile_speed.csv"
 LP_CSV = "results/pastis/lp_olmoearth_pastis.csv"
+FFT_CSV = "results/pastis/fft_olmoearth_pastis.csv"
 OUT = "results/bench/miou_vs_throughput.png"
 IMAGE_SIZE = 128        # only this prep is plotted (--image_size to change)
 
 # Hue = tile size, shape = patch size.
 TS_COLOR = {16: "#1f77ff", 64: "#00a05a", 128: "#e4002b"}
 PS_MARKER = {1: "o", 2: "s", 4: "^", 8: "D", 16: "v"}
+
+# Full-finetune overlay. FFT never tiles (it always encodes the whole image), so its points
+# are tile==image_size by construction and get ONE hue rather than the tile-size scale.
+# Star marker separates them from the frozen-LP dots at a glance.
+FFT_COLOR = "#7d3cc6"
+FFT_MARKER = "*"
+# The FFT sweep was run S2+S1 while every cached-feature LP point is S2-only. The backbone
+# forward is identical for LP and FFT -- finetuning changes only whether gradients flow, not
+# inference GMACs -- so an S2 FFT point would land exactly on its LP twin's x. The S1 tokens
+# are what move it right (~1.5-1.7x). We therefore look its cost up under the s2s1 arm, and
+# the caption says so, rather than pretending it sits at the s2 x.
+FFT_ARM = "s2s1"
 
 # features dir name -> (patch, tile, image_size), e.g. oe_base_s2_ps4_tile64[_img128]
 FEAT_RE = re.compile(r"_ps(\d+)_tile(\d+)(?:_img(\d+))?$")
@@ -134,6 +147,38 @@ def load_miou(csv_path: str, head: str, epochs: int | None = None) -> dict:
     return out
 
 
+def load_fft(csv_path: str, image_size: int) -> dict:
+    """(patch, tile, prep_image_size) -> (best FFT test mIoU, ground_scale).
+
+    FFT has no tiling knob (the whole image is encoded in one pass), so the tile slot is
+    filled with the prep's image_size -- which is what tile_size means for an untiled
+    forward, and what joins these rows to the tile<N> speed/GMACs entries.
+
+    BOTH preps are plotted, not just `image_size`. They cover the SAME ground: the 64px
+    prep is the quadrant split of the 128px one (128-sample i == 64-samples 4i..4i+3), so
+    a 64px sample is a quarter of a 128px sample. ground_scale is the multiplier that puts
+    a point's cost on a per-equal-ground footing with the reference prep -- 4x for the 64px
+    rows when the figure is img128. mIoU needs no such correction: it is computed over the
+    same test pixels either way, just grouped into different numbers of samples."""
+    out: dict = {}
+    if not Path(csv_path).exists():
+        return out
+    for r in csv.DictReader(open(csv_path)):
+        try:
+            img = int(r["image_size"])
+            ps = int(r["patch_size"])
+            miou = float(r["test_miou"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        # cost scale to the figure's reference prep: (ref_px / this_px)^2 samples of this
+        # prep tile the same ground as one reference sample.
+        scale = (image_size / img) ** 2
+        key = (ps, img, img)
+        if key not in out or miou > out[key][0]:
+            out[key] = (miou, scale)
+    return out
+
+
 def pareto(points):
     """Indices on the upper-left Pareto front: no other point is both faster and better."""
     keep = []
@@ -162,10 +207,22 @@ def main() -> None:
     p.add_argument("--out", default=OUT)
     p.add_argument("--per_tile", action="store_true",
                    help="also write one figure per tile size, named <out stem>_tile<N>.png")
+    p.add_argument("--fft", default=FFT_CSV,
+                   help="full-finetune results CSV, overlaid as star markers")
+    p.add_argument("--no_fft", action="store_true", help="omit the full-finetune overlay")
     args = p.parse_args()
 
     speed = load_speed(args.speed)
     miou = load_miou(args.lp, args.head, args.epochs)
+    # FFT points carry their own cost lookup: the runs are S2+S1, so their GMACs come from
+    # the s2s1 arm, not the s2 arm the LP grid uses.
+    fft = {} if args.no_fft else load_fft(args.fft, args.image_size)
+    fft_speed = load_speed(args.speed, arm=FFT_ARM) if fft else {}
+    dropped = {k for k in fft if fft_speed.get(k, {}).get(args.x) in ("", None)}
+    if dropped:
+        print(f"note: {len(dropped)} FFT run(s) have no {FFT_ARM} {args.x} and are "
+              f"omitted: {sorted((k[0], k[1]) for k in dropped)}")
+    fft = {k: v for k, v in fft.items() if k not in dropped}
     # Single image_size, so samples/s is a common unit across every point and needs no
     # pixel normalisation -- an img128 sample is an img128 sample.
     def has(k, col):
@@ -183,16 +240,21 @@ def main() -> None:
         print(f"note: {len(only_speed)} img{args.image_size} configs have speed but no "
               f"{args.head} mIoU yet: {[(k[0], k[1]) for k in only_speed]}")
 
-    draw(keys, speed, miou, args, Path(args.out))
+    if fft:
+        print(f"fft overlay: {len(fft)} point(s) at {FFT_ARM} cost "
+              f"{[(k[0]) for k in sorted(fft)]}")
+    draw(keys, speed, miou, args, Path(args.out), fft=fft, fft_speed=fft_speed)
     if args.per_tile:
         stem = Path(args.out)
         for ts in sorted({k[1] for k in keys}):
             sub = [k for k in keys if k[1] == ts]
+            subf = {k: v for k, v in fft.items() if k[1] == ts}
             draw(sub, speed, miou, args,
-                 stem.with_name(f"{stem.stem}_tile{ts}{stem.suffix}"), tile_only=ts)
+                 stem.with_name(f"{stem.stem}_tile{ts}{stem.suffix}"), tile_only=ts,
+                 fft=subf, fft_speed=fft_speed)
 
 
-def _panel(ax, keys, speed, miou, args, xcol, tile_only) -> None:
+def _panel(ax, keys, speed, miou, args, xcol, tile_only, fft=None, fft_speed=None) -> None:
     """Draw one accuracy-vs-cost panel on `ax`, with `xcol` as the cost metric.
 
     xcol is either samples_per_s (higher is better, so the good corner is upper-right) or
@@ -227,9 +289,42 @@ def _panel(ax, keys, speed, miou, args, xcol, tile_only) -> None:
                     textcoords="offset points", fontsize=7.5, linespacing=1.25, ha=ha)
         placed.append((x, y))
 
+    # --- full-finetune overlay -------------------------------------------------------
+    # Same cost axis (finetuning does not change the inference forward), different marker,
+    # and its own hue since tile size is not a variable for these runs.
+    for k in sorted(fft or {}):
+        row = (fft_speed or {}).get(k, {})
+        raw = row.get(xcol, "")
+        if raw in ("", None):
+            continue
+        y, scale = fft[k]
+        img = k[2]
+        # Put every prep on a per-equal-ground cost. GMACs/sample scales UP by the number
+        # of small samples needed to cover one reference sample; samples/s scales DOWN by
+        # the same factor (you must push 4x as many 64px samples through per unit ground).
+        x = float(raw) * (1 / scale if speed_axis else scale)
+        ax.scatter(x, y, s=340, color=FFT_COLOR, marker=FFT_MARKER,
+                   edgecolor="black", linewidth=0.8, zorder=4,
+                   facecolor=FFT_COLOR if img == args.image_size else "none")
+        if img != args.image_size:   # hollow star = rescaled from the other prep
+            ax.scatter(x, y, s=340, facecolor="white", edgecolor=FFT_COLOR,
+                       marker=FFT_MARKER, linewidth=1.6, zorder=5)
+        n_hit = sum(1 for px_, py_ in placed
+                    if abs(np.log10(x) - np.log10(px_)) < 0.12 and abs(y - py_) < 0.012)
+        dx, ha = (9, "left") if n_hit == 0 else (-11, "right")
+        rate = (f"{x:.1f} samp/s" if x < 10 else f"{x:.0f} samp/s") if speed_axis else (
+            f"{x:,.0f} GMACs" if x >= 10 else f"{x:.1f} GMACs")
+        ax.annotate(f"FFT ps{k[0]}/img{img}\n{rate}", xy=(x, y), xytext=(dx, 5 - 20 * n_hit),
+                    textcoords="offset points", fontsize=7.5, linespacing=1.25, ha=ha,
+                    color=FFT_COLOR, fontweight="bold")
+        placed.append((x, y))
+
     # The Pareto front is only meaningful when several tile sizes compete. In a single-tile
     # view every point is on it by construction (mIoU falls monotonically with cost), so the
     # dashed line would just retrace the series and say nothing.
+    # NOTE: the front is computed over the frozen-LP points only. FFT is a different training
+    # regime (and a different modality set here), so folding it in would produce a front that
+    # no single sweep actually offers.
     front = ([] if tile_only is not None else
              pareto(pts if speed_axis else [(-a, b) for a, b in pts]))
     if len(front) > 1:
@@ -255,10 +350,22 @@ def _panel(ax, keys, speed, miou, args, xcol, tile_only) -> None:
                        label=f"patch {q}") for q in ps_seen]
     if len(front) > 1:
         h_ps.append(plt.Line2D([], [], ls="--", color="#333", label="Pareto front"))
+    if fft:
+        h_ts = h_ts + [plt.Line2D([], [], ls="", marker=FFT_MARKER, ms=13, color=FFT_COLOR,
+                                  label=f"full finetune ({FFT_ARM}, untiled)")]
+        if any(k[2] != args.image_size for k in fft):
+            h_ts.append(plt.Line2D([], [], ls="", marker=FFT_MARKER, ms=13, mfc="white",
+                                   mec=FFT_COLOR, mew=1.6,
+                                   label=f"  (hollow = img64 prep,\n   cost x4 to equal ground)"))
     if tile_only is None:
-        leg1 = ax.legend(handles=h_ts, fontsize=9, loc="lower left", title="tile size (hue)")
+        # lower-left overlaps the cheap/low-mIoU corner (the ps16 cluster), so park the
+        # hue legend outside the axes rather than on top of data.
+        leg1 = ax.legend(handles=h_ts, fontsize=9, loc="upper left",
+                         bbox_to_anchor=(1.01, 0.62), borderaxespad=0,
+                         title="tile size (hue) / regime")
         ax.add_artist(leg1)
-    ax.legend(handles=h_ps, fontsize=9, loc="upper right", title="patch size (shape)")
+    ax.legend(handles=h_ps, fontsize=9, loc="upper left", bbox_to_anchor=(1.01, 1.0),
+              borderaxespad=0, title="patch size (shape)")
 
 
 def has_gmacs(keys, speed) -> bool:
@@ -267,7 +374,7 @@ def has_gmacs(keys, speed) -> bool:
         speed[k].get("gmacs_per_sample") not in ("", None) for k in keys)
 
 
-def draw(keys, speed, miou, args, out_path, tile_only=None) -> None:
+def draw(keys, speed, miou, args, out_path, tile_only=None, fft=None, fft_speed=None) -> None:
     """Render the figure for `keys`.
 
     Per-tile views get BOTH cost axes side by side -- measured throughput on the left,
@@ -285,15 +392,18 @@ def draw(keys, speed, miou, args, out_path, tile_only=None) -> None:
                              squeeze=False)
     scope = (f"tile {tile_only}" if tile_only is not None else "all tile sizes")
     ep = f", {args.epochs} ep" if args.epochs else ""
+    reg = (f"\ncircles/diamonds = frozen LP (S2)   stars = full finetune ({FFT_ARM}, 64 ep) "
+           f"-- FFT costs more here because of the added S1 tokens, not the finetuning"
+           if fft else "")
     fig.suptitle(f"PASTIS {args.head} mIoU vs OlmoEarth extraction cost "
-                 f"(S2, OlmoEarth-base, image_size={args.image_size}, {scope}{ep})",
+                 f"(OlmoEarth-base, image_size={args.image_size}, {scope}{ep}){reg}",
                  fontsize=13, fontweight="bold")
 
     if both:
-        _panel(axes[0][0], keys, speed, miou, args, "samples_per_s", tile_only)
-        _panel(axes[0][1], keys, speed, miou, args, "gmacs_per_sample", tile_only)
+        _panel(axes[0][0], keys, speed, miou, args, "samples_per_s", tile_only, fft, fft_speed)
+        _panel(axes[0][1], keys, speed, miou, args, "gmacs_per_sample", tile_only, fft, fft_speed)
     else:
-        _panel(axes[0][0], keys, speed, miou, args, args.x, tile_only)
+        _panel(axes[0][0], keys, speed, miou, args, args.x, tile_only, fft, fft_speed)
 
     fig.tight_layout(rect=[0, 0, 1, 0.92])
     out_path.parent.mkdir(parents=True, exist_ok=True)
