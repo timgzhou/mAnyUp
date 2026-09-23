@@ -55,7 +55,7 @@ from exp.upsamplers.common import (
 )
 
 # ----- locate the cloned AnyUp repo and import its model + loss (reuse, don't reimplement) -----
-DEFAULT_ANYUP_REPO = "/scratch/timz/rs-change-detection/third_party/anyup"
+DEFAULT_ANYUP_REPO = "/scratch/timz/mAnyUp/third_party/anyup"
 
 
 def _import_anyup(repo: str, arch: str = "anyup"):

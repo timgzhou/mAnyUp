@@ -46,7 +46,7 @@ CSV_COLUMNS = ["modality", "guidance_bands", "ckpt", "lr_patch", "lr_grid", "out
 
 def load_upsampler(path: str, device):
     """Rebuild the checkpoint's architecture and load it, mirroring CachedManyUp.__init__."""
-    sys.path.insert(0, "/scratch/timz/rs-change-detection/third_party/anyup")
+    sys.path.insert(0, "/scratch/timz/mAnyUp/third_party/anyup")
     from anyup.model import AnyUp
     ck = torch.load(path, map_location="cpu", weights_only=False)
     arch = ck.get("arch", "anyup")

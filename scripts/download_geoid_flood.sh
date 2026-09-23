@@ -12,7 +12,7 @@
 # shell already using it (seen as half-written pip/torch files). So we just load the
 # python module and use the user-site huggingface_hub.
 set -e
-cd /scratch/timz/rs-change-detection
+cd /scratch/timz/mAnyUp
 module load python/3.12 scipy-stack >/dev/null 2>&1
 export HF_HUB_DISABLE_XET=1
 export TQDM_DISABLE=1   # keep the log readable; progress bars spam megabytes

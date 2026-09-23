@@ -30,7 +30,7 @@ import xarray as xr
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
 
-BASE = "/scratch/timz/rs-change-detection/data/ImpactMesh-Flood/data"
+BASE = "/scratch/timz/mAnyUp/data/ImpactMesh-Flood/data"
 OUT_TMPL = "results/dataset_samples/impactmesh_sample{suffix}.png"
 
 # Fixed selection (see module docstring). Order is meaningful: original first, then

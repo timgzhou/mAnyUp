@@ -590,7 +590,7 @@ class CachedManyUp(nn.Module):
                  time_pool: str = "mean", native_out: bool = False):
         super().__init__()
         import sys
-        sys.path.insert(0, "/scratch/timz/rs-change-detection/third_party/anyup")
+        sys.path.insert(0, "/scratch/timz/mAnyUp/third_party/anyup")
         from anyup.model import AnyUp
 
         ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
@@ -803,7 +803,7 @@ class CachedTimAnyUp(nn.Module):
                  label_size: int = LABEL_SIZE, native_out: bool = False):
         super().__init__()
         import sys
-        sys.path.insert(0, "/scratch/timz/rs-change-detection/third_party/anyup")
+        sys.path.insert(0, "/scratch/timz/mAnyUp/third_party/anyup")
         from anyup.timAnyUp import TimAnyUp, topk_mask, blend
 
         ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)

@@ -48,7 +48,7 @@ def main():
     p.add_argument("--ks", default="64,256,512,1024,2048")
     p.add_argument("--features_root", default=str(FEATURES_ROOT))
     p.add_argument("--data_root", default=str(DATA_ROOT))
-    p.add_argument("--anyup_repo", default="/scratch/timz/rs-change-detection/third_party/anyup")
+    p.add_argument("--anyup_repo", default="/scratch/timz/mAnyUp/third_party/anyup")
     args = p.parse_args()
 
     A = _import_timanyup(args.anyup_repo)

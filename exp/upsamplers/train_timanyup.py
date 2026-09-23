@@ -53,7 +53,7 @@ from exp.upsamplers.common import (
 )
 from exp.upsamplers.data_timanyup import TriFeatureDataset, check_arms
 
-DEFAULT_ANYUP_REPO = "/scratch/timz/rs-change-detection/third_party/anyup"
+DEFAULT_ANYUP_REPO = "/scratch/timz/mAnyUp/third_party/anyup"
 
 
 def _import_timanyup(repo: str):

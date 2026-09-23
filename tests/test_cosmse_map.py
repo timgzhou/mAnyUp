@@ -11,7 +11,7 @@ failure. These tests make that loud instead.
 import sys
 import torch
 
-sys.path.insert(0, "/scratch/timz/rs-change-detection/third_party/anyup")
+sys.path.insert(0, "/scratch/timz/mAnyUp/third_party/anyup")
 from anyup.loss import Cosine_MSE, cosmse_map    # noqa: E402
 
 

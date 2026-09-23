@@ -13,8 +13,8 @@ import numpy as np
 import rasterio
 from rasterio.enums import Resampling
 
-BASE = "/scratch/timz/rs-change-detection/data/sen12flood"
-OUT = "/scratch/timz/rs-change-detection/sen12flood_sample.png"
+BASE = "/scratch/timz/mAnyUp/data/sen12flood"
+OUT = "/scratch/timz/mAnyUp/sen12flood_sample.png"
 
 SCENE = "0140"
 # (label, s2_date, s1_date)

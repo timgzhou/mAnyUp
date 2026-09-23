@@ -9,7 +9,7 @@ ordering, and gradient reaching the heads that should learn (and NOT the ones th
 import sys
 import torch
 
-sys.path.insert(0, "/scratch/timz/rs-change-detection/third_party/anyup")
+sys.path.insert(0, "/scratch/timz/mAnyUp/third_party/anyup")
 from anyup.timAnyUp import (TimAnyUp, QueryHead, TransformHead, topk_mask,   # noqa: E402
                             random_mask, blend, rank_normalize)
 
