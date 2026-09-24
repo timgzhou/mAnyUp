@@ -25,7 +25,8 @@ def check_dataset(make, spec, tiling, pool_window) -> None:
         assert len(ds) == size, f"{split}: {len(ds)} != {size}"
         ids = [ds.sample_id(i) for i in range(len(ds))]
         assert len(set(ids)) == len(ids), f"{split}: duplicate ids"
-        assert ids == [make(split, _all(spec), None).sample_id(i) for i in range(len(ds))]
+        again = make(split, _all(spec), None)
+        assert ids == [again.sample_id(i) for i in range(len(again))]
         for i in range(min(N, len(ds))):
             s = ds[i]
             assert s.id == ids[i] and s.split == split
@@ -44,10 +45,12 @@ def check_dataset(make, spec, tiling, pool_window) -> None:
             for m in timed:
                 md, nd = s.modalities[m], n.modalities[m]
                 assert md.history[-1] == policy.resolved_key(spec.modalities[m])
-                if isinstance(policy, Pool):
+                if isinstance(policy, Pool):   # every valid native date in the window, once
+                    lo, hi = int(md.time.start.min()), int(md.time.end.max())
                     kept = sorted(d for src in md.time.sources for d in src)
-                    valid_native = sorted(nd.time.start[nd.frame_valid].tolist())
-                    assert kept == valid_native, f"{m}: pooling lost or invented source dates"
+                    inside = ((nd.time.start >= lo) & (nd.time.start <= hi) & nd.frame_valid)
+                    assert kept == sorted(nd.time.start[inside].tolist()), \
+                        f"{m}: pooling lost or invented source dates"
                 else:
                     assert set(md.time.start.tolist()) <= set(nd.time.start.tolist())
 

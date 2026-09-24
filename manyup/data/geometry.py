@@ -3,6 +3,8 @@
 `transform` is the GDAL/rasterio affine (a, b, c, d, e, f): x = a*col + b*row + c,
 y = d*col + e*row + f, in `crs` units. A dataset without real georeferencing uses
 Geometry.unknown(): crs/transform are None rather than a placeholder that looks real.
+`approximate=True` marks a footprint known only roughly (e.g. derived from a reprojected
+bounding box): pixel positions WITHIN the raster are exact, absolute placement is not.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ class Geometry:
     crs: str | None          # e.g. "EPSG:2154"; None = location unknown
     transform: Affine | None
     shape: tuple[int, int]   # (H, W) in pixels
+    approximate: bool = False
 
     @staticmethod
     def unknown(shape: tuple[int, int]) -> "Geometry":
@@ -41,7 +44,7 @@ class Geometry:
             return Geometry.unknown((h, w))
         a, b, c, d, e, f = self.transform
         return Geometry(self.crs, (a, b, c + a * col + b * row, d, e, f + d * col + e * row),
-                        (h, w))
+                        (h, w), self.approximate)
 
     def rescale(self, shape: tuple[int, int]) -> "Geometry":
         """Same footprint on a (H', W') grid, e.g. a token grid or an upsampled map."""
@@ -51,4 +54,4 @@ class Geometry:
             return Geometry.unknown((h, w))
         a, b, c, d, e, f = self.transform
         sx, sy = W / w, H / h
-        return Geometry(self.crs, (a * sx, b * sy, c, d * sx, e * sy, f), (h, w))
+        return Geometry(self.crs, (a * sx, b * sy, c, d * sx, e * sy, f), (h, w), self.approximate)

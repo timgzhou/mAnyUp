@@ -53,6 +53,9 @@ class MTMMDataset(Dataset, ABC):
             raise ValueError(f"{spec.name}/{split}: duplicate sample ids")
         offsets = tiling.offsets(spec.native_shape) if tiling else [None]
         self._index = [(nid, off) for nid in natives for off in offsets]
+        # Tiles of one native sample are consecutive, so sequential access (e.g. feature
+        # extraction) reuses the loaded + temporally processed native sample.
+        self._last: tuple[str, MTMMSample] | None = None
 
     # --- subclass API -------------------------------------------------------------------
     @abstractmethod
@@ -78,11 +81,15 @@ class MTMMDataset(Dataset, ABC):
 
     def __getitem__(self, i: int) -> MTMMSample:
         nid, off = self._index[i]
-        s = self._load(nid, list(self.modalities))
-        if self.validate:
-            self._check(s, native=True)
-        for name, policy in self.modalities.items():
-            s.modalities[name] = policy(s.modalities[name], self.SPEC.modalities[name])
+        if self._last is not None and self._last[0] == nid:
+            s = self._last[1]
+        else:
+            s = self._load(nid, list(self.modalities))
+            if self.validate:
+                self._check(s, native=True)
+            for name, policy in self.modalities.items():
+                s.modalities[name] = policy(s.modalities[name], self.SPEC.modalities[name])
+            self._last = (nid, s)
         if off is not None:
             s = self._crop(s, *off)
         if self.validate:
@@ -90,15 +97,15 @@ class MTMMDataset(Dataset, ABC):
         return s
 
     def _crop(self, s: MTMMSample, row: int, col: int) -> MTMMSample:
-        t = self.tiling.size
+        t, mods = self.tiling.size, {}
         for name, md in s.modalities.items():
             if md.geometry.shape != self.SPEC.native_shape:
                 raise NotImplementedError(f"{name}: tiling across different pixel grids "
                                           f"({md.geometry.shape} vs {self.SPEC.native_shape})")
-            s.modalities[name] = md.crop(row, col, t, t)
+            mods[name] = md.crop(row, col, t, t)   # new object; the cached native stays whole
         target = None if s.target is None else s.target[row:row + t, col:col + t]
         tg = None if s.target_geometry is None else s.target_geometry.crop(row, col, t, t)
-        return MTMMSample(Tiling.tile_id(s.id, row, col), s.split, s.modalities, target, tg,
+        return MTMMSample(Tiling.tile_id(s.id, row, col), s.split, mods, target, tg,
                           dict(s.meta))
 
     # --- validation ---------------------------------------------------------------------
