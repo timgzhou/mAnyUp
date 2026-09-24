@@ -27,3 +27,7 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["manyup*", "exp*", "third_party*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -12,7 +12,10 @@ on three datasets:
 ## Layout
 
 ```
-manyup/                   the upsamplers: mAnyUp, timAnyUp, loss
+manyup/                   the library
+  data/                   MTMM data layer: specs, samples, temporal policies, MTMMDataset base
+  encoders/ upsamplers/   base classes (Encoder, FeatureUpsampler)
+  mAnyUp.py timAnyUp.py   the upsamplers (+ loss.py)
 exp/                      experiments, run as `python -m exp.<pkg>.<module>`
   common/                 run config, paths (data / feature caches), OlmoEarth import shims
   pastis/                 prepare -> extract features -> linear probe / fine-tune -> visualize
@@ -23,7 +26,7 @@ exp/                      experiments, run as `python -m exp.<pkg>.<module>`
   viz/                    results plots
 third_party/              vendored upstream code: anyup (wimmerth/anyup), utae (utae-paps)
 scripts/slurm/            run.sh (generic launcher) + multi-step pipelines
-tests/                    unit tests for the upsampler building blocks
+tests/                    pytest suite (data-layer conformance + upsampler building blocks)
 results/<dataset>/        CSVs, tracked; figures, untracked
 dataset_visualization/    dataset sample figures (untracked)
 docs/RUNBOOK.md           the command behind every experiment
@@ -51,6 +54,5 @@ See [docs/RUNBOOK.md](docs/RUNBOOK.md) for every experiment.
 ## Tests
 
 ```shell
-python tests/test_timanyup.py
-python tests/test_cosmse_map.py
+python -m pytest -q
 ```
