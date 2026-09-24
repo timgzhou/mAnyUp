@@ -6,6 +6,8 @@ one (T, gH, gW, D) fp16 tensor per sample:
     <out_root>/<cfg>/pastis_r_<split>/ids.txt      the sample id of every idx, in order
     <out_root>/<cfg>/pastis_r_<split>/frame_valid.pt   (N, T) bool: step t has data (empty
                                                    months are False; their features are 0)
+    <out_root>/<cfg>/pastis_r_<split>/t_start.pt, t_end.pt  (N, T) int64 days since 1970: the
+                                                   dates each feature step covers
     <out_root>/<cfg>/meta.json                     everything that produced the cache
 
 --temporal picks how each modality's time series is sampled (see manyup.data.temporal):
@@ -66,17 +68,19 @@ def extract_split(encoder, ds, out_dir: Path, args, mode: str) -> int:
     n = min(args.limit, len(ds)) if args.limit > 0 else len(ds)
     (split_dir / "ids.txt").write_text("".join(ds.sample_id(i) + "\n" for i in range(len(ds))))
     done = all((split_dir / f"{i}.pt").exists() for i in range(n))
-    if done and (split_dir / "frame_valid.pt").exists():
+    if done and all((split_dir / f).exists() for f in ("frame_valid.pt", "t_start.pt", "t_end.pt")):
         print(f"[{ds.split}] {n} files already present, skipping.")
         return n
     subset = torch.utils.data.Subset(ds, range(n))
     loader = DataLoader(subset, batch_size=args.batch_size, shuffle=False,
                         num_workers=args.num_workers, collate_fn=mtmm_collate)
-    idx, valid = 0, []
+    idx, valid, t_start, t_end = 0, [], [], []
     mapped = list(encoder.inputs.modality_map)
     for batch in tqdm(loader, desc=f"extract {ds.split}"):
         B = len(batch.ids)
         valid.append(torch.stack([batch.modalities[m].frame_valid for m in mapped]).any(0))
+        t_start.append(batch.modalities[mapped[0]].t_start)     # aligned across mapped mods
+        t_end.append(batch.modalities[mapped[0]].t_end)
         if all((split_dir / f"{idx + b}.pt").exists() for b in range(B)):   # resume
             idx += B
             continue
@@ -85,6 +89,8 @@ def extract_split(encoder, ds, out_dir: Path, args, mode: str) -> int:
             torch.save(feats[b].clone(), split_dir / f"{idx + b}.pt")
         idx += B
     torch.save(torch.cat(valid), split_dir / "frame_valid.pt")
+    torch.save(torch.cat(t_start), split_dir / "t_start.pt")
+    torch.save(torch.cat(t_end), split_dir / "t_end.pt")
     return n
 
 
@@ -155,6 +161,7 @@ def main() -> None:
                           for m, pol in first.modalities.items()},
         "dataset_key": first.key, "impute": inputs.impute, "attention": args.attention,
         "temporal_mode": args.temporal_mode,
+        "time_precision": "month" if args.temporal == "monthly" else "month (legacy: first 12 non-empty)",
         "cross_timestep_attention": args.temporal_mode == "series",
         "pooling": "mean over bandsets, then over the modalities present",
         "timesteps": probe.shape[0], "embed_dim": probe.shape[-1], "dtype": "float16",
