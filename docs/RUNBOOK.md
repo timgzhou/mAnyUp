@@ -15,7 +15,7 @@ Only four jobs have their own launcher, because they chain several steps:
 `scripts/slurm/pastis/extract_chain.sh` and `scripts/slurm/upsamplers/lp_timanyup.sh`.
 The one-off sweep launchers these replace are kept at git tag `pre-cleanup`.
 
-Paths: data under `data/`, feature caches under `exp.common.paths.FEATURES` (project
+Paths: data under `data/`, results under `results/<dataset>/`, feature caches under `exp.common.paths.FEATURES` (project
 space, override with `$MANYUP_FEATURES`), checkpoints under `checkpoints/`, CSVs under
 `results/`.
 
@@ -91,7 +91,8 @@ python -u -m exp.pastis.make_rs_video --patches 20013 --gif   # -> dataset_visua
 ## Upsamplers: mAnyUp / timAnyUp / UPA
 
 Code: `manyup/` (models, loss) and `exp/upsamplers/` (training, evals) · Results:
-`results/upsamplers/`, plus rows in `results/pastis/lp_olmoearth_pastis.csv`
+`results/pastis/` (`upsampler_pa2pa.csv`, rows in `lp_olmoearth_pastis.csv`) and
+`results/geoidflood/cloud_upsample/`
 
 ```shell
 # mAnyUp: LR feature cache -> HR feature cache  (ckpts -> checkpoints/manyup/<lr>__to__<hr>/)
@@ -140,13 +141,13 @@ any cloud. So this fixes a small subpopulation here. `s2l2a`/`cloudmask` come fr
 ## UTAE baseline (PASTIS)
 
 Code: `exp/utae/` (runner, early/late fusion) · Upstream model: `third_party/utae/` ·
-Results: `results/utae/`
+Results: `results/pastis/utae_pastis.csv`
 
 ```shell
 sbatch -J utae --time=12:00:00 scripts/slurm/run.sh exp.utae.run_pastis --set modalities=S2
 sbatch -J utae --time=12:00:00 scripts/slurm/run.sh exp.utae.run_pastis --set modalities=S2,S1A fusion=late
 python -u -m exp.utae.run_pastis --set modalities=S2 epochs=2     # smoke
-python -u -m exp.utae.visualize                                   # -> results/utae/predictions/
+python -u -m exp.utae.visualize                                   # -> results/pastis/predictions/
 ```
 
 ---
@@ -213,7 +214,7 @@ Notes:
 
 ```shell
 sbatch -J bench --time=3:00:00 scripts/slurm/run.sh exp.bench.olmo_throughput \
-    --arms s2 --image_size 64 --out results/bench/olmoearth_ps-tile_speed_s2_img64.csv
+    --arms s2 --image_size 64 --out results/pastis/bench/olmoearth_ps-tile_speed_s2_img64.csv
 python -u -m exp.bench.manyup_throughput
 python -u -m exp.viz.plot_miou_vs_speed
 python -u -m exp.viz.visualize_lp_results

@@ -1,6 +1,6 @@
 """Grouped bars: lr_bilinear vs. UPA vs. UPMA vs. AnyUp, per patch size (PASTIS, OlmoEarth base).
 
-Reads results/upsamplers/upsampler_pa2pa.csv -- written by exp/upsamplers/eval_pa2pa.py, which
+Reads results/pastis/upsampler_pa2pa.csv -- written by exp/upsamplers/eval_pa2pa.py, which
 is a DIFFERENT protocol from the lp_* sweeps in results/pastis/lp_olmoearth_pastis.csv: one
 pa2pa head is trained on the low-res features, then each upsampler is swapped in at eval time.
 So the honest within-figure baseline is that run's own lr_bilinear control, not lp_pa2px.
@@ -35,7 +35,7 @@ import matplotlib.pyplot as plt
 
 from exp.viz.plot_lp_patchsize import RESULTS_CSV as LP_CSV, load_rows, pick
 
-UPS_CSV = "results/upsamplers/upsampler_pa2pa.csv"
+UPS_CSV = "results/pastis/upsampler_pa2pa.csv"
 
 # Ordered coarse -> fine, matching the other patch-size figures. Only these two configs have
 # been run through eval_pa2pa.py.

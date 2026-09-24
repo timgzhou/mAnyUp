@@ -491,7 +491,7 @@ def main():
     p.add_argument("--guide_bands", default="surface",
                    help="UPMA guidance bands: 'surface' (B02-B08A,B11,B12), 'all' (13 bands), "
                         "or a comma-separated index list e.g. '3,2,1,7'")
-    p.add_argument("--out", type=Path, default=Path("results/upsamplers/upa_anyup.png"))
+    p.add_argument("--out", type=Path, default=Path("results/pastis/feature_viz/upa_anyup.png"))
     args = p.parse_args()
 
     repo = args.repo

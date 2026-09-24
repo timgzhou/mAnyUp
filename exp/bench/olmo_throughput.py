@@ -27,7 +27,7 @@ configs (tile_size < 64) are charged for ALL their tiles, which is the honest co
 
 Runs in the OlmoEarth venv, on a GPU:
     source env_setup/env_olmo.sh
-    python -u -m exp.bench.olmo_throughput --out results/bench/olmo_throughput.csv
+    python -u -m exp.bench.olmo_throughput --out results/pastis/bench/olmo_throughput.csv
 """
 import os
 import sys
@@ -73,12 +73,12 @@ TUNER_TOKEN_BUDGET = 200_000
 # Found batch sizes are cached here keyed by (gpu, model, arm, patch, tile, image_size), so a
 # rerun on the same card skips the search entirely -- the probes are the slow part of this
 # benchmark (each one is a full encode, minutes at ps1). Delete the file to re-probe.
-BATCH_CACHE = Path("results/bench/max_batch_cache.json")
+BATCH_CACHE = Path("results/pastis/bench/max_batch_cache.json")
 
 
 # FLOPs depend only on the GRAPH SHAPE -- (arm, patch, tile, image_size) -- never on batch
 # size or GPU, so they are cached separately from batch sizes and are portable across cards.
-FLOP_CACHE = Path("results/bench/flops_cache.json")
+FLOP_CACHE = Path("results/pastis/bench/flops_cache.json")
 
 
 def _flop_key(model_size: str, arm: str, patch_size: int, tile: int, image_size: int) -> str:
@@ -395,7 +395,7 @@ def main() -> None:
                    help="back off this fraction from the max fitting batch (default 0.10)")
     p.add_argument("--warmup", type=int, default=3)
     p.add_argument("--iters", type=int, default=10)
-    p.add_argument("--out", default="results/bench/olmo_throughput.csv")
+    p.add_argument("--out", default="results/pastis/bench/olmo_throughput.csv")
     args = p.parse_args()
 
     arms = [a for a in args.arms.split(",") if a]

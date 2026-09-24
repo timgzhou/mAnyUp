@@ -36,7 +36,7 @@ from exp.utae.fusion import build_model
 NUM_CLASSES = 20
 IGNORE_INDEX = 19          # PASTIS void label
 ALLOWED_SATS = ("S2", "S1A", "S1D")
-RESULTS_CSV = "results/utae/utae_pastis.csv"
+RESULTS_CSV = "results/pastis/utae_pastis.csv"
 CSV_FIELDS = ["timestamp", "checkpoint", "modalities", "fusion",
               "test_miou", "test_overall_acc", "test_macro_acc", "test_macro_f1"]
 

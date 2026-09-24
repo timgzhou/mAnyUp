@@ -21,7 +21,7 @@ DUMMY inputs throughout (shaped exactly like PASTIS: 64x64 px guidance, D=768 fe
 no dataset/IO is in the loop -- this measures the upsampler alone.
 
     source env_setup/env_olmo.sh
-    python -u -m exp.bench.manyup_throughput --out results/bench/manyup_throughput.csv
+    python -u -m exp.bench.manyup_throughput --out results/pastis/bench/manyup_throughput.csv
 """
 import argparse
 import csv
@@ -142,7 +142,7 @@ def bench(model, proj, bands, lr_grid, out, device, args) -> dict | None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--out", default="results/bench/manyup_throughput.csv")
+    p.add_argument("--out", default="results/pastis/bench/manyup_throughput.csv")
     p.add_argument("--modalities", nargs="+", default=["s2", "s1", "s2s1"])
     p.add_argument("--lr_patches", nargs="+", type=int, default=[16, 8],
                    help="LR patch size of the checkpoint: 16 -> the '164' ckpt, 8 -> '84'")

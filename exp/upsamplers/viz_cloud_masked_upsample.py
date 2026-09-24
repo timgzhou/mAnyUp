@@ -346,7 +346,7 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--feat_pt", default=None,
                     help="optional cached OlmoEarth feature .pt to use instead of pooled S2")
-    ap.add_argument("--out_dir", default="results/upsamplers/cloud")
+    ap.add_argument("--out_dir", default="results/geoidflood/cloud_upsample")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"

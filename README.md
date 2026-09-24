@@ -24,7 +24,7 @@ exp/                      experiments, run as `python -m exp.<pkg>.<module>`
 third_party/              vendored upstream code: anyup (wimmerth/anyup), utae (utae-paps)
 scripts/slurm/            run.sh (generic launcher) + multi-step pipelines
 tests/                    unit tests for the upsampler building blocks
-results/                  CSVs, tracked; figures, untracked
+results/<dataset>/        CSVs, tracked; figures, untracked
 dataset_visualization/    dataset sample figures (untracked)
 docs/RUNBOOK.md           the command behind every experiment
 

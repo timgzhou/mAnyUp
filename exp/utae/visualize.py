@@ -4,7 +4,7 @@ Discovers every checkpoints/utae_*_best.pt, infers modalities + fusion from the
 filename, rebuilds the matching model, then for each:
   - saves a 3-panel figure (RGB | prediction | ground truth, with metrics overlay)
     for the first train (folds 1-3) and first test (fold 5) sample,
-  - evaluates on the full test set and appends a row to results/utae/utae_pastis.csv.
+  - evaluates on the full test set and appends a row to results/pastis/utae_pastis.csv.
 
 Runs in the base env (torch 2.12), NOT env_olmo:
     source env_setup/env_login.sh
@@ -30,7 +30,7 @@ from exp.utae import run_pastis as UP   # reuse evaluate / metrics / collate / c
 
 DATA_ROOT = "data/PASTIS-R"
 CKPT_GLOB = "checkpoints/utae_*_best.pt"
-OUT_DIR = "results/utae/predictions"
+OUT_DIR = "results/pastis/predictions"
 NUM_CLASSES = UP.NUM_CLASSES
 IGNORE_INDEX = UP.IGNORE_INDEX  # 19
 

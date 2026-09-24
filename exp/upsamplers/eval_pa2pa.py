@@ -72,7 +72,7 @@ from exp.upsamplers.upa_anyup import (UPA, UPMA, percentile_stretch, time_pool, 
                                      RGB_BANDS, SURFACE_BANDS)
 from exp.common.paths import FEATURES
 
-RESULTS_CSV = "results/upsamplers/upsampler_pa2pa.csv"
+RESULTS_CSV = "results/pastis/upsampler_pa2pa.csv"
 # eval_mode distinguishes the two protocols that share this file:
 #   frozen_shared -- one head trained on LR tokens, applied to every upsampler (the default)
 #   retrained     -- a fresh head trained on THAT method's own upsampled features (--retrain_head)

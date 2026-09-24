@@ -1,6 +1,6 @@
 """Visualize OlmoEarth feature-extraction throughput vs resolution and modality.
 
-Reads results/bench/olmo_throughput.csv (written by exp/bench/olmo_throughput.py) and
+Reads results/pastis/bench/olmo_throughput.csv (written by exp/bench/olmo_throughput.py) and
 draws the four things that decide whether a config is affordable:
 
   1. throughput vs tokens-per-tile, log-log, one line per modality arm. The slope IS the
@@ -26,10 +26,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-# The sbatch runner writes one CSV per modality arm (results/bench/olmo_throughput_<arm>.csv)
+# The sbatch runner writes one CSV per modality arm (results/pastis/bench/olmo_throughput_<arm>.csv)
 # so the three jobs never contend for a single file; a plain glob merges them back.
-CSV_GLOB = "results/bench/olmo_throughput*.csv"
-OUT = "results/bench/olmo_throughput.png"
+CSV_GLOB = "results/pastis/bench/olmo_throughput*.csv"
+OUT = "results/pastis/bench/olmo_throughput.png"
 
 # PASTIS sample side in px; a config with tile_size == IMAGE_SIZE is untiled (one encoder
 # call per sample). Must match exp/bench/olmo_throughput.IMAGE_SIZE.

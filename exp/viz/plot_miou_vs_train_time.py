@@ -12,7 +12,7 @@ The two regimes pay very different bills, so the total is assembled differently:
       gradients. total = the job's wall time, end to end.
 
 Reading extraction as part of LP's cost is the honest comparison: without it there is
-nothing to probe. Source numbers and their provenance live in results/bench/train_time.csv.
+nothing to probe. Source numbers and their provenance live in results/pastis/bench/train_time.csv.
 """
 import argparse
 import csv
@@ -23,8 +23,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-CSV = "results/bench/train_time.csv"
-OUT = "results/bench/miou_vs_train_time.png"
+CSV = "results/pastis/bench/train_time.csv"
+OUT = "results/pastis/bench/miou_vs_train_time.png"
 
 # Shape = patch size, matching plot_miou_vs_speed.py so the two figures read together.
 PS_MARKER = {1: "o", 2: "s", 4: "^", 8: "D", 16: "v"}

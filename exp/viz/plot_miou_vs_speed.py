@@ -14,7 +14,7 @@ whether the hardware ranking matches the arithmetic ranking -- where they disagr
 config is bound by memory traffic or kernel efficiency rather than by raw arithmetic.
 
 Inputs (produced by separate jobs, joined on the extraction config):
-  results/bench/olmoearth_ps-tile_speed_*.csv   exp/bench/olmo_throughput.py  (dummy input)
+  results/pastis/bench/olmoearth_ps-tile_speed_*.csv   exp/bench/olmo_throughput.py  (dummy input)
   results/pastis/lp_olmoearth_pastis.csv        exp/pastis/lp_cached_features.py (lp_pa2px)
 
 Speed is measured on DUMMY tensors and accuracy on real PASTIS, so the join key is the
@@ -39,10 +39,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-SPEED_GLOB = "results/bench/olmoearth_ps-tile_speed.csv"
+SPEED_GLOB = "results/pastis/bench/olmoearth_ps-tile_speed.csv"
 LP_CSV = "results/pastis/lp_olmoearth_pastis.csv"
 FFT_CSV = "results/pastis/fft_olmoearth_pastis.csv"
-OUT = "results/bench/miou_vs_throughput.png"
+OUT = "results/pastis/bench/miou_vs_throughput.png"
 IMAGE_SIZE = 128        # only this prep is plotted (--image_size to change)
 
 # Hue = tile size, shape = patch size.
@@ -72,7 +72,7 @@ def parse_features(name: str):
     return int(m.group(1)), int(m.group(2)), int(m.group(3) or 64)
 
 
-FLOP_CACHE = "results/bench/flops_cache.json"
+FLOP_CACHE = "results/pastis/bench/flops_cache.json"
 # base|s2|ps4|tile16|img128
 FLOP_KEY_RE = re.compile(r"^[^|]+\|([^|]+)\|ps(\d+)\|tile(\d+)\|img(\d+)$")
 
