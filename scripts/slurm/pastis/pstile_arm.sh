@@ -27,8 +27,8 @@
 #   KEEP_FEATURES (default auto)
 #
 # Examples:
-#   sbatch --export=ALL,PATCH_SIZE=8,TILE_SIZE=16 scripts/slurm/pastis/pstile_lp.sh
-#   sbatch --export=ALL,PATCH_SIZE=4,TILE_SIZE=128,IMAGE_SIZE=128,DATA_SPLITS=data/pastis128_olmoearth scripts/slurm/pastis/pstile_lp.sh
+#   sbatch --export=ALL,PATCH_SIZE=8,TILE_SIZE=16 scripts/slurm/pastis/pstile_arm.sh
+#   sbatch --export=ALL,PATCH_SIZE=4,TILE_SIZE=128,IMAGE_SIZE=128,DATA_SPLITS=data/pastis128_olmoearth scripts/slurm/pastis/pstile_arm.sh
 
 EMAIL="tiange.zhou@outlook.com"
 export TQDM_DISABLE=1

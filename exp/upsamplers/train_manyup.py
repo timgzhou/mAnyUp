@@ -248,13 +248,17 @@ def main():
                         "baked into the trained weights -- a checkpoint must be EVALUATED with "
                         "the same setting (exp/pastis/lp_cached_features.py --time_pool), so it is "
                         "recorded in the checkpoint filename and enforced at load time.")
-    p.add_argument("--out_dir", default="checkpoints/manyup")
+    p.add_argument("--out_dir", default=None,
+                   help="default: checkpoints/manyup/<lr_cfg>__to__<hr_cfg>, so parallel runs "
+                        "of different pairs never share a dir")
     p.add_argument("--ckpt_every", type=int, default=5, help="save every N epochs")
     p.add_argument("--sanity", action="store_true", help="one batch then exit")
     args = p.parse_args()
 
     AnyUp, Cosine_MSE = _import_anyup(args.anyup_repo, args.arch)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.out_dir is None:
+        args.out_dir = f"checkpoints/manyup/{args.lr_cfg}__to__{args.hr_cfg}"
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 

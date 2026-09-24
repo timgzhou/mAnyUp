@@ -313,7 +313,9 @@ def main():
     p.add_argument("--lr_min", type=float, default=1e-6)
     p.add_argument("--warmup_frac", type=float, default=0.05)
     p.add_argument("--stage_to_tmpdir", action="store_true")
-    p.add_argument("--out_dir", default="checkpoints/timanyup")
+    p.add_argument("--out_dir", default=None,
+                   help="default: checkpoints/timanyup/<lrhc>__k<k>__bs<bs>__q<query>__to__<hrhc>, "
+                        "so parallel runs of different arms/budgets never share a dir")
     p.add_argument("--ckpt_every", type=int, default=5)
     p.add_argument("--eval_batches", type=int, default=25,
                    help="test batches for the per-epoch held-out eval")
@@ -328,6 +330,9 @@ def main():
 
     A = _import_timanyup(args.anyup_repo)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.out_dir is None:
+        args.out_dir = (f"checkpoints/timanyup/{args.lrhc_cfg}__k{args.k}__bs{args.batch_size}"
+                        f"__q{args.query_input}__to__{args.hrhc_cfg}")
     out_dir = Path(args.out_dir); out_dir.mkdir(parents=True, exist_ok=True)
 
     # Shapes cannot catch an arm mix-up (F_hrlc and F_hrhc are shape-identical), so validate

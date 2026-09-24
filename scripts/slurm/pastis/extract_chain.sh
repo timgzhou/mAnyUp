@@ -1,15 +1,16 @@
 #!/bin/bash
-#SBATCH --job-name=oe_ps1t128
+#SBATCH --job-name=extract_chain
 #SBATCH --account=aip-gpleiss
 #SBATCH --time=11:00:00
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
-#SBATCH --output=logs/pastis/oe_ps1t128_%j.out
+#SBATCH --output=logs/pastis/extract_chain_%j.out
 #SBATCH --mail-user=tiange.zhou@outlook.com
 #SBATCH --mail-type=END,FAIL
 
-# Finish oe_base_s2_ps1_tile128_img128, the one config that does not fit in a single job.
+# Extract a PASTIS feature cache too slow for one job's walltime (default: the original
+# case, oe_base_s2_ps1_tile128_img128).
 # ps1/tile128 is a 128x128 token grid (196,608 tokens in ONE attention call): it OOMs above
 # batch 1, and at batch 1 runs ~75 s/sample, so 2433 samples needs ~51 GPU-hours.
 #
@@ -18,7 +19,7 @@
 # exist (shuffle=False makes indices stable), so a successor resumes instead of restarting.
 # The chain stops when extraction completes, and the LAST job runs the LP probe.
 #
-#   sbatch scripts/slurm/pastis/pstile_resume_chain.sh
+#   sbatch scripts/slurm/pastis/extract_chain.sh
 
 EMAIL="tiange.zhou@outlook.com"
 export TQDM_DISABLE=1

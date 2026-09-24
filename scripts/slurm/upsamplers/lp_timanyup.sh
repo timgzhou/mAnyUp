@@ -18,7 +18,9 @@
 #   CKPTS     newline/space separated checkpoint paths (default: every *.pth under CKPT_ROOT).
 #             One checkpoint per job is the intended use: a full 32-epoch LP is ~66 min per
 #             mode, so a 12-run sweep in ONE job would exceed the time limit. Submit one job
-#             per checkpoint (see submit_lp_timanyup_all.sh) and let them run in parallel.
+#             per checkpoint and let them run in parallel:
+#               for CK in $(find checkpoints/timanyup -mindepth 2 -name '*.pth'); do
+#                   sbatch --export=ALL,CKPTS="$CK" scripts/slurm/upsamplers/lp_timanyup.sh; done
 #   CKPT_ROOT root scanned when CKPTS is unset (default checkpoints/timanyup)
 #   MODES     probe modes to run (default "timanyup timanyup_t")
 #   EPOCHS    LP epochs (default 32, the lp_cached_features default)
