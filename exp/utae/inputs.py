@@ -1,9 +1,11 @@
-"""Pack an MTMMBatch from PastisDataset into what UTAE (third_party/utae) takes.
+"""Pack an MTMMBatch into what UTAE (third_party/utae) takes.
 
-UTAE reads, per satellite, data (B, T, C, H, W) and dates (B, T) in days since 2018-09-01,
-and treats an all-zero frame as padding. Normalization follows the official PASTIS loader:
-channel mean/std from NORM_<sat>_patch.json, averaged over the folds of the split being
-loaded (so train, val and test each use their own folds' statistics).
+UTAE reads, per satellite, data (B, T, C, H, W) and dates (B, T) in days since a reference
+day, and treats an all-zero frame as padding. Defaults are the official PASTIS loader's:
+dates since 2018-09-01, channel mean/std from NORM_<sat>_patch.json averaged over the folds
+of the split being loaded (so train, val and test each use their own folds' statistics).
+Other datasets pass `norm` (per-modality channel mean/std) and `reference_day` (None = each
+sample's first frame, for datasets whose samples span different years).
 """
 from __future__ import annotations
 
@@ -21,9 +23,15 @@ REFERENCE_DAY = to_days(dt.date(2018, 9, 1))
 
 
 class UTAEInput:
-    def __init__(self, sats: list[str], split: str, root: str | Path = DEFAULT_ROOT):
-        self.sats = list(sats)
+    def __init__(self, sats: list[str], split: str, root: str | Path = DEFAULT_ROOT,
+                 norm: dict | None = None, reference_day: int | None = REFERENCE_DAY):
+        self.sats, self.reference_day = list(sats), reference_day
         self.norm = {}
+        if norm is not None:
+            for s in self.sats:
+                mean, std = (torch.tensor(v, dtype=torch.float32) for v in norm[s])
+                self.norm[s] = (mean.view(1, 1, -1, 1, 1), std.view(1, 1, -1, 1, 1))
+            return
         for s in self.sats:
             vals = json.loads((Path(root) / f"NORM_{s}_patch.json").read_text())
             folds = FOLDS[split]
@@ -41,5 +49,6 @@ class UTAEInput:
             invalid = ~mb.frame_valid
             x[invalid] = 0.0                       # UTAE's padding signal: an all-zero frame
             data[s] = x
-            dates[s] = torch.where(invalid, 0, mb.t_start - REFERENCE_DAY)
+            ref = (mb.t_start[:, :1] if self.reference_day is None else self.reference_day)
+            dates[s] = torch.where(invalid, 0, mb.t_start - ref)
         return data, dates

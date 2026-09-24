@@ -33,6 +33,7 @@ import torch
 from manyup.data.dataset import MTMMDataset
 from manyup.data.geometry import Geometry
 from manyup.data.sample import ModalityData, MTMMSample
+from manyup.data.spatial import Tiling
 from manyup.data.spec import DatasetSpec, ModalitySpec, TargetSpec
 from manyup.data.temporal import TemporalPolicy
 from manyup.data.time import TimeAxis, month_bounds
@@ -99,14 +100,15 @@ class BiomasstersDataset(MTMMDataset):
                "GeoBench-v2 splits", "S2 cloud probability (0-255) as aux layer cloud_prob"))
 
     def __init__(self, split: str, modalities: dict[str, TemporalPolicy],
-                 validate: bool = True, root: str | Path = DEFAULT_ROOT):
+                 tiling: Tiling | None = None, validate: bool = True,
+                 root: str | Path = DEFAULT_ROOT):
         self.root = Path(root)
         path = self.root / INDEX_NAME
         if not path.exists():
             raise FileNotFoundError(f"{path} missing; run python -m "
                                     "manyup.data.datasets.biomassters --build_index")
         self._pos = {chip: pos for chip, pos in json.loads(path.read_text())["splits"][split]}
-        super().__init__(split, modalities, tiling=None, validate=validate)
+        super().__init__(split, modalities, tiling, validate)
 
     @cached_property
     def _shards(self):

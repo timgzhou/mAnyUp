@@ -150,6 +150,38 @@ any cloud. So this fixes a small subpopulation here. `s2l2a`/`cloudmask` come fr
 
 ---
 
+## Task sweep: OlmoEarth LP / FFT and UTAE on PASTIS, BioMassters, GEOID-Flood
+
+Code: `exp/common/tasks.py` (what each task trains on, its head, loss and metrics),
+`exp/common/heads.py`, `exp/olmoearth/{train,extract}.py`, `exp/utae/train.py` ·
+Launcher: `scripts/slurm/sweep.sh` · Results: `results/<task>/{olmoearth,utae}.csv`
+
+| task | OlmoEarth input | head | target / primary metric |
+|---|---|---|---|
+| pastis | S2 + S1A monthly mean (Oct 2018 - Sep 2019), 64 px tiles | time mean -> pa2px | 19 classes / mIoU |
+| biomassters | S1 asc + S2, 12 month slots, 64 px tiles of 256 px chips | time mean -> pa2px | AGBM t/ha / RMSE |
+| geoidflood | S1 pre + post (dB), 64 px flood chips | post - pre -> pa2px | 3 classes / mIoU(background, flood) |
+
+Per task: temporal_mode {series, per_timestep} x (patch, tile) {4/4, 4/64, 16/64} x {LP, FFT}
+x lr {1e-3, 1e-4, 3e-5}. An LP job trains all three learning rates on one frozen forward pass;
+FFT follows OlmoEarth's protocol (backbone frozen for the first 20% of epochs, then lr x 0.1).
+
+```shell
+bash scripts/slurm/sweep.sh pastis              # 6 LP + 18 FFT + 3 UTAE jobs; DRY=1 prints them
+bash scripts/slurm/sweep.sh biomassters olmoearth
+# one run by hand; --limit_batches N for a smoke test (-> results/<task>/*_smoke.csv)
+python -u -m exp.olmoearth.train --task geoidflood --temporal_mode series --patch_size 4 \
+    --tile_size 64 --mode lp --lrs 1e-3,1e-4,3e-5 --epochs 10
+python -u -m exp.utae.train --task biomassters --lr 1e-3 --epochs 50
+# frozen-feature caches (per_timestep: for upsamplers; reduced: only what the head reads),
+# then LP from the cache
+python -u -m exp.olmoearth.extract --task pastis --temporal_mode series --patch_size 4 \
+    --tile_size 64 --store per_timestep
+python -u -m exp.olmoearth.train ... --mode lp --from_cache per_timestep
+```
+
+---
+
 ## UTAE baseline (PASTIS)
 
 Code: `exp/utae/` (runner, early/late fusion) · Upstream model: `third_party/utae/` ·

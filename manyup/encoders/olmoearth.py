@@ -168,13 +168,8 @@ class OlmoEarthEncoder(Encoder):
     # --- encoding -------------------------------------------------------------------------
     @torch.no_grad()
     def encode(self, batch: MTMMBatch, temporal_mode: str) -> FeatureSeries:
-        if temporal_mode not in self.TEMPORAL_MODES:
-            raise ValueError(f"temporal_mode {temporal_mode!r} not in {self.TEMPORAL_MODES}")
         sample, frame_valid = self.inputs.to_olmoearth(batch)
-        device = next(self.encoder.parameters()).device
-        sample = _to_device(sample, device, torch.bfloat16 if self.amp else torch.float32)
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=self.amp):
-            tokens = self._encode_tiled(sample, temporal_mode)                  # (B,T,gH,gW,D)
+        tokens = self(sample, temporal_mode)                                    # (B,T,gH,gW,D)
         ref = batch.modalities[next(iter(self.inputs.modality_map))]
         gH, gW = tokens.shape[2:4]
         return FeatureSeries(
@@ -187,6 +182,17 @@ class OlmoEarthEncoder(Encoder):
                         "modalities": {m: batch.modalities[m].history
                                        for m in self.inputs.modality_map},
                         "impute": self.inputs.impute})
+
+    def forward(self, sample: MaskedOlmoEarthSample, temporal_mode: str) -> torch.Tensor:
+        """A packed sample (OlmoEarthInput.to_olmoearth, e.g. in DataLoader workers) ->
+        tokens (B, T, gH, gW, D), with gradients: the fine-tuning entry point. `encode` is
+        the no-grad one that takes an MTMMBatch and returns a FeatureSeries."""
+        if temporal_mode not in self.TEMPORAL_MODES:
+            raise ValueError(f"temporal_mode {temporal_mode!r} not in {self.TEMPORAL_MODES}")
+        device = next(self.encoder.parameters()).device
+        sample = _to_device(sample, device, torch.bfloat16 if self.amp else torch.float32)
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=self.amp):
+            return self._encode_tiled(sample, temporal_mode)
 
     def _encode_tiled(self, sample: MaskedOlmoEarthSample, temporal_mode: str) -> torch.Tensor:
         B, Hs = sample.timestamps.shape[0], _spatial_size(sample)
