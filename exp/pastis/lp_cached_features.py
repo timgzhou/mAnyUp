@@ -137,6 +137,27 @@ def _load_s2_guidance(split: str, idx: int, tpool: str = "mean",
 
 
 # ----------------------------- data -----------------------------
+def _frame_valid(features_dir: Path, split_dir: Path, ids: list[int]) -> torch.Tensor:
+    """(n, T) bool from the cache's frame_valid.pt. Caches without it predate the data layer:
+    they are all legacy OlmoEarth-prep caches, where every timestep has data."""
+    f = split_dir / "frame_valid.pt"
+    if f.exists():
+        return torch.load(f)[torch.tensor(ids)]
+    meta = json.loads((features_dir / "meta.json").read_text())
+    if meta.get("temporal", "legacy") != "legacy":
+        raise FileNotFoundError(f"{f} missing for a {meta['temporal']} cache; re-extract")
+    T = torch.load(split_dir / "0.pt", map_location="cpu").shape[0]
+    return torch.ones(len(ids), T, dtype=torch.bool)
+
+
+def _time_mean(feat: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    """(T, gH, gW, D) -> (1, gH, gW, D) mean over the valid timesteps only (fp32)."""
+    f = feat.float()
+    if valid.all():
+        return f.mean(dim=0, keepdim=True)
+    return f[valid].mean(dim=0, keepdim=True)
+
+
 class CachedFeatureDataset(torch.utils.data.Dataset):
     """Loads cached (T, gH, gW, D) features, the matching (64,64) label, and -- for AnyUp
     heads -- the RGB guidance image.
@@ -192,6 +213,11 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
             self.n = len(self._ids)
             self.labels = self.labels[torch.tensor(self._ids)]
 
+        self.frame_valid = _frame_valid(features_dir, self.feat_dir, self._ids)   # (n, T) bool
+        if not reduce_time and not self.frame_valid.all():
+            raise ValueError(f"{features_dir.name}/{split}: some timesteps have no data, and "
+                             "this head keeps the time axis, so it would see zero features; "
+                             "use a time-reducing head or a cache without missing steps")
         self._feats = None          # set iff preloaded
         self._rgb = None
         self._maybe_preload(max_ram_gb)
@@ -234,7 +260,8 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
         for i in tqdm(range(self.n), desc=f"preload {self.split}", leave=False):
             feat = torch.load(self.feat_dir / f"{self._ids[i]}.pt")   # (T,gH,gW,D) fp16
             # Mean over T in fp32 for accuracy, then store fp16; keep a singleton T dim.
-            self._feats[i] = feat.float().mean(dim=0, keepdim=True).half() if self.reduce_time else feat
+            self._feats[i] = (_time_mean(feat, self.frame_valid[i]).half()
+                              if self.reduce_time else feat)
             if rgb_buf is not None:
                 rgb_buf[i] = self._load_guidance(self._ids[i]).half()
         self._rgb = rgb_buf
@@ -289,7 +316,7 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
         # disk fallback
         feat = torch.load(self.feat_dir / f"{self._ids[idx]}.pt").float()   # (T,gH,gW,D)
         if self.reduce_time:
-            feat = feat.mean(dim=0, keepdim=True)                 # (1, gH, gW, D)
+            feat = _time_mean(feat, self.frame_valid[idx])        # (1, gH, gW, D)
         if self.guidance == "none":
             rgb = torch.empty(0)
         else:

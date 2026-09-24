@@ -4,6 +4,8 @@ Reads raw PASTIS-R through manyup's PastisDataset and encodes with OlmoEarthEnco
 one (T, gH, gW, D) fp16 tensor per sample:
     <out_root>/<cfg>/pastis_r_<split>/<idx>.pt     idx = dataset index (see ids.txt)
     <out_root>/<cfg>/pastis_r_<split>/ids.txt      the sample id of every idx, in order
+    <out_root>/<cfg>/pastis_r_<split>/frame_valid.pt   (N, T) bool: step t has data (empty
+                                                   months are False; their features are 0)
     <out_root>/<cfg>/meta.json                     everything that produced the cache
 
 --temporal picks how each modality's time series is sampled (see manyup.data.temporal):
@@ -76,15 +78,18 @@ def extract_split(encoder, ds, out_dir: Path, args, mode: str) -> int:
     split_dir.mkdir(parents=True, exist_ok=True)
     n = min(args.limit, len(ds)) if args.limit > 0 else len(ds)
     (split_dir / "ids.txt").write_text("".join(ds.sample_id(i) + "\n" for i in range(len(ds))))
-    if all((split_dir / f"{i}.pt").exists() for i in range(n)):
+    done = all((split_dir / f"{i}.pt").exists() for i in range(n))
+    if done and (split_dir / "frame_valid.pt").exists():
         print(f"[{ds.split}] {n} files already present, skipping.")
         return n
     subset = torch.utils.data.Subset(ds, range(n))
     loader = DataLoader(subset, batch_size=args.batch_size, shuffle=False,
                         num_workers=args.num_workers, collate_fn=mtmm_collate)
-    idx = 0
+    idx, valid = 0, []
+    mapped = list(encoder.inputs.modality_map)
     for batch in tqdm(loader, desc=f"extract {ds.split}"):
         B = len(batch.ids)
+        valid.append(torch.stack([batch.modalities[m].frame_valid for m in mapped]).any(0))
         if all((split_dir / f"{idx + b}.pt").exists() for b in range(B)):   # resume
             idx += B
             continue
@@ -92,6 +97,7 @@ def extract_split(encoder, ds, out_dir: Path, args, mode: str) -> int:
         for b in range(B):
             torch.save(feats[b].clone(), split_dir / f"{idx + b}.pt")
         idx += B
+    torch.save(torch.cat(valid), split_dir / "frame_valid.pt")
     return n
 
 
