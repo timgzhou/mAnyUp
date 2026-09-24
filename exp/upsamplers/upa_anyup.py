@@ -496,7 +496,7 @@ def main():
 
     repo = args.repo
     from exp.common import olmo_bootstrap
-    olmo_bootstrap.apply()   # HDF5/rasterio ABI before olmoearth imports
+    olmo_bootstrap.apply()   # before any olmoearth_pretrain.evals import
 
     data_splits = repo / "data" / "pastis_olmoearth"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -5,8 +5,8 @@ finetune harness (config YAML, AdamW, CE w/ ignore_index, per-epoch val eval,
 best-by-mIoU checkpoint, CSV log) but uses the official dataloader (full time series +
 dates) which UTAE needs.
 
-Runs in the base env (torch 2.12), NOT env_olmo:
-    source env_setup/env_login.sh        # or: module load ...; source env_setup/env.sh
+Run inside a GPU salloc:
+    source env_setup/env_olmo.sh
     python -u -m exp.utae.run_pastis --set modalities=S2
 
 Folds follow the PASTIS benchmark: train=1,2,3  val=4  test=5.
@@ -24,10 +24,8 @@ import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-# NOTE: we compute metrics from a confusion matrix in plain torch rather than using
-# torchmetrics. torchmetrics eagerly imports torchvision, and this env has torch 2.12
-# with a torchvision built for torch 2.7 (the only one in the cluster wheelhouse), so
-# importing it raises "torchvision::nms does not exist". UTAE needs neither.
+# Metrics come from a plain-torch confusion matrix (no torchmetrics), so the UTAE numbers
+# do not depend on that package's version.
 
 from third_party.utae.dataloader import PASTIS_Dataset
 from third_party.utae.collate import pad_collate

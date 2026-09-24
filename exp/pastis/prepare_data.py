@@ -32,7 +32,7 @@ import argparse
 
 # Bootstrap MUST run before any olmoearth_pretrain import (see exp/common/olmo_bootstrap.py).
 from exp.common import olmo_bootstrap  # type: ignore[import-not-found]
-olmo_bootstrap.apply()  # MUST run before any olmoearth_pretrain import
+olmo_bootstrap.apply()  # before any olmoearth_pretrain.evals import
 
 from olmoearth_pretrain.evals.datasets.pastis_processor import PASTISRProcessor  # noqa: E402
 

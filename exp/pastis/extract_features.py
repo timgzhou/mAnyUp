@@ -43,7 +43,7 @@ Temporal handling (--temporal_mode):
   encoding (flexi_vit uses timestamps[:, :, 1]); leaving it unsliced would encode every
   timestep as t=0's date.
 
-Runs in the OlmoEarth venv (torch 2.7.x), via salloc:
+Run inside a GPU salloc:
     source env_setup/env_olmo.sh
     python -u -m exp.pastis.extract_features --model_size base --patch_size 1 --tile_size 32
     python -u -m exp.pastis.extract_features --model_size base --patch_size 1 --tile_size 32 --temporal_mode single
@@ -51,8 +51,7 @@ Runs in the OlmoEarth venv (torch 2.7.x), via salloc:
 import os
 import sys
 
-# Bootstrap MUST run before any olmoearth_pretrain import (HDF5/rasterio ABI). Same as
-# exp/pastis/finetune_olmoearth.py.
+# Must run before any olmoearth_pretrain.evals import (see exp/common/olmo_bootstrap.py).
 from exp.common import olmo_bootstrap  # type: ignore[import-not-found]
 olmo_bootstrap.apply()
 
@@ -119,7 +118,6 @@ def make_loader(split: str, data_splits: str, modalities: list[str],
     ds = PASTISRDataset(
         path_to_splits=Path(data_splits),
         split=split,
-        partition="default",            # all labels, contiguous indices 0..N-1
         norm_stats_from_pretrained=True,
         input_modalities=modalities,
     )

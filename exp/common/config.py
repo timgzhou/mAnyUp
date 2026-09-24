@@ -18,18 +18,28 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, fields, asdict
-from typing import Literal, Optional
+from typing import Optional
 
 import yaml
 
-ModelSize = Literal["nano", "tiny", "base", "large"]
-
+# model_size -> olmoearth_pretrain ModelID member. A bare size is OlmoEarth v1, so every
+# existing cache/checkpoint/CSV name ("oe_base_...") still means v1. Later releases are keyed
+# <version>_<size> and that key lands in the names verbatim ("oe_v1_2_base_s2_ps4_tile64").
+# A new release = new entries here (the ModelID names are in olmoearth_pretrain/model_loader.py).
 MODEL_SIZE_TO_ID = {
     "nano": "OLMOEARTH_V1_NANO",
     "tiny": "OLMOEARTH_V1_TINY",
     "base": "OLMOEARTH_V1_BASE",
     "large": "OLMOEARTH_V1_LARGE",
+    "v1_1_nano": "OLMOEARTH_V1_1_NANO",
+    "v1_1_tiny": "OLMOEARTH_V1_1_TINY",
+    "v1_1_base": "OLMOEARTH_V1_1_BASE",
+    "v1_2_nano": "OLMOEARTH_V1_2_NANO",
+    "v1_2_tiny": "OLMOEARTH_V1_2_TINY",
+    "v1_2_small": "OLMOEARTH_V1_2_SMALL",
+    "v1_2_base": "OLMOEARTH_V1_2_BASE",
 }
+ModelSize = str  # a MODEL_SIZE_TO_ID key
 ALLOWED_MODALITIES = ("sentinel2_l2a", "sentinel1")
 # lp_tcat = lp, but the encoder's time axis is CONCATENATED into the probe input
 # (T*D) instead of mean-pooled away. Same backbone cost; a 12x wider linear head.

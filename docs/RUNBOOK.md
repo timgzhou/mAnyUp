@@ -15,6 +15,12 @@ Only four jobs have their own launcher, because they chain several steps:
 `scripts/slurm/pastis/extract_chain.sh` and `scripts/slurm/upsamplers/lp_timanyup.sh`.
 The one-off sweep launchers these replace are kept at git tag `pre-cleanup`.
 
+Models: `--model_size` (or `--set model_size=` for fine-tuning) picks the OlmoEarth
+checkpoint. A bare size (`nano`, `tiny`, `base`, `large`) is **v1**, so every existing cache,
+checkpoint and CSV row keeps its meaning. Newer releases are `<version>_<size>`: `v1_1_base`,
+`v1_2_small`, `v1_2_base`, ... (full list: `MODEL_SIZE_TO_ID` in `exp/common/config.py`).
+The key appears verbatim in cache names, e.g. `oe_v1_2_base_s2_ps4_tile64`.
+
 Paths: data under `data/`, results under `results/<dataset>/`, feature caches under `exp.common.paths.FEATURES` (project
 space, override with `$MANYUP_FEATURES`), checkpoints under `checkpoints/`, CSVs under
 `results/`.

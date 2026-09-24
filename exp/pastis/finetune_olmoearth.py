@@ -6,18 +6,16 @@ benchmark. The training loop is lifted from olmoearth_pretrain.evals.finetune.tr
 .run_finetune_eval, minus the olmo_core.Trainer / wandb wrapper (we only need the
 inner loop + the freeze-then-unfreeze warmup).
 
-Runs in the SEPARATE OlmoEarth venv (torch 2.7.x), not ./env:
+Run inside a GPU salloc:
     source env_setup/env_olmo.sh
     python -u -m exp.pastis.prepare_data   # one-time, builds data/pastis_olmoearth/
     python -u -m exp.pastis.finetune_olmoearth
 """
 import os
 import sys
-# Bootstrap MUST run before any olmoearth_pretrain import: it stubs hdf5plugin +
-# unused dataset/model siblings and loads h5py early to dodge the cluster HDF5/rasterio
-# ABI clash. See exp/common/olmo_bootstrap.py.
+# Must run before any olmoearth_pretrain.evals import (see exp/common/olmo_bootstrap.py).
 from exp.common import olmo_bootstrap  # type: ignore[import-not-found]
-olmo_bootstrap.apply()  # MUST run before any olmoearth_pretrain import
+olmo_bootstrap.apply()
 
 import math
 from pathlib import Path
@@ -33,8 +31,7 @@ from torch.utils.data import DataLoader
 
 # Load from the FULL package (not olmoearth_pretrain_minimal): the eval wrapper's
 # get_eval_wrapper dispatches on isinstance(encoder, FlexiVitBase), and only the full
-# package's encoder class matches it. The full package exposes OLMOEARTH_V1_BASE
-# (no V1_1 variant).
+# package's encoder class matches it.
 from olmoearth_pretrain.model_loader import ModelID, load_model_from_id
 from olmoearth_pretrain.evals.datasets.configs import DATASET_TO_CONFIG, TaskType
 from olmoearth_pretrain.evals.datasets.pastis_dataset import PASTISRDataset
@@ -48,7 +45,7 @@ from olmoearth_pretrain.evals.finetune.constants import (
     UNFREEZE_LR_FACTOR,
 )
 from olmoearth_pretrain.evals.eval_wrapper import get_eval_wrapper
-from olmoearth_pretrain.evals.metrics import segmentation_metrics
+from exp.common.metrics import segmentation_metrics
 from olmoearth_pretrain.evals.finetune.model import (
     BackboneWithHead,
     set_backbone_trainable,
@@ -56,6 +53,7 @@ from olmoearth_pretrain.evals.finetune.model import (
     to_device,
 )
 from olmoearth_pretrain.nn.flexi_vit import PoolingType
+from olmoearth_pretrain.nn.pooling import pool_unmasked_tokens
 
 from exp.common.config import Config, load_config, to_dict
 
@@ -70,8 +68,7 @@ INPUT_MODALITIES = ["sentinel2_l2a", "sentinel1"]
 POOLING_TYPE = PoolingType.MEAN          # evaluator_callback default
 EPOCHS = 64
 BATCH_SIZE = 32
-NUM_WORKERS = 0     # 0 avoids DataLoader-worker fork crashing on the h5py/HDF5 ABI;
-                    # PASTIS reads small .pt files so this isn't a bottleneck.
+NUM_WORKERS = 0     # PASTIS reads small .pt files, so workers buy little.
 LR = 1e-3
 SEED = 0
 # Head mode drives everything: "lp" | "anyup" | "anyup_t2" | "anyup_t1".
@@ -149,7 +146,7 @@ class _GuidancePASTIS(torch.utils.data.Dataset):
 
     def __init__(self, split: str, temporal: bool):
         self.ds = PASTISRDataset(
-            path_to_splits=Path(DATA_SPLITS), split=split, partition="default",
+            path_to_splits=Path(DATA_SPLITS), split=split,
             norm_stats_from_pretrained=True, input_modalities=INPUT_MODALITIES,
         )
         self.split = split
@@ -313,7 +310,7 @@ def pool_per_timestep(tam, t, pooling_type):
         mn = tam.get_masked_modality_name(m)
         repl[m] = getattr(tam, m)[:, :, :, t:t + 1]
         repl[mn] = getattr(tam, mn)[:, :, :, t:t + 1]
-    return tam._replace(**repl).pool_unmasked_tokens(pooling_type, spatial_pooling=True)
+    return pool_unmasked_tokens(tam._replace(**repl), pooling_type, spatial_pooling=True)
 
 
 class TimeConcatHead(nn.Module):
@@ -393,7 +390,6 @@ def make_loader(split: str, shuffle: bool) -> DataLoader:
     ds = PASTISRDataset(
         path_to_splits=Path(DATA_SPLITS),
         split=split,
-        partition="default",   # use all labels (no low-label-fraction subset)
         norm_stats_from_pretrained=True,
         input_modalities=INPUT_MODALITIES,
     )

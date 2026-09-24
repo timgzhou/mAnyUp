@@ -45,7 +45,7 @@ from tqdm import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
-from olmoearth_pretrain.evals.metrics import segmentation_metrics, _build_confusion_matrix
+from exp.common.metrics import segmentation_metrics, _build_confusion_matrix
 from exp.common.paths import FEATURES
 
 SCHEDULER_MIN_LR = 1e-6

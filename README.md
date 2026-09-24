@@ -37,9 +37,9 @@ data/ checkpoints/ logs/  gitignored; feature caches live in project space (exp/
 source env_setup/env_olmo.sh
 ```
 
-Builds the OlmoEarth venv: per job in `$SLURM_TMPDIR` under Slurm, in `./env_olmo`
-otherwise. Everything runs **from the repo root**, interactively or through the generic
-launcher:
+Builds the one venv everything uses: torch 2.9.1 + `olmoearth-pretrain` 0.1.2, on
+node-local disk (`$SLURM_TMPDIR`, else `$TMPDIR`), never inside the repo. Everything runs
+**from the repo root**, interactively or through the generic launcher:
 
 ```shell
 python -u -m exp.pastis.extract_features --patch_size 4 --tile_size 64

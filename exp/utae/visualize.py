@@ -6,8 +6,8 @@ filename, rebuilds the matching model, then for each:
     for the first train (folds 1-3) and first test (fold 5) sample,
   - evaluates on the full test set and appends a row to results/pastis/utae_pastis.csv.
 
-Runs in the base env (torch 2.12), NOT env_olmo:
-    source env_setup/env_login.sh
+Run inside a GPU salloc:
+    source env_setup/env_olmo.sh
     python -u -m exp.utae.visualize
 
 Note: UTAE works on full 128x128 patches, so these images are NOT the same tiles as

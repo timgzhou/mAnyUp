@@ -387,7 +387,7 @@ def main():
     fmod.DATA_SPLITS = str(args.data_splits)          # dataset guidance loaders read this global
     from exp.pastis.lp_cached_features import (CachedFeatureDataset, NUM_CLASSES,
                                        IGNORE_LABEL, LABEL_SIZE)
-    from olmoearth_pretrain.evals.metrics import segmentation_metrics
+    from exp.common.metrics import segmentation_metrics
     args.label_size = LABEL_SIZE
 
     if args.guide_bands == "surface":

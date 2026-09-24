@@ -32,7 +32,7 @@ Runs in the OlmoEarth venv, on a GPU:
 import os
 import sys
 
-# Bootstrap MUST run before any olmoearth_pretrain import (HDF5/rasterio ABI).
+# Must run before any olmoearth_pretrain.evals import (see exp/common/olmo_bootstrap.py).
 from exp.common import olmo_bootstrap  # type: ignore[import-not-found]
 olmo_bootstrap.apply()
 

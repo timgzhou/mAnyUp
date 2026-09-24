@@ -19,8 +19,7 @@ Runs in the OlmoEarth venv (for segmentation_metrics); via salloc or even CPU:
 import os
 import sys
 
-# Bootstrap before importing olmoearth_pretrain (only segmentation_metrics is needed; no
-# model is ever loaded here). Mirrors exp/pastis/finetune_olmoearth.py.
+# Must run before any olmoearth_pretrain.evals import (see exp/common/olmo_bootstrap.py).
 from exp.common import olmo_bootstrap  # type: ignore[import-not-found]
 olmo_bootstrap.apply()
 
@@ -40,7 +39,7 @@ from tqdm import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
-from olmoearth_pretrain.evals.metrics import segmentation_metrics
+from exp.common.metrics import segmentation_metrics
 
 # AnyUp upsample+probe and the RGB-guidance loader are shared with the live finetune path
 # (single source of truth). Importing the module is cheap; AnyUp (torch.hub) only loads when

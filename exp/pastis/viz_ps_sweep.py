@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import cast
 
 from exp.common import olmo_bootstrap  # type: ignore[import-not-found]
-olmo_bootstrap.apply()  # MUST run before any olmoearth_pretrain import
+olmo_bootstrap.apply()  # before any olmoearth_pretrain.evals import
 
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
@@ -58,7 +58,9 @@ QUAD_SLICE = {"TL": (slice(0, 64), slice(0, 64)),   "TR": (slice(0, 64), slice(6
 def infer_run(ckpt: str) -> dict:
     """Parse patch_size / image_size / model_size out of a run_name checkpoint."""
     name = os.path.basename(ckpt)
-    size = next((s for s in ("nano", "tiny", "base", "large") if f"_{s}_" in name), "base")
+    # longest key first, so "_v1_2_base_" is not read as v1 "_base_"
+    size = next((s for s in sorted(MODEL_SIZE_TO_ID, key=len, reverse=True) if f"_{s}_" in name),
+                "base")
     m = re.search(r"_p(\d+)[_.]", name)
     ps = int(m.group(1)) if m else 4
     # run_name appends _img<N> for non-64 preps (see exp/common/config.py).
@@ -102,7 +104,7 @@ def sample_batch(image_size: int, idx: int):
     """One test sample from the prep matching image_size, collated as the head expects."""
     if image_size not in _DS_CACHE:
         _DS_CACHE[image_size] = PASTISRDataset(
-            path_to_splits=Path(SPLITS[image_size]), split="test", partition="default",
+            path_to_splits=Path(SPLITS[image_size]), split="test",
             norm_stats_from_pretrained=True,
             input_modalities=["sentinel2_l2a", "sentinel1"])
     return eval_collate_fn([_DS_CACHE[image_size][idx]])

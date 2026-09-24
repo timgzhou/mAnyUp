@@ -1,5 +1,4 @@
 {
-  "python.defaultInterpreterPath": "env/bin/python",
   "python.analysis.extraPaths": [
     "${workspaceFolder}/third_party/anyup"
   ]

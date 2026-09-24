@@ -10,9 +10,9 @@ requires-python = ">=3.10"
 # What exp/, manyup/ and the vendored UTAE import. On the cluster, env_setup/env_olmo.sh
 # installs these from the wheelhouse; this list is the portable record of the same thing.
 dependencies = [
-    "torch",
-    "torchvision",
-    "olmoearth-pretrain==0.1.0",
+    "torch==2.9.1",
+    "torchvision==0.24.1",
+    "olmoearth-pretrain[training]==0.1.2",   # [training] = olmo-core, needed by its evals
     "numpy",
     "einops",
     "matplotlib",

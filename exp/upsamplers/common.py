@@ -31,14 +31,14 @@ def guidance_mod_for(cfg: str) -> str:
     """Default guidance modality for a feature cfg name: MATCH the arm the features come
     from. Guiding S1 features with S2 imagery (or s2s1 features with S2 alone) is a
     cross-modal mismatch -- the guidance should carry the same modalities as the features."""
-    m = re.match(r"oe_[a-z]+_([a-z0-9]+)_ps", cfg)
+    m = re.match(r"oe_(?:v\d+_\d+_)?[a-z]+_([a-z0-9]+)_ps", cfg)
     mods = m.group(1) if m else "s2"
     return mods if mods in GUIDANCE_BANDS else "s2"
 
 
 def cfg_bits(cfg: str):
     """(modalities, patch_size) parsed out of an oe_<size>_<mods>_ps<N>_tile<M>[_...] cfg name."""
-    m = re.match(r"oe_[a-z]+_([a-z0-9]+)_ps(\d+)_", cfg)
+    m = re.match(r"oe_(?:v\d+_\d+_)?[a-z]+_([a-z0-9]+)_ps(\d+)_", cfg)
     return (m.group(1), m.group(2)) if m else ("mods", "?")
 
 

@@ -13,7 +13,7 @@ import os
 import re
 import sys
 from exp.common import olmo_bootstrap  # type: ignore[import-not-found]
-olmo_bootstrap.apply()  # MUST run before any olmoearth_pretrain import
+olmo_bootstrap.apply()  # before any olmoearth_pretrain.evals import
 
 from datetime import datetime  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -144,7 +144,7 @@ def _build_head(head, encoder, patch_size, task_config, device):
 
 def _first_sample_batch(split, head):
     """First sample (index 0) of `split`, in the batch form the head's forward expects."""
-    ds = PASTISRDataset(path_to_splits=Path(DATA_SPLITS), split=split, partition="default",
+    ds = PASTISRDataset(path_to_splits=Path(DATA_SPLITS), split=split,
                         norm_stats_from_pretrained=True, input_modalities=INPUT_MODALITIES)
     masked, label = eval_collate_fn([ds[0]])
     if not head.startswith("anyup"):
@@ -158,7 +158,9 @@ def _infer_run(ckpt_path):
     """Infer (head, model_size) from a run-name checkpoint, e.g.
     oe_pastis_base_s2s1_anyup_t2_lr3e-4_ep32_best.pt -> ("anyup_t2","base")."""
     name = os.path.basename(ckpt_path)
-    size = next((s for s in ("nano", "tiny", "base", "large") if f"_{s}_" in name), "base")
+    # longest key first, so "_v1_2_base_" is not read as v1 "_base_"
+    size = next((s for s in sorted(MODEL_SIZE_TO_ID, key=len, reverse=True) if f"_{s}_" in name),
+                "base")
     if "_anyup_t1_" in name:
         head = "anyup_t1"
     elif "_anyup_t2_" in name:

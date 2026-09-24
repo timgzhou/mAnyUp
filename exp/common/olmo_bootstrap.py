@@ -1,58 +1,46 @@
-"""Import bootstrap for using OlmoEarth's PASTIS eval pipeline on this cluster.
+"""Make olmoearth_pretrain.evals importable on this cluster. Call apply() FIRST:
 
-Two problems this works around, both from OlmoEarth's eval package eagerly importing
-every dataset/model wrapper (geobench, anysat, clay, ...) we never use for PASTIS:
-
-1. h5py/hdf5plugin/rasterio ABI clash on the cluster wheels:
-   - the real `hdf5plugin` (HDF5 1.14.2) breaks the cluster `h5py` (needs 1.14.6);
-   - importing `rasterio` before `h5py` loads an older libhdf5 that also breaks h5py.
-   Fix: shadow `hdf5plugin` with a no-op stub (PASTIS never uses HDF5) and import
-   `h5py` early, before anything pulls rasterio.
-
-2. uninstallable / unused deps (geobench, and many competitor-model wrappers).
-   Fix: pre-register lightweight stub modules in sys.modules so the eager package
-   __init__ sweeps succeed. get_eval_wrapper does isinstance() against the model
-   wrapper classes, so each stub exposes dummy classes (our model is matched by
-   FlexiVitBase/STBase, which are NOT stubbed, so dispatch still works).
-
-Call apply() FIRST, before any olmoearth_pretrain import:
     from exp.common import olmo_bootstrap
     olmo_bootstrap.apply()
+
+We use a few pieces of OlmoEarth's eval package (PASTIS dataset/processor, collate,
+BackboneWithHead, get_eval_wrapper), but its package __init__s eagerly import every
+competitor model wrapper (Clay, Satlas, Galileo, ...) and every eval dataset. Two of those
+cannot be satisfied here:
+
+  - evals.models: the competitor models' own packages (claymodel, satlaspretrain_models,
+    ...). get_eval_wrapper only isinstance()-checks against these classes, and our encoder
+    matches the FlexiVitBase branch first, so dummy classes are enough.
+  - evals.datasets.geobench_dataset: needs `geobench`, which has no installable release
+    compatible with this stack.
+
+Both are replaced with permissive modules that hand out a fresh dummy class for ANY name,
+so a newer olmoearth-pretrain that adds competitors or renames them still imports.
+
+Also restores torch's "file_system" sharing strategy, which pastis_dataset set at import
+in olmoearth-pretrain 0.1.0 and our DataLoader workers rely on (the default strategy exhausts
+/dev/shm on the cluster).
 """
 import sys
 import types
 
+import torch.multiprocessing
 
-def _stub_module(name: str, classes: list[str]) -> None:
-    mod = types.ModuleType(name)
-    for cls in classes:
-        setattr(mod, cls, type(cls, (), {}))
-    sys.modules[name] = mod
+_STUBBED = ("olmoearth_pretrain.evals.models",
+            "olmoearth_pretrain.evals.datasets.geobench_dataset")
+
+
+class _Permissive(types.ModuleType):
+    def __getattr__(self, name: str):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        cls = type(name, (), {})
+        setattr(self, name, cls)
+        return cls
 
 
 def apply() -> None:
-    """Install the import shims. Idempotent; call before importing olmoearth_pretrain."""
-    # --- (1) stub hdf5plugin, load h5py early ---
-    # The real hdf5plugin (HDF5 1.14.2) breaks the cluster h5py (needs 1.14.6); and
-    # importing rasterio before h5py loads an older libhdf5 that also breaks it.
-    # PASTIS never uses HDF5, so a no-op hdf5plugin stub + early h5py import is safe.
-    stub = types.ModuleType("hdf5plugin")
-    stub.FILTERS = {}
-    sys.modules.setdefault("hdf5plugin", stub)
-    import h5py  # noqa: F401  # load cluster HDF5 1.14.6 before rasterio can shadow it
-
-    # --- (2) stub unused eval model wrappers + datasets (heavy/uninstallable deps) ---
-    # get_eval_wrapper does isinstance() against these wrapper classes; stubbing them as
-    # unique dummies means our OlmoEarth encoder (FlexiVitBase, NOT stubbed) still matches.
-    _stub_module(
-        "olmoearth_pretrain.evals.models",
-        ["AnySat", "Clay", "Croma", "DINOv3", "GalileoWrapper", "Panopticon",
-         "PrestoWrapper", "PrithviV2", "Satlas", "Terramind", "Tessera"],
-    )
-    # evals/datasets/__init__ eagerly imports every dataset sibling; stub the unused ones
-    # (they pull geobench / extra deps). pastis_dataset + normalize load for real.
-    _stub_module("olmoearth_pretrain.evals.datasets.breizhcrops", ["BreizhCropsDataset"])
-    _stub_module("olmoearth_pretrain.evals.datasets.floods_dataset", ["Sen1Floods11Dataset"])
-    _stub_module("olmoearth_pretrain.evals.datasets.geobench_dataset", ["GeobenchDataset"])
-    _stub_module("olmoearth_pretrain.evals.datasets.mados_dataset", ["MADOSDataset"])
-    _stub_module("olmoearth_pretrain.evals.datasets.rslearn_dataset", ["RslearnToOlmoEarthDataset"])
+    """Install the shims. Idempotent; call before importing olmoearth_pretrain.evals."""
+    for name in _STUBBED:
+        sys.modules.setdefault(name, _Permissive(name))
+    torch.multiprocessing.set_sharing_strategy("file_system")
