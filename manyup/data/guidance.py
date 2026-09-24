@@ -66,18 +66,23 @@ def _pool(x: torch.Tensor, valid: torch.Tensor, mode: str) -> torch.Tensor:
     return x.mean(0) if mode == "mean" else x.median(0).values
 
 
+def select_bands(md: ModalityData, entries: tuple[str, ...]) -> torch.Tensor:
+    """Raw (T, C, H, W) float stack of these channel entries, in order (imputations filled)."""
+    idx = []
+    for e in entries:
+        src = _source(e)
+        if src not in md.bands:
+            raise ValueError(f"band {src} not in {md.bands}")
+        idx.append(md.bands.index(src))
+    return md.data.float()[:, idx]
+
+
 def build_guidance(modalities: dict[str, ModalityData], spec: GuidanceSpec) -> torch.Tensor:
     """One sample's guidance: (C, H, W) if spec.time_pool else (T, C, H, W)."""
     parts = []
     for mod, entries in spec.bands.items():
         md = modalities[mod]
-        idx = []
-        for e in entries:
-            src = _source(e)
-            if src not in md.bands:
-                raise ValueError(f"guidance {mod}: band {src} not in {md.bands}")
-            idx.append(md.bands.index(src))
-        x = md.data.float()[:, idx]                                   # (T, C, H, W)
+        x = select_bands(md, entries)                                 # (T, C, H, W)
         if spec.time_pool is None:
             if not md.frame_valid.all():
                 raise ValueError(f"per-timestep guidance needs every {mod} frame to have data")

@@ -64,6 +64,10 @@ class MTMMDataset(Dataset, ABC):
     @abstractmethod
     def _load(self, native_id: str, modalities: list[str]) -> MTMMSample: ...
 
+    def _load_target(self, native_id: str) -> torch.Tensor:
+        """Target of a native sample. Override with a cheaper read that skips the imagery."""
+        return self._load(native_id, list(self.modalities)).target
+
     # --- public -------------------------------------------------------------------------
     @property
     def key(self) -> str:
@@ -78,6 +82,15 @@ class MTMMDataset(Dataset, ABC):
     def sample_id(self, i: int) -> str:
         nid, off = self._index[i]
         return nid if off is None else Tiling.tile_id(nid, *off)
+
+    def target(self, i: int) -> torch.Tensor:
+        """Target of sample i without loading (or temporally processing) any imagery."""
+        nid, off = self._index[i]
+        t = self._load_target(nid)
+        if off is None:
+            return t
+        r, c, s = off[0], off[1], self.tiling.size
+        return t[r:r + s, c:c + s]
 
     def index_of(self, sample_id: str) -> int:
         """Dataset index of a sample id (the join key with feature caches and other streams)."""

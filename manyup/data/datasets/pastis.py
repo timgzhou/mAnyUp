@@ -98,6 +98,10 @@ class PastisDataset(MTMMDataset):
         return Geometry("EPSG:2154", (10.0, 0.0, cx - 5 * W, 0.0, -10.0, cy + 5 * H), (H, W),
                         approximate=True)
 
+    def _load_target(self, pid):
+        return torch.from_numpy(np.load(self.root / "ANNOTATIONS" / f"TARGET_{pid}.npy")[0]
+                                .astype(np.int64))
+
     def _load(self, pid, modalities):
         props, geo = self._meta[pid]["properties"], self._geometry(pid)
         out = {}
@@ -109,7 +113,5 @@ class PastisDataset(MTMMDataset):
                 raise ValueError(f"pastis/{pid}/{m}: {data.shape[0]} frames, {len(days)} dates")
             out[m] = ModalityData(data, self.SPEC.modalities[m].bands, TimeAxis.instants(days),
                                   torch.ones(len(days), dtype=torch.bool), geo)
-        target = torch.from_numpy(np.load(self.root / "ANNOTATIONS" / f"TARGET_{pid}.npy")[0]
-                                  .astype(np.int64))
-        return MTMMSample(pid, self.split, out, target, geo,
+        return MTMMSample(pid, self.split, out, self._load_target(pid), geo,
                           {"fold": props["Fold"], "tile": props["TILE"]})

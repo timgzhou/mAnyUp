@@ -44,7 +44,9 @@ from exp.common.metrics import segmentation_metrics
 # AnyUp upsample+probe and the RGB-guidance loader are shared with the live finetune path
 # (single source of truth). Importing the module is cheap; AnyUp (torch.hub) only loads when
 # an AnyUpUpsampleProbe is actually constructed (i.e. only for the anyup heads).
-from exp.pastis.finetune_olmoearth import AnyUpUpsampleProbe, _load_rgb_guidance
+from exp.pastis.finetune_olmoearth import AnyUpUpsampleProbe
+from exp.pastis.data import GUIDANCE_MODS, guidance_spec
+from manyup.data.datasets.pastis import PastisDataset
 
 # Guidance time-pooling ("mean"|"median"), shared with the UPA/UPMA/AnyUp eval paths.
 from exp.upsamplers.upa_anyup import time_pool, TIME_POOLS
@@ -107,49 +109,11 @@ HEAD_REDUCES_TIME = {
 
 
 S2_BANDS = 13   # full Sentinel-2 L2A stack used as mAnyUp guidance
-# Which image dirs each guidance modality reads, in channel order (mirrors train_manyup).
-GUIDANCE_DIRS = {"s2": ["s2"], "s1": ["s1"], "s2s1": ["s2", "s1"]}
-# Band count each modality yields once concatenated (mirrors train_manyup.GUIDANCE_BANDS):
-# s2 = 13-band L2A, s1 = 2-band VV/VH, s2s1 stacks both -> 15.
-GUIDANCE_BANDS = {"s2": S2_BANDS, "s1": 2, "s2s1": S2_BANDS + 2}
-
-
-def _load_s2_guidance(split: str, idx: int, tpool: str = "mean",
-                      mod: str = "s2") -> torch.Tensor:
-    """Full 13-band S2 guidance for mAnyUp: (T,13,64,64) -> pooled over T -> (13,64,64), per-band
-    min-max normalized to [0,1]. Matches train_manyup (same pooling + _norm_guidance) so the
-    frozen mAnyUp sees exactly the guidance distribution it trained on -- `tpool` MUST equal the
-    checkpoint's train-time --time_pool or the encoder gets an unseen input distribution. Reads
-    from exp.pastis.finetune_olmoearth's DATA_SPLITS (a module global the caller points at our
-    data_splits)."""
-    from exp.pastis import finetune_olmoearth as fmod
-    def one(m: str) -> torch.Tensor:
-        x = torch.load(Path(fmod.DATA_SPLITS) / f"pastis_r_{split}" / f"{m}_images" / f"{idx}.pt")
-        x = time_pool(x.float(), tpool)                        # (C,64,64)
-        flat = x.reshape(x.shape[0], -1)
-        lo = flat.min(1).values.view(-1, 1, 1)
-        hi = flat.max(1).values.view(-1, 1, 1)
-        return (x - lo) / (hi - lo + 1e-6)
-
-    # Mirrors train_manyup: normalize each modality on its OWN scale, then concat on the band
-    # axis (s2 13 + s1 2 = 15 for the s2s1 arm).
-    return torch.cat([one(m) for m in GUIDANCE_DIRS.get(mod, [mod])], dim=0)
+# Channels of the full guidance stack per guidance_mod (s2 13, s1 2, s2s1 15), from its spec.
+GUIDANCE_BANDS = {m: guidance_spec("full", m, "mean").channels for m in GUIDANCE_MODS}
 
 
 # ----------------------------- data -----------------------------
-def _frame_valid(features_dir: Path, split_dir: Path, ids: list[int]) -> torch.Tensor:
-    """(n, T) bool from the cache's frame_valid.pt. Caches without it predate the data layer:
-    they are all legacy OlmoEarth-prep caches, where every timestep has data."""
-    f = split_dir / "frame_valid.pt"
-    if f.exists():
-        return torch.load(f)[torch.tensor(ids)]
-    meta = json.loads((features_dir / "meta.json").read_text())
-    if meta.get("temporal", "legacy") != "legacy":
-        raise FileNotFoundError(f"{f} missing for a {meta['temporal']} cache; re-extract")
-    T = torch.load(split_dir / "0.pt", map_location="cpu").shape[0]
-    return torch.ones(len(ids), T, dtype=torch.bool)
-
-
 def _time_mean(feat: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
     """(T, gH, gW, D) -> (1, gH, gW, D) mean over the valid timesteps only (fp32)."""
     f = feat.float()
@@ -158,28 +122,39 @@ def _time_mean(feat: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
     return f[valid].mean(dim=0, keepdim=True)
 
 
+# guidance mode -> (guidance kind, per timestep?, AnyUp ImageNet-normalized RGB?)
+GUIDANCE_MODES = {"mean": ("rgb", False, True), "temporal": ("rgb", True, True),
+                  "mean13": ("full", False, False), "temporal13": ("full", True, False)}
+
+
 class CachedFeatureDataset(torch.utils.data.Dataset):
-    """Loads cached (T, gH, gW, D) features, the matching (64,64) label, and -- for AnyUp
-    heads -- the RGB guidance image.
+    """Cached (T, gH, gW, D) features by sample, the matching label, and the guidance a head
+    needs -- all joined by sample id (exp.pastis.data.open_cache / PastisGuidance).
 
-    Labels come from the original prep (targets.pt is a stacked (N,64,64) tensor); features
-    are keyed by the same contiguous index used at extraction time.
+    Labels and guidance come from PastisDataset with the cache's own time setup and sample
+    size (its meta.json), so they always describe the same data as the features.
 
-    guidance: "none" -> rgb is an empty tensor (LP heads ignore it); "mean" -> (3,64,64)
-    time-averaged RGB; "temporal" -> (T,3,64,64) per-timestep RGB. Guidance is built by
-    exp.pastis.finetune_olmoearth._load_rgb_guidance, which reads s2_images from that module's
-    DATA_SPLITS global -- main() points it at args.data_splits before loaders are built."""
+    guidance: "none" (empty tensor) | "mean"/"temporal" (AnyUp RGB, pooled with time_pool /
+    per timestep) | "mean13"/"temporal13" (mAnyUp/timAnyUp full stack for guidance_mod)."""
 
-    def __init__(self, features_dir: Path, data_splits: Path, split: str,
+    def __init__(self, features_dir: Path, split: str,
                  guidance: str = "none", max_ram_gb: float = 32.0,
                  reduce_time: bool = False, time_pool: str = "mean",
                  guidance_mod: str = "s2", id_half: str = "all"):
+        from exp.pastis.data import (IGNORE_LABEL, PastisGuidance, guidance_spec, make_dataset,
+                                     open_cache)
+        split = {"valid": "val"}.get(split, split)          # accept the legacy folder name
         self.guidance_mod = guidance_mod
-        self.feat_dir = features_dir / f"pastis_r_{split}"
-        self.labels = torch.load(data_splits / f"pastis_r_{split}" / "targets.pt")
-        # Label resolution comes from the DATA, not a constant: a prepare_data.py
-        # --image_size 128 prep yields (N,128,128) targets instead of (N,64,64), and the heads
-        # upsample their logits to exactly this size.
+        self.cache = open_cache(features_dir.parent, features_dir.name, split)
+        self.feat_dir = self.cache.split_dir
+        meta = self.cache.meta
+        label_ds = make_dataset(split, ["sentinel2_l2a"], meta.get("temporal", "legacy"),
+                                meta.get("image_size", 64))
+        labels = torch.stack([label_ds.target(label_ds.index_of(sid)) for sid in self.cache.ids])
+        labels[labels == PastisDataset.SPEC.target.ignore_index] = IGNORE_LABEL
+        self.labels = labels
+        # label resolution comes from the data (64 px tiles or whole 128 px patches); the heads
+        # upsample their logits to exactly this size
         self.label_size = int(self.labels.shape[-1])
         self.split = split
         self.guidance = guidance
@@ -190,11 +165,13 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
         # never float-cast / ship the full T tensor per step. Keeps a singleton T so heads that
         # do feats.mean(dim=1) / feats.shape[1] stay correct unchanged.
         self.reduce_time = reduce_time
-        self.n = len(list(self.feat_dir.glob("[0-9]*.pt")))
-        if self.n != len(self.labels):
-            raise ValueError(
-                f"{split}: {self.n} feature files != {len(self.labels)} labels. "
-                "Re-run extraction or check the features/<cfg> path.")
+        self.n = self.cache.n
+        if guidance == "none":
+            self._guide = None
+        else:
+            kind, per_t, anyup = GUIDANCE_MODES[guidance]
+            self._guide = PastisGuidance(split, meta, guidance_spec(
+                kind, guidance_mod, None if per_t else time_pool), anyup_rgb=anyup)
 
         # Speed path: torch.load-ing N small .pt files from Lustre EVERY epoch is the
         # bottleneck (the GPU sits idle waiting on disk). If the whole split fits in a RAM
@@ -213,7 +190,7 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
             self.n = len(self._ids)
             self.labels = self.labels[torch.tensor(self._ids)]
 
-        self.frame_valid = _frame_valid(features_dir, self.feat_dir, self._ids)   # (n, T) bool
+        self.frame_valid = self.cache.frame_valid[torch.tensor(self._ids)]       # (n, T) bool
         if not reduce_time and not self.frame_valid.all():
             raise ValueError(f"{features_dir.name}/{split}: some timesteps have no data, and "
                              "this head keeps the time axis, so it would see zero features; "
@@ -268,28 +245,8 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
         print(f"[{self.split}] preload done.")
 
     def _load_guidance(self, idx: int) -> torch.Tensor:
-        """Guidance tensor for one sample, per self.guidance mode. mean13 -> full 13-band S2;
-        mean/temporal -> 3-band RGB via the shared finetune loader."""
-        if self.guidance == "temporal13":
-            # timAnyUp guides each timestep with its OWN frame, so no time pooling here.
-            # Normalization must match exp/upsamplers/common.norm_guidance exactly (per
-            # (t,band) min-max over the spatial axes) or the frozen encoder sees an unseen
-            # input scale -- so we import that function rather than re-deriving it.
-            from exp.upsamplers.common import norm_guidance
-            from exp.pastis import finetune_olmoearth as fmod
-            mod = getattr(self, "guidance_mod", "s2")
-            return torch.cat(
-                [norm_guidance(torch.load(
-                    Path(fmod.DATA_SPLITS) / f"pastis_r_{self.split}" / f"{m}_images"
-                    / f"{idx}.pt").float())
-                 for m in GUIDANCE_DIRS.get(mod, [mod])], dim=1)   # (T, C, H, W)
-        if self.guidance == "mean13":
-            # guidance_mod mirrors the mAnyUp checkpoint's train-time modality (s2 = 13-band,
-            # s1 = 2-band); evaluating with a different one feeds an unseen distribution.
-            return _load_s2_guidance(self.split, idx, tpool=self.time_pool,
-                                     mod=getattr(self, "guidance_mod", "s2"))
-        return _load_rgb_guidance(self.split, idx, temporal=self.guidance == "temporal",
-                                  time_pool=self.time_pool)
+        """Guidance for the cache's sample at position idx (see GUIDANCE_MODES)."""
+        return self._guide(self.cache.ids[idx])
 
     def _rgb_shape(self, T: int):
         L = self.label_size                      # guidance is at image == label resolution
@@ -1128,7 +1085,6 @@ def main() -> None:
     p.add_argument("--features", required=True,
                    help="extraction config folder name under --out_root, e.g. oe_base_s2s1_ps4_tile64")
     p.add_argument("--out_root", default=str(FEATURES))
-    p.add_argument("--data_splits", default="data/pastis_olmoearth")
     p.add_argument("--head_mode", default="lp_pa2px",
                    choices=list(HEAD_GUIDANCE))
     p.add_argument("--epochs", type=int, default=32)
@@ -1243,7 +1199,6 @@ def main() -> None:
     torch.backends.cudnn.allow_tf32 = True
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     feat_dir = Path(args.out_root).expanduser() / args.features   # expanduser: default uses ~
-    data_splits = Path(args.data_splits)
 
     meta_path = feat_dir / "meta.json"
     if not meta_path.exists():
@@ -1255,12 +1210,6 @@ def main() -> None:
     print(f"Features: {args.features} | shape {meta['feature_shape']} | "
           f"patch_size {patch_size} | head {args.head_mode} | guidance {guidance}"
           + (f" | time_pool {args.time_pool}" if guidance != "none" else ""))
-
-    # _load_rgb_guidance reads s2_images from finetune_olmoearth_pastis.DATA_SPLITS (a module
-    # global). Point it at our data_splits so AnyUp guidance comes from the right place.
-    if guidance != "none":
-        from exp.pastis import finetune_olmoearth as fmod
-        fmod.DATA_SPLITS = args.data_splits
 
     reduce_time = HEAD_REDUCES_TIME[args.head_mode]
     # Guidance modality must match what the mAnyUp checkpoint TRAINED on, else the frozen
@@ -1334,9 +1283,9 @@ def main() -> None:
                       time_pool=args.time_pool, guidance_mod=guidance_mod,
                       id_half=args.id_half)
         if args.head_mode in ("timanyup", "timanyup_t"):
-            ds = TimAnyUpFeatureDataset(feat_dir, _hrlc_dir, data_splits, split, **common)
+            ds = TimAnyUpFeatureDataset(feat_dir, _hrlc_dir, split, **common)
         else:
-            ds = CachedFeatureDataset(feat_dir, data_splits, split, **common)
+            ds = CachedFeatureDataset(feat_dir, split, **common)
         preloaded = ds._feats is not None
         # Preloaded: index RAM in-process (workers would duplicate the tensor). Disk fallback:
         # use workers + pin_memory + persistent_workers to overlap reads with GPU compute.
@@ -1589,7 +1538,7 @@ def _write_viz(args, head, manyup_ckpt, train_loader, test_loader, device,
         if m and hr_dir and hr_dir.exists():
             hr_patch = int(m.group(1))
             mk = lambda sp: CachedFeatureDataset(          # noqa: E731
-                hr_dir, Path(args.data_splits), sp, guidance="none",
+                hr_dir, sp, guidance="none",
                 max_ram_gb=args.max_ram_gb, reduce_time=True, time_pool=args.time_pool)
             hr_ds, hr_train_ds = mk("test"), mk("train")
         else:

@@ -13,7 +13,8 @@ import torch
 
 from exp.common.paths import DATA
 from manyup.data import Tiling
-from manyup.data.feature_cache import LegacyReconstruction
+from manyup.data.feature_cache import FeatureCache, LegacyReconstruction
+from manyup.data.guidance import LEGACY_S1_2, LEGACY_S2_13, GuidanceSpec, build_guidance
 from manyup.data.time import month_bounds
 from manyup.data.datasets.pastis import LEGACY_OLMOEARTH_S2, PastisDataset, monthly
 from manyup.data.sample import MTMMBatch
@@ -71,3 +72,54 @@ def legacy_reconstruction(split: str, image_size: int) -> LegacyReconstruction:
     return LegacyReconstruction(ids=[ds.sample_id(i) for i in range(len(ds))],
                                 frame_valid=torch.ones(months.shape, dtype=torch.bool),
                                 t_start=t[..., 0], t_end=t[..., 1])
+
+
+# ---- guidance for upsamplers / guided probes ------------------------------------------------
+# guidance_mod (as in checkpoints and CLI: s2 | s1 | s2s1) -> PASTIS modalities, channel order
+GUIDANCE_MODS = {"s2": ("S2",), "s1": ("S1A",), "s2s1": ("S2", "S1A")}
+RGB = ("B04", "B03", "B02")
+_IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+_IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+
+def guidance_spec(kind: str, guidance_mod: str, time_pool: str | None) -> GuidanceSpec:
+    """kind "rgb": natural-colour S2 for stock AnyUp; "full": the 13-band S2 stack (+ S1
+    VV/VH for s1/s2s1) mAnyUp/timAnyUp were trained on. time_pool None = per timestep."""
+    if kind == "rgb":
+        return GuidanceSpec({"S2": RGB}, time_pool)
+    if kind == "full":
+        full = {"S2": LEGACY_S2_13, "S1A": LEGACY_S1_2}
+        return GuidanceSpec({m: full[m] for m in GUIDANCE_MODS[guidance_mod]}, time_pool)
+    raise ValueError(f"guidance kind {kind!r} not in (rgb, full)")
+
+
+def imagenet_norm(rgb01: torch.Tensor) -> torch.Tensor:
+    """[0,1] RGB, (...,3,H,W) -> ImageNet-normalized, as stock AnyUp expects."""
+    return (rgb01 - _IMAGENET_MEAN) / _IMAGENET_STD
+
+
+class PastisGuidance:
+    """Guidance by sample id, from the SAME time setup and sample size as a feature cache
+    (read from its meta.json), so features and guidance describe the same data."""
+
+    def __init__(self, split: str, cache_meta: dict, spec: GuidanceSpec, anyup_rgb: bool = False):
+        temporal = cache_meta.get("temporal", "legacy")
+        mods = [m for m, (pm, _) in MODALITIES.items() if pm in spec.bands]
+        self.ds = make_dataset(split, mods, temporal, cache_meta.get("image_size", 64))
+        self.spec, self.anyup_rgb = spec, anyup_rgb
+
+    def __call__(self, sample_id: str) -> torch.Tensor:
+        g = build_guidance(self.ds[self.ds.index_of(sample_id)].modalities, self.spec)
+        return imagenet_norm(g) if self.anyup_rgb else g
+
+
+def open_cache(root, name: str, split: str) -> FeatureCache:
+    """A PASTIS feature cache by name; caches made before ids/dates were recorded get the
+    legacy reconstruction (their meta has no "temporal", i.e. they are legacy caches)."""
+    import json
+    from pathlib import Path
+    meta = json.loads((Path(root).expanduser() / name / "meta.json").read_text())
+    split_dir = f"pastis_r_{SPLIT_DIRS[split]}"
+    has_ids = (Path(root).expanduser() / name / split_dir / "ids.txt").exists()
+    legacy = None if has_ids else legacy_reconstruction(split, meta.get("image_size", 64))
+    return FeatureCache(root, name, split_dir, legacy)

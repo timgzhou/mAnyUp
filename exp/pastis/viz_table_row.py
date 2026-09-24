@@ -90,11 +90,9 @@ def main() -> None:
     p.add_argument("--sample", type=int, nargs="+", default=[0])
     p.add_argument("--out", default="results/pastis/viz_table")
     p.add_argument("--out_root", default=None)
-    p.add_argument("--data_splits", default="data/pastis_olmoearth")
     args = p.parse_args()
 
     root = Path(args.out_root or FEATURES)
-    splits = Path(args.data_splits)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     lr_cfg = f"oe_base_{args.mods}_ps{args.lr_ps}_tile64"
     hr_cfg = f"oe_base_{args.mods}_ps{args.hr_ps}_tile64"
@@ -102,7 +100,7 @@ def main() -> None:
 
     # max_ram_gb=0 -> per-sample disk reads; we only index a handful of samples.
     mk = lambda cfg, g, mod: CachedFeatureDataset(       # noqa: E731
-        root / cfg, splits, "test", guidance=g, max_ram_gb=0, reduce_time=True,
+        root / cfg, "test", guidance=g, max_ram_gb=0, reduce_time=True,
         time_pool="mean", guidance_mod=mod)
     lr_ds = mk(lr_cfg, "mean13", args.mods)              # guidance needed by the mAnyUp heads
     hr_ds = mk(hr_cfg, "none", args.mods)

@@ -256,7 +256,6 @@ def main() -> None:
                    help="run the upsampler at its trained target grid (match your LP run)")
     p.add_argument("--no-manyup_use_proj", dest="manyup_use_proj", action="store_false")
     p.add_argument("--out_root", default=None)
-    p.add_argument("--data_splits", default="data/pastis_olmoearth")
     p.add_argument("--out", default="results/pastis/viz", help="output directory")
     p.add_argument("--sample", type=int, nargs="+", default=[0,1,2,3],
                    help="test sample index/indices to render")
@@ -277,7 +276,6 @@ def main() -> None:
     args = p.parse_args()
 
     out_root = Path(args.out_root or FEATURES)
-    splits = Path(args.data_splits)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # An unset shell variable becomes an EMPTY string, not a missing flag: `--head "$LPHEAD"`
@@ -301,7 +299,7 @@ def main() -> None:
     # Lustre reads -- buys nothing. Training splits still preload, but only when we actually
     # train a probe; with --head / --lr_head / --hr_head they are never built at all.
     mk = lambda sp, ram: CachedFeatureDataset(                # noqa: E731
-        out_root / args.features, splits, sp, guidance=guidance, max_ram_gb=ram,
+        out_root / args.features, sp, guidance=guidance, max_ram_gb=ram,
         reduce_time=reduce_time, time_pool=args.time_pool, guidance_mod=guidance_mod)
     test_ds = mk("test", 0)
     train_ds = None                    # built lazily, only if some probe must be trained
@@ -355,7 +353,7 @@ def main() -> None:
     if m and hr_dir and hr_dir.exists():
         hr_patch = int(m.group(1))
         mkhr = lambda sp, ram: CachedFeatureDataset(          # noqa: E731
-            hr_dir, splits, sp, guidance="none", max_ram_gb=ram,
+            hr_dir, sp, guidance="none", max_ram_gb=ram,
             reduce_time=True, time_pool=args.time_pool)
         hr_ds = mkhr("test", 0)                    # indexed only -> lazy, no preload
         # The HR train split exists solely to fit the oracle probe; with --hr_head we load a

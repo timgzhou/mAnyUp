@@ -185,7 +185,7 @@ def build_pixel_cache(method, dataset, device, args, anyup_model, cache_path: Pa
                 hr = F.interpolate(x, size=(args.label_size, args.label_size),
                                    mode="bilinear", align_corners=True)
         else:
-            s2_raw = torch.load(args.data_splits / "pastis_r_train" / "s2_images" / f"{n}.pt")
+            s2_raw = args.raw_s2["train"](n)
             hr = _upsample_features(method, feats, s2_raw, device, args.fit_steps,
                                     args.guide_band_idx, anyup_model,
                                     tpool=args.time_pool)              # (1,D,64,64)
@@ -310,8 +310,7 @@ def evaluate_method(head, dataset, indices, method, device, args, seg_metrics,
                 logits = F.interpolate(logits, size=(args.label_size, args.label_size),
                                        mode="bilinear", align_corners=True)
         else:
-            s2_raw = torch.load(args.data_splits / f"pastis_r_{args.split}" /
-                                "s2_images" / f"{idx}.pt")
+            s2_raw = args.raw_s2[args.split](idx)
             hr = _upsample_features(method, feats, s2_raw, device, args.fit_steps,
                                     args.guide_band_idx, anyup_model,
                                     tpool=args.time_pool)              # (1,D,64,64)
@@ -329,13 +328,25 @@ def evaluate_method(head, dataset, indices, method, device, args, seg_metrics,
     return r.metrics, time.time() - t0        # {'miou','overall_acc','macro_acc','macro_f1'}
 
 
+
+class RawS2:
+    """Raw (T, 13, H, W) S2 in the legacy 13-band layout for the cache sample at position i."""
+
+    def __init__(self, feature_ds):
+        from exp.pastis.data import make_dataset
+        meta = feature_ds.cache.meta
+        self.cache = feature_ds.cache
+        self.ds = make_dataset(feature_ds.split, ["sentinel2_l2a"],
+                               meta.get("temporal", "legacy"), meta.get("image_size", 64))
+
+    def __call__(self, i: int) -> torch.Tensor:
+        from manyup.data.guidance import LEGACY_S2_13, select_bands
+        sample = self.ds[self.ds.index_of(self.cache.ids[i])]
+        return select_bands(sample.modalities["S2"], LEGACY_S2_13)
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    # This file is exp/upsamplers/eval_pa2pa.py, so the repo root is 3 levels up
-    # (parents[2]); .parent alone pointed at exp/upsamplers/ and made --data_splits resolve
-    # to exp/upsamplers/data/pastis_olmoearth, which does not exist.
-    p.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
     p.add_argument("--features_root", type=Path,
                    default=FEATURES)
     p.add_argument("--features", default="oe_base_s2_ps4_tile64",
@@ -377,14 +388,10 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    repo = args.repo
     from exp.common import olmo_bootstrap
     olmo_bootstrap.apply()
 
-    # lp_on_cached_features owns the dataset + metric; import after the shim like it does.
-    from exp.pastis import finetune_olmoearth as fmod
-    args.data_splits = repo / "data" / "pastis_olmoearth"
-    fmod.DATA_SPLITS = str(args.data_splits)          # dataset guidance loaders read this global
+    # lp_cached_features owns the dataset + metric; import after the shim like it does.
     from exp.pastis.lp_cached_features import (CachedFeatureDataset, NUM_CLASSES,
                                        IGNORE_LABEL, LABEL_SIZE)
     from exp.common.metrics import segmentation_metrics
@@ -401,10 +408,11 @@ def main():
     feat_dir = args.features_root / args.features
 
     # guidance="none": we load raw S2 ourselves per method, so the dataset needn't build any.
-    train_ds = CachedFeatureDataset(feat_dir, args.data_splits, "train",
-                                    guidance="none", reduce_time=True)
-    test_ds = CachedFeatureDataset(feat_dir, args.data_splits, args.split,
-                                   guidance="none", reduce_time=True)
+    train_ds = CachedFeatureDataset(feat_dir, "train", guidance="none", reduce_time=True)
+    test_ds = CachedFeatureDataset(feat_dir, args.split, guidance="none", reduce_time=True)
+    # raw 13-band S2 per sample (the layout guide_band_idx indexes), from the same data and
+    # time setup as the cached features
+    args.raw_s2 = {sp: RawS2(ds) for sp, ds in (("train", train_ds), (args.split, test_ds))}
     embed_dim = train_ds[0][0].shape[-1]
     print(f"[data] train={len(train_ds)} {args.split}={len(test_ds)}  D={embed_dim}")
 
