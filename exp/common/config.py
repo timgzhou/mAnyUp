@@ -72,6 +72,9 @@ class Config:
     num_workers: int = 0
     seed: int = 0
     image_size: int = 64     # 64: 64 px tiles of each patch (legacy order); 128: whole patches
+    # flash: varlen FlashAttention, exact masking of empty months at fast-path memory;
+    # sdpa: OlmoEarth's default kernel (only valid when no timestep is missing)
+    attention: str = "flash"
     dataset: str = "pastis"
 
     def __post_init__(self) -> None:
@@ -92,6 +95,8 @@ class Config:
             raise ValueError(f"head_mode={self.head_mode!r} not in {list(ALLOWED_HEADS)}")
         if self.temporal not in TEMPORAL:
             raise ValueError(f"temporal={self.temporal!r} not in {list(TEMPORAL)}")
+        if self.attention not in ("flash", "sdpa"):
+            raise ValueError(f"attention={self.attention!r} not in ('flash', 'sdpa')")
         if self.image_size not in (64, 128):
             raise ValueError(f"image_size={self.image_size} not in (64, 128)")
 

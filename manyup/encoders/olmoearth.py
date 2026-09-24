@@ -9,6 +9,16 @@ Packing into OlmoEarth's input is explicit and by name:
     must share a time axis (e.g. the same Pool window) -- checked per batch;
   - invalid frames are passed as MISSING tokens and excluded from pooling.
 
+Attention ("attention" argument):
+  "flash"  OlmoEarth's varlen FlashAttention: each sample's valid tokens are packed back to
+           back, so MISSING tokens are excluded exactly, a sample's features do not depend on
+           its batch, and memory stays at the fast path's. The default.
+  "sdpa"   PyTorch SDPA, OlmoEarth's default. Without missing tokens it reproduces the legacy
+           caches bit for bit. With missing tokens it cannot be batched: OlmoEarth's masked
+           path drops the attention mask in eval mode (padding becomes visible, features
+           depend on the batch) and in training builds a (B, heads, N, N) mask (~9x memory).
+           So a batch with missing tokens is refused under "sdpa".
+
 Output: per timestep, tokens are averaged over bandsets, then over the modalities present at
 that step. temporal_mode "series" encodes the whole series in one pass (timesteps attend to
 each other); "per_timestep" encodes every frame on its own (folded into the batch).
@@ -116,13 +126,17 @@ class OlmoEarthEncoder(Encoder):
     KEEPS_TIME = True
 
     def __init__(self, model_id: str, inputs: OlmoEarthInput, patch_size: int, tile_size: int,
-                 name: str | None = None, amp: bool = True):
+                 name: str | None = None, amp: bool = True, attention: str = "flash"):
         super().__init__()
         self.model_id, self.inputs = model_id, inputs
         self.patch_size, self.tile_size, self.amp = patch_size, tile_size, amp
         self.key = name or model_id.lower()
         model = load_model_from_id(getattr(ModelID, model_id), load_weights=True)
         self.encoder = model.encoder if hasattr(model, "encoder") else model
+        if attention == "flash" and not amp:
+            raise ValueError("FlashAttention runs in bf16 only; attention='flash' needs amp=True")
+        self.attention = attention
+        set_attention(self.encoder, attention)
 
     def requirements(self) -> Requirements:
         return Requirements(bands=self.inputs.bands(), aligned_time=True, max_frames=None,
@@ -169,7 +183,7 @@ class OlmoEarthEncoder(Encoder):
             geometry=[g.rescale((gH, gW)) for g in ref.geometry],
             provenance={"encoder": self.key, "model_id": self.model_id,
                         "patch_size": self.patch_size, "tile_size": self.tile_size,
-                        "temporal_mode": temporal_mode,
+                        "temporal_mode": temporal_mode, "attention": self.attention,
                         "modalities": {m: batch.modalities[m].history
                                        for m in self.inputs.modality_map},
                         "impute": self.inputs.impute})
@@ -206,8 +220,32 @@ class OlmoEarthEncoder(Encoder):
         return torch.stack(per_t, dim=-2)
 
     def _run(self, sample: MaskedOlmoEarthSample):
+        if self.attention == "flash":
+            # the varlen path packs valid tokens per sample: exact masking at any batch size
+            fast_pass = False
+        elif _has_missing(sample):
+            if sample.timestamps.shape[0] > 1:
+                raise ValueError("attention='sdpa' cannot mask missing tokens in a batch "
+                                 "(padding leaks into attention); use attention='flash'")
+            fast_pass = False   # one sample: no padding, so masking by token removal is exact
+        else:
+            fast_pass = True
         return self.encoder(sample, patch_size=self.patch_size, input_res=BASE_GSD,
-                            fast_pass=not _has_missing(sample))["tokens_and_masks"]
+                            fast_pass=fast_pass)["tokens_and_masks"]
+
+
+ATTENTION = ("flash", "sdpa")
+
+
+def set_attention(encoder: torch.nn.Module, attention: str) -> None:
+    """Switch every OlmoEarth module to varlen FlashAttention ("flash") or SDPA ("sdpa")."""
+    if attention not in ATTENTION:
+        raise ValueError(f"attention {attention!r} not in {ATTENTION}")
+    if attention == "flash":
+        import flash_attn  # noqa: F401  (fail at setup, not mid-run, if it is not installed)
+    for m in encoder.modules():
+        if hasattr(m, "use_flash_attn"):
+            m.use_flash_attn = attention == "flash"
 
 
 def pool_timestep(tam, t: int) -> torch.Tensor:

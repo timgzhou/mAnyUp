@@ -99,6 +99,9 @@ def main() -> None:
     p.add_argument("--image_size", type=int, default=64, choices=(64, 128),
                    help="64: 64 px tiles of each patch (legacy order); 128: whole patches")
     p.add_argument("--temporal_mode", default="series", choices=list(TEMPORAL_MODES))
+    p.add_argument("--attention", default="flash", choices=("flash", "sdpa"),
+                   help="flash: exact masking of empty months, batch-independent (default). "
+                        "sdpa: bit-identical to the legacy caches; no missing data allowed")
     p.add_argument("--init_ckpt", default=None,
                    help="finetune_olmoearth checkpoint whose backbone replaces the pretrained "
                         "weights; the cache name gets _ft<tag>")
@@ -129,7 +132,7 @@ def main() -> None:
     inputs = OlmoEarthInput({MODALITIES[m][0]: MODALITIES[m][1] for m in modalities},
                             impute={"S2": LEGACY_S2_IMPUTE})
     encoder = OlmoEarthEncoder(MODEL_SIZE_TO_ID[args.model_size], inputs, args.patch_size, tile,
-                               name=args.model_size)
+                               name=args.model_size, attention=args.attention)
     if args.init_ckpt:
         encoder.load_finetuned(args.init_ckpt)
     encoder = encoder.to(torch.device("cuda" if torch.cuda.is_available() else "cpu")).eval()
@@ -150,7 +153,7 @@ def main() -> None:
         "modalities": modalities, "temporal": args.temporal,
         "temporal_keys": {m: pol.resolved_key(PastisDataset.SPEC.modalities[m])
                           for m, pol in first.modalities.items()},
-        "dataset_key": first.key, "impute": inputs.impute,
+        "dataset_key": first.key, "impute": inputs.impute, "attention": args.attention,
         "temporal_mode": args.temporal_mode,
         "cross_timestep_attention": args.temporal_mode == "series",
         "pooling": "mean over bandsets, then over the modalities present",

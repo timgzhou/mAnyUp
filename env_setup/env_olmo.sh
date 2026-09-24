@@ -14,8 +14,11 @@ export PROJ_DATA=$EBROOTPROJ/share/proj
 OLMOEARTH_VERSION=0.1.2
 TORCH_VERSION=2.9.1
 TORCHVISION_VERSION=0.24.1
+# flash-attn: OlmoEarth's varlen attention, the only path that masks missing tokens both
+# exactly and at fast-path memory (see manyup/encoders/olmoearth.py).
+FLASH_ATTN_VERSION=2.8.3
 # Versions in the dir name: a bump builds a fresh venv instead of upgrading one in place.
-VENV_DIR="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/env_olmo-oe${OLMOEARTH_VERSION}-torch${TORCH_VERSION}"
+VENV_DIR="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/env_olmo-oe${OLMOEARTH_VERSION}-torch${TORCH_VERSION}-fa${FLASH_ATTN_VERSION}"
 PIP="pip install -q --no-warn-conflicts"
 
 virtualenv -q --no-download --system-site-packages "$VENV_DIR"
@@ -23,3 +26,4 @@ source "$VENV_DIR/bin/activate"
 $PIP --no-index --upgrade pip
 $PIP --no-index torch==$TORCH_VERSION torchvision==$TORCHVISION_VERSION pytest   # cluster wheels
 $PIP "olmoearth-pretrain[training]==$OLMOEARTH_VERSION" torchmetrics
+$PIP --no-index flash_attn==$FLASH_ATTN_VERSION                                 # built for torch 2.9

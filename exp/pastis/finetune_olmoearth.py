@@ -57,7 +57,8 @@ from exp.common.config import Config, load_config, to_dict
 from exp.pastis.data import MODALITIES, labels, make_dataset
 from manyup.data import mtmm_collate
 from manyup.data.sample import MTMMBatch
-from manyup.encoders.olmoearth import LEGACY_S2_IMPUTE, OlmoEarthInput, pool_timestep
+from manyup.encoders.olmoearth import (LEGACY_S2_IMPUTE, OlmoEarthInput, pool_timestep,
+                                       set_attention)
 
 # ---- runtime config (module globals; helpers below read these at call time) ----
 # These are populated from a Config by _apply_config() in main(). The defaults here
@@ -71,6 +72,7 @@ DATASET = "pastis"                       # 64x64 config (matches resize_to_64=Tr
 INPUT_MODALITIES = ["sentinel2_l2a", "sentinel1"]
 TEMPORAL = "legacy"
 IMAGE_SIZE = 64
+ATTENTION = "flash"
 POOLING_TYPE = PoolingType.MEAN          # evaluator_callback default
 EPOCHS = 64
 BATCH_SIZE = 32
@@ -101,6 +103,7 @@ def _apply_config(cfg: Config) -> None:
     g["DATASET"] = cfg.dataset
     g["TEMPORAL"] = cfg.temporal
     g["IMAGE_SIZE"] = cfg.image_size
+    g["ATTENTION"] = cfg.attention
     g["INPUT_MODALITIES"] = cfg.input_modalities
     g["MODEL_ID"] = getattr(ModelID, cfg.model_id_name)
     g["EPOCHS"] = cfg.epochs
@@ -423,6 +426,7 @@ def main(cfg: Config) -> None:
     # BackboneWithHead/get_eval_wrapper want the ENCODER (a FlexiVitBase), not the
     # full LatentMIM (matches evaluator_callback, which passes model.encoder).
     encoder = cast(nn.Module, model.encoder if hasattr(model, "encoder") else model)
+    set_attention(encoder, ATTENTION)
     # patch_size comes from config (default 4, OlmoEarth's LP eval protocol); encoder's
     # own patch_size is None (FlexiViT takes it per-call).
     patch_size = PATCH_SIZE

@@ -105,6 +105,7 @@ def main() -> None:
         "dataset": "geoidflood", "dataset_key": key, "chip_selection": chips.key,
         "model_size": args.model_size, "model_id": MODEL_SIZE_TO_ID[args.model_size],
         "patch_size": args.patch_size, "input_res": INPUT_RES, "modalities": ["sentinel1"],
+        "attention": encoder.attention,
         "pooling": "mean over bandsets", "timesteps": probe.shape[0],
         "embed_dim": probe.shape[-1], "grid": grid, "tile_size": args.tile_size,
         "dtype": "float16", "counts": counts, "feature_shape": list(probe.shape),
