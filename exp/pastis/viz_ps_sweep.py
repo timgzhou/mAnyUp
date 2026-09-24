@@ -194,7 +194,7 @@ def main() -> None:
     p.add_argument("--samples", type=int, default=4)
     p.add_argument("--indices", default="", help="comma-separated 128px test indices")
     p.add_argument("--ckpt_glob", default="checkpoints/*_ep64_best.pt")
-    p.add_argument("--out_dir", default="pastis_visualize/ps_sweep")
+    p.add_argument("--out_dir", default="results/pastis/predictions/ps_sweep")
     args = p.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

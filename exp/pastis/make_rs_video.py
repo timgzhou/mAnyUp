@@ -19,9 +19,9 @@ proportional to that gap (long gap = long hold), which makes the irregularity fe
 Writes MP4 (ffmpeg, for slides) and optionally GIF (--gif, for embedding anywhere).
 
     source env_setup/env_olmo.sh
-    python -u -m exp.viz.make_rs_video --list                 # candidate patches
-    python -u -m exp.viz.make_rs_video --patches 20013,20021  # render these
-    python -u -m exp.viz.make_rs_video --patches 20013 --pace real --gif
+    python -u -m exp.pastis.make_rs_video --list                 # candidate patches
+    python -u -m exp.pastis.make_rs_video --patches 20013,20021  # render these
+    python -u -m exp.pastis.make_rs_video --patches 20013 --pace real --gif
 """
 import argparse
 import json
@@ -174,7 +174,7 @@ def main() -> None:
     ap.add_argument("--dpi", type=int, default=140)
     ap.add_argument("--bitrate", type=int, default=2400)
     ap.add_argument("--gif", action="store_true", help="also write a GIF")
-    ap.add_argument("--out_dir", default="results/pastis/feature_viz/rs_video")
+    ap.add_argument("--out_dir", default="dataset_visualization/pastis/rs_video")
     args = ap.parse_args()
 
     data_dir = Path(args.data_dir)

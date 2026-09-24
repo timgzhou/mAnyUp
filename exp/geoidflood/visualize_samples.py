@@ -32,8 +32,8 @@ S1 GRD/RTC ship as LINEAR sigma0, not dB. We convert with 10*log10 for display (
 loader does the same), because the OlmoEarth S1 encoder was pretrained on dB.
 
 Run (needs rasterio; any env with rasterio+matplotlib works):
-    python -u -m exp.viz.visualize_geoid_flood
-    python -u -m exp.viz.visualize_geoid_flood --root data/GEOID-Flood-full/geoid-flood
+    python -u -m exp.geoidflood.visualize_samples
+    python -u -m exp.geoidflood.visualize_samples --root data/GEOID-Flood-full/geoid-flood
 """
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ from matplotlib.colors import ListedColormap, BoundaryNorm
 from matplotlib.patches import Patch
 
 SAMPLE_ROOT = "data/GEOID-Flood/sample/geoid-flood"
-OUT_DIR = "results/dataset_samples"
+OUT_DIR = "dataset_visualization/geoid_flood"
 
 # Fixed, non-random selection spanning the label regimes you actually hit (percentages are
 # of the 1024x1024 tile, measured from the sample split):

@@ -32,11 +32,9 @@ wandb
 # notebooks
 .ipynb_checkpoints/
 
-# results: keep the CSVs (tracked), ignore generated figures
+# generated figures/videos: never tracked (results/ keeps only its CSVs + READMEs)
 *.png
+*.gif
+*.mp4
+/dataset_visualization/
 !results/**/*.csv
-
-/temp
-/profiling_results
-feature_viz
-cache

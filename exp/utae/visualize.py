@@ -8,7 +8,7 @@ filename, rebuilds the matching model, then for each:
 
 Runs in the base env (torch 2.12), NOT env_olmo:
     source env_setup/env_login.sh
-    python -u visualize_exp/utae/run_pastis.py
+    python -u -m exp.utae.visualize
 
 Note: UTAE works on full 128x128 patches, so these images are NOT the same tiles as
 the OlmoEarth 64x64 viz -- not directly comparable image-to-image.
@@ -30,7 +30,7 @@ from exp.utae import run_pastis as UP   # reuse evaluate / metrics / collate / c
 
 DATA_ROOT = "data/PASTIS-R"
 CKPT_GLOB = "checkpoints/utae_*_best.pt"
-OUT_DIR = "pastis_visualize"
+OUT_DIR = "results/utae/predictions"
 NUM_CLASSES = UP.NUM_CLASSES
 IGNORE_INDEX = UP.IGNORE_INDEX  # 19
 

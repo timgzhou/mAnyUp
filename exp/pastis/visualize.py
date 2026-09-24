@@ -1,15 +1,13 @@
 """Load the finetuned OlmoEarth checkpoint and visualize its prediction on the
 first train sample and the first test sample.
 
-NOTE: the visualized samples are NOT the same physical fields as pastis.py's. The
-OlmoEarth pipeline (PASTISRProcessor) splits each 128x128 PASTIS patch into 4x 64x64
-tiles and uses a fold-based train/val/test split, whereas pastis.py uses torchgeo's
-random 60/20/20 split on full 128x128 patches. We use sample index 0 of each split as
-requested, but they won't visually correspond across the two scripts.
+NOTE: the OlmoEarth pipeline (PASTISRProcessor) splits each 128x128 PASTIS patch into
+4x 64x64 tiles, so these are NOT the same images as the UTAE viz (exp/utae/visualize.py),
+which works on full 128x128 patches.
 
 Run in the OlmoEarth venv:
     source env_setup/env_olmo.sh
-    python -u visualize_olmoearth_pastis.py
+    python -u -m exp.pastis.visualize
 """
 import os
 import re
@@ -52,7 +50,7 @@ MODEL_ID = FT.MODEL_ID
 DATASET = FT.DATASET
 INPUT_MODALITIES = FT.INPUT_MODALITIES
 POOLING_TYPE = FT.POOLING_TYPE
-OUT_DIR = "pastis_visualize"
+OUT_DIR = "results/pastis/predictions"
 IGNORE_INDEX = -1  # OlmoEarth maps PASTIS void (19) -> -1
 
 CKPT_GLOB = "checkpoints/*_best.pt"  # discovered at runtime; head inferred from name
@@ -71,7 +69,7 @@ def _append_csv(row: dict) -> None:
             w.writeheader()
         w.writerow(row)
 
-# PASTIS class names + colormap (same 20-class scheme as pastis.py).
+# PASTIS class names + colormap.
 CLASSES = [
     'background', 'meadow', 'soft_winter_wheat', 'corn', 'winter_barley',
     'winter_rapeseed', 'spring_barley', 'sunflower', 'grapevine', 'beet',
@@ -83,7 +81,7 @@ CMAP = plt.get_cmap('tab20', 20)
 
 
 def compute_metrics(pred, mask, num_classes=20, ignore_index=IGNORE_INDEX):
-    """Per-image accuracy and IoU, each as (micro, macro). Mirrors pastis.py."""
+    """Per-image accuracy and IoU, each as (micro, macro)."""
     pred_t = torch.from_numpy(pred).long()
     mask_t = torch.from_numpy(mask).long()
     micro_acc = multiclass_accuracy(pred_t, mask_t, num_classes, average='micro', ignore_index=ignore_index)
@@ -240,4 +238,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# python -u visualize_olmoearth_pastis.py
+# python -u -m exp.pastis.visualize
