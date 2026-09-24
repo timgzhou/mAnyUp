@@ -4,10 +4,10 @@ Two tiers, by design (explicit-over-implicit, so you can't accidentally launch t
 wrong experiment):
   - REQUIRED architecture fields (no default): model_size, input_modalities,
     head_mode, freeze_backbone. If any is unset, load_config errors.
-  - Tuning knobs with defaults from configs/defaults.yaml: epochs, lr, batch_size,
+  - Tuning knobs with defaults on the Config dataclass below: epochs, lr, batch_size,
     num_workers, seed, data_splits, dataset.
 
-A run = configs/defaults.yaml  (+ optional --config YAML)  (+ --set key=value CLI).
+A run = Config defaults  (+ optional --config YAML)  (+ --set key=value CLI).
 CLI overrides win. Example:
     python -m exp.pastis.finetune_olmoearth --set \
         model_size=base modalities=sentinel2_l2a,sentinel1 head_mode=anyup_t1 freeze_backbone=true
@@ -34,7 +34,6 @@ ALLOWED_MODALITIES = ("sentinel2_l2a", "sentinel1")
 # lp_tcat = lp, but the encoder's time axis is CONCATENATED into the probe input
 # (T*D) instead of mean-pooled away. Same backbone cost; a 12x wider linear head.
 ALLOWED_HEADS = ("lp", "lp_tcat", "anyup", "anyup_t2", "anyup_t1")
-DEFAULTS_YAML = os.path.join(os.path.dirname(__file__), "configs", "defaults.yaml")
 
 # Architecture fields that MUST be set explicitly (no usable default).
 REQUIRED = ("model_size", "input_modalities", "head_mode", "freeze_backbone")
@@ -50,7 +49,7 @@ class Config:
     # freeze_backbone: True -> encoder frozen all epochs (+ frozen AnyUp) -> only head trains.
     freeze_backbone: Optional[bool] = None
 
-    # --- tuning knobs (defaults come from configs/defaults.yaml) ---
+    # --- tuning knobs ---
     # patch_size: token grid = 64/patch_size per side. OlmoEarth's LP eval uses 4
     # (16x16 grid); we previously hardcoded 8 (8x8), which lowered mIoU. Default 4.
     patch_size: int = 4
@@ -147,12 +146,9 @@ def _apply_overrides(data: dict, overrides):
 
 
 def load_config(path: str | None = None, overrides: list[str] | None = None) -> Config:
-    """Build a Config from configs/defaults.yaml + optional --config YAML + --set overrides.
+    """Build a Config from its defaults + optional --config YAML + --set overrides.
     CLI overrides win. Unknown keys and missing required fields raise clear errors."""
     data: dict = {}
-    if os.path.exists(DEFAULTS_YAML):
-        with open(DEFAULTS_YAML) as f:
-            data.update(yaml.safe_load(f) or {})
     if path:
         with open(path) as f:
             y = yaml.safe_load(f) or {}

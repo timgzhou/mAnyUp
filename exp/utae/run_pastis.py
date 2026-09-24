@@ -7,7 +7,7 @@ dates) which UTAE needs.
 
 Runs in the base env (torch 2.12), NOT env_olmo:
     source env_setup/env_login.sh        # or: module load ...; source env_setup/env.sh
-    python -u exp/utae/run_pastis.py --config configs/utae_s2.yaml
+    python -u -m exp.utae.run_pastis --set modalities=S2
 
 Folds follow the PASTIS benchmark: train=1,2,3  val=4  test=5.
 """
@@ -41,7 +41,6 @@ CSV_FIELDS = ["timestamp", "checkpoint", "modalities", "fusion",
               "test_miou", "test_overall_acc", "test_macro_acc", "test_macro_f1"]
 
 
-UTAE_DEFAULTS_YAML = os.path.join(os.path.dirname(__file__), "configs", "utae_defaults.yaml")
 
 
 @dataclass
@@ -50,7 +49,7 @@ class UTAEConfig:
     # multimodal (>1 sat); for uni-modal it's unused.
     modalities: "list[str] | None" = None
     fusion: "str | None" = None    # early | late (required if >1 modality)
-    # tuning knobs (defaults from configs/utae_defaults.yaml)
+    # tuning knobs
     epochs: int = 100
     lr: float = 1e-3
     batch_size: int = 4
@@ -100,11 +99,8 @@ def _coerce(name, value):
 
 
 def load_config(path: str | None = None, overrides: list[str] | None = None) -> UTAEConfig:
-    """utae_defaults.yaml + optional --config YAML + --set key=value (CLI wins)."""
+    """UTAEConfig defaults + optional --config YAML + --set key=value (CLI wins)."""
     data: dict = {}
-    if os.path.exists(UTAE_DEFAULTS_YAML):
-        with open(UTAE_DEFAULTS_YAML) as f:
-            data.update(yaml.safe_load(f) or {})
     if path:
         with open(path) as f:
             data.update(yaml.safe_load(f) or {})
@@ -238,11 +234,10 @@ def main(cfg: UTAEConfig):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train UTAE baseline on PASTIS.")
     parser.add_argument("--config", default=None,
-                        help="Optional YAML overriding configs/utae_defaults.yaml.")
+                        help="Optional YAML overriding the UTAEConfig defaults.")
     parser.add_argument("--set", nargs="*", default=[], metavar="key=value",
                         help="Override fields, e.g. --set modalities=S2,S1A fusion=late epochs=32")
     args = parser.parse_args()
     main(load_config(args.config, getattr(args, "set")))
 
-# env.sh
-# python -u exp/utae/run_pastis.py --config configs/utae_s2.yaml          # ~63 mIoU target
+# python -u -m exp.utae.run_pastis --set modalities=S2          # ~63 mIoU target

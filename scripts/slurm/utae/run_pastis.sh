@@ -9,7 +9,7 @@
 
 # UTAE baseline on PASTIS (uni/multimodal). Uses env/ (torch 2.12), NOT env_olmo.
 # Pass config fields as --set key=value (all args forwarded). modalities is REQUIRED;
-# fusion required when multimodal. Tuning knobs default from configs/utae_defaults.yaml.
+# fusion required when multimodal. Tuning knobs default from UTAEConfig in exp/utae/run_pastis.py.
 #   sbatch scripts/slurm/utae/run_pastis.sh --set modalities=S2,S1A fusion=late
 # Emails the resolved config at start and the final metrics at end.
 

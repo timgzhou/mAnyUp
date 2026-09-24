@@ -9,7 +9,7 @@
 
 # OlmoEarth + AnyUp finetune on PASTIS. Pass config fields as --set key=value (all args
 # are forwarded). Architecture fields are REQUIRED; tuning knobs default from
-# configs/defaults.yaml. See docs/RUNBOOK.md for ready-to-run commands.
+# the Config defaults in exp/common/config.py. See docs/RUNBOOK.md for ready-to-run commands.
 #   sbatch scripts/slurm/pastis/finetune_olmoearth.sh --set model_size=base modalities=sentinel2_l2a,sentinel1 head_mode=anyup_t1 freeze_backbone=true
 # Emails the resolved config at start and the final metrics at end.
 

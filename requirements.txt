@@ -1,8 +1,0 @@
-torch
-torchvision
-xformers
-huggingface_hub
-torchgeo
-lightning
-wandb
-triton

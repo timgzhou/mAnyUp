@@ -536,7 +536,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Finetune OlmoEarth on PASTIS.")
     parser.add_argument("--config", default=None,
-                        help="Optional YAML overriding configs/defaults.yaml.")
+                        help="Optional YAML overriding the Config defaults.")
     parser.add_argument("--set", nargs="*", default=[], metavar="key=value",
                         help="Override config fields, e.g. --set model_size=base "
                              "modalities=sentinel2_l2a,sentinel1 head_mode=anyup_t1 freeze_backbone=true")
