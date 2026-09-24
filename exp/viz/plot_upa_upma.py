@@ -18,7 +18,7 @@ not a comparable bar.
   retrained               -- a per-method probe trained on that method's own upsampled features
                              (eval_pa2pa.py --retrain_head), which removes the asymmetry where
                              UPA/UPMA are judged by a head that never saw upsampled features
-They write to different default filenames, so both can coexist in feature_viz/.
+They write to different default filenames, so both can coexist in results/pastis/feature_viz/.
 
     source env_setup/env_olmo.sh    # (or any env with matplotlib)
     python -u -m exp.viz.plot_upa_upma
@@ -105,12 +105,12 @@ def main() -> None:
                     help="overlay lp_pa2px from the lp CSV as a dashed per-group reference "
                          "(different protocol -- see module docstring)")
     ap.add_argument("--out", default=None,
-                    help="default: feature_viz/upa_upma_vs_patchsize[_retrained].png, so the "
+                    help="default: results/pastis/feature_viz/upa_upma_vs_patchsize[_retrained].png, so the "
                          "two protocols never overwrite each other")
     args = ap.parse_args()
     if args.out is None:
         suffix = "_retrained" if args.eval_mode == "retrained" else ""
-        args.out = f"feature_viz/upa_upma_vs_patchsize{suffix}.png"
+        args.out = f"results/pastis/feature_viz/upa_upma_vs_patchsize{suffix}.png"
 
     rows = load_ups(Path(args.results_csv), args.n_test, args.time_pool, args.eval_mode)
     if not rows:

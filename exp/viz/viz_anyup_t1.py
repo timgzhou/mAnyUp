@@ -56,7 +56,7 @@ def main() -> None:
     ap.add_argument("--pca", default="shared", choices=("shared", "independent"),
                     help="shared: one PCA basis (fit on the anyup output) for every feature "
                          "panel. independent: per-panel basis (max contrast, no shared meaning).")
-    ap.add_argument("--out", default="feature_viz/anyup_t1_compare.png",
+    ap.add_argument("--out", default="results/pastis/feature_viz/anyup_t1_compare.png",
                     help="output TEMPLATE: one file per sample is written as "
                          "<stem>_<split><idx>.png next to this path")
     args = ap.parse_args()

@@ -84,7 +84,7 @@ def main() -> None:
                     help="shared: one PCA basis (fit on LR) for every feature panel in a row. "
                          "independent: each panel gets its own basis (max contrast, no "
                          "cross-panel color meaning).")
-    ap.add_argument("--out", default="feature_viz/upsample_compare.png",
+    ap.add_argument("--out", default="results/pastis/feature_viz/upsample_compare.png",
                     help="output TEMPLATE: one file per sample is written as "
                          "<stem>_<split><idx>.png next to this path")
     args = ap.parse_args()

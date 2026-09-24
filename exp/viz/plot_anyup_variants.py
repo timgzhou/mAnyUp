@@ -67,7 +67,7 @@ def main() -> None:
     ap.add_argument("--clean", action="store_true",
                     help="presentation mode: ablation labels in the legend, no title, no x axis, "
                          "no footnote -- just bars, the y axis, and value labels")
-    ap.add_argument("--out", default="feature_viz/anyup_variants_miou.png")
+    ap.add_argument("--out", default="results/pastis/feature_viz/anyup_variants_miou.png")
     args = ap.parse_args()
 
     vals = load(Path(args.results_csv))

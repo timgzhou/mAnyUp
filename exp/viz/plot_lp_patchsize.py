@@ -57,7 +57,7 @@ def main() -> None:
     ap.add_argument("--head_mode", default="lp_pa2px")
     ap.add_argument("--metric", default="test_miou",
                     choices=["test_miou", "test_overall_acc"])
-    ap.add_argument("--out", default="feature_viz/lp_pa2px_vs_patchsize.png")
+    ap.add_argument("--out", default="results/pastis/feature_viz/lp_pa2px_vs_patchsize.png")
     args = ap.parse_args()
 
     rows = load_rows(Path(args.results_csv), args.head_mode)

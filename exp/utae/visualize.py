@@ -24,8 +24,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
 
-from reference.utae_vendored.utae.dataloader import PASTIS_Dataset
-from reference.utae_vendored.utae.fusion import build_model
+from third_party.utae.dataloader import PASTIS_Dataset
+from exp.utae.fusion import build_model
 from exp.utae import run_pastis as UP   # reuse evaluate / metrics / collate / constants
 
 DATA_ROOT = "data/PASTIS-R"

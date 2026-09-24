@@ -29,9 +29,9 @@ from tqdm import tqdm
 # with a torchvision built for torch 2.7 (the only one in the cluster wheelhouse), so
 # importing it raises "torchvision::nms does not exist". UTAE needs neither.
 
-from reference.utae_vendored.utae.dataloader import PASTIS_Dataset
-from reference.utae_vendored.utae.collate import pad_collate
-from reference.utae_vendored.utae.fusion import build_model
+from third_party.utae.dataloader import PASTIS_Dataset
+from third_party.utae.collate import pad_collate
+from exp.utae.fusion import build_model
 
 NUM_CLASSES = 20
 IGNORE_INDEX = 19          # PASTIS void label

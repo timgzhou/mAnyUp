@@ -34,7 +34,7 @@ def main() -> None:
     ap.add_argument("--results_csv", default=RESULTS_CSV)
     ap.add_argument("--metric", default="test_miou",
                     choices=["test_miou", "test_overall_acc"])
-    ap.add_argument("--out", default="feature_viz/lp_pa2px_ens_vs_patchsize.png")
+    ap.add_argument("--out", default="results/pastis/feature_viz/lp_pa2px_ens_vs_patchsize.png")
     args = ap.parse_args()
 
     csv_path = Path(args.results_csv)

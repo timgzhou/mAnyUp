@@ -174,7 +174,7 @@ def main() -> None:
     ap.add_argument("--dpi", type=int, default=140)
     ap.add_argument("--bitrate", type=int, default=2400)
     ap.add_argument("--gif", action="store_true", help="also write a GIF")
-    ap.add_argument("--out_dir", default="feature_viz/rs_video")
+    ap.add_argument("--out_dir", default="results/pastis/feature_viz/rs_video")
     args = ap.parse_args()
 
     data_dir = Path(args.data_dir)

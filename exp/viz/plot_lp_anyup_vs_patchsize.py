@@ -1,6 +1,6 @@
 """Plot lp_pa2px vs. anyup across the patch-size sweep (PASTIS, OlmoEarth base).
 
-Same style as exp/viz/plot_lp_ens_vs_patchsize.py, so the patch-size figures in feature_viz/
+Same style as exp/viz/plot_lp_ens_vs_patchsize.py, so the patch-size figures in results/pastis/feature_viz/
 read as one series:
   lp_pa2px  -- linear probe straight on the (time-averaged) low-res features
   anyup     -- AnyUp guided upsampling to 64x64 before the same per-pixel probe
@@ -35,7 +35,7 @@ def main() -> None:
     ap.add_argument("--results_csv", default=RESULTS_CSV)
     ap.add_argument("--metric", default="test_miou",
                     choices=["test_miou", "test_overall_acc"])
-    ap.add_argument("--out", default="feature_viz/lp_anyup_vs_patchsize.png")
+    ap.add_argument("--out", default="results/pastis/feature_viz/lp_anyup_vs_patchsize.png")
     args = ap.parse_args()
 
     csv_path = Path(args.results_csv)

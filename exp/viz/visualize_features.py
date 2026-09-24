@@ -360,7 +360,7 @@ def main() -> None:
                          "Columns stay in ps/tile order regardless of the order given here.")
     ap.add_argument("--split", default="test")
     ap.add_argument("--n_images", type=int, default=4)
-    ap.add_argument("--out_dir", default="feature_viz")
+    ap.add_argument("--out_dir", default="results/pastis/feature_viz")
     ap.add_argument("--anyup", action="store_true",
                     help="also render AnyUp guided upsampling of --anyup_dir (needs GPU + torch.hub)")
     ap.add_argument("--anyup_dir", default="oe_base_s2_ps4_tile64",

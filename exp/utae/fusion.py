@@ -17,7 +17,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from .utae import UTAE
+from third_party.utae.utae import UTAE
 
 SAT_CHANNELS = {"S2": 10, "S1A": 3, "S1D": 3}
 
