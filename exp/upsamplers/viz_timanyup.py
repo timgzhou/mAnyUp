@@ -23,8 +23,8 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 
-from exp.upsamplers.common import DATA_ROOT, FEATURES_ROOT, GUIDANCE_BANDS, cfg_bits
-from exp.upsamplers.data_timanyup import TriFeatureDataset, check_arms
+from exp.upsamplers.common import FEATURES_ROOT, GUIDANCE_BANDS, cfg_bits
+from exp.upsamplers.data import TriFeatureDataset, check_arms
 from exp.upsamplers.train_timanyup import (_import_timanyup, _flat_bt, save_epoch_viz,
                                            _forward_losses)
 from exp.common.paths import ANYUP_REPO
@@ -48,7 +48,6 @@ def main():
     p.add_argument("--out_dir", default=None,
                    help="default: <ckpt dir>/viz_samples/<ckpt stem>")
     p.add_argument("--features_root", default=str(FEATURES_ROOT))
-    p.add_argument("--data_root", default=str(DATA_ROOT))
     p.add_argument("--anyup_repo", default=str(ANYUP_REPO))
     args = p.parse_args()
 
@@ -64,8 +63,8 @@ def main():
     check_arms(lrhc_cfg, hrlc_cfg, hrhc_cfg)
 
     froot = Path(args.features_root)
-    ds = TriFeatureDataset(froot / lrhc_cfg, froot / hrlc_cfg, froot / hrhc_cfg,
-                           Path(args.data_root), args.split, guidance_mod=gmod)
+    ds = TriFeatureDataset(froot, lrhc_cfg, hrlc_cfg, hrhc_cfg,
+                           {"valid": "val"}.get(args.split, args.split), guidance_mod=gmod)
 
     lrhc0, _, hrhc0, _ = ds[0]
     T, C = lrhc0.shape[0], lrhc0.shape[1]

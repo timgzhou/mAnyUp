@@ -171,7 +171,8 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
         else:
             kind, per_t, anyup = GUIDANCE_MODES[guidance]
             self._guide = PastisGuidance(split, meta, guidance_spec(
-                kind, guidance_mod, None if per_t else time_pool), anyup_rgb=anyup)
+                kind, guidance_mod, None if per_t else time_pool), anyup_rgb=anyup
+            ).materialize(self.cache.ids)
 
         # Speed path: torch.load-ing N small .pt files from Lustre EVERY epoch is the
         # bottleneck (the GPU sits idle waiting on disk). If the whole split fits in a RAM
@@ -246,7 +247,7 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
 
     def _load_guidance(self, idx: int) -> torch.Tensor:
         """Guidance for the cache's sample at position idx (see GUIDANCE_MODES)."""
-        return self._guide(self.cache.ids[idx])
+        return self._guide.get(self.cache.ids[idx])
 
     def _rgb_shape(self, T: int):
         L = self.label_size                      # guidance is at image == label resolution

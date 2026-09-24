@@ -121,8 +121,8 @@ def main() -> None:
     # --- optional mAnyUp: the one upsampler TRAINED on this LR->HR pair ---
     manyup = None
     if args.manyup or args.manyup_ckpt:
-        from exp.pastis.lp_cached_features import (CachedManyUp, _discover_manyup_ckpts,
-                                                   _load_s2_guidance)
+        from exp.pastis.data import PastisGuidance, guidance_spec, open_cache
+        from exp.pastis.lp_cached_features import CachedManyUp, _discover_manyup_ckpts
         ckpt = args.manyup_ckpt
         if ckpt is None:
             found = _discover_manyup_ckpts(Path(args.manyup_root), args.lr_dir)
@@ -137,10 +137,12 @@ def main() -> None:
         manyup = CachedManyUp(probe_dim, 1, 1, ckpt_path=ckpt,
                               use_proj=args.manyup_use_proj, label_size=64,
                               time_pool=args.time_pool).to(device).eval()
-        # mAnyUp's guidance is the 13-band S2 composite ("mean13"), NOT the RGB the other
-        # upsamplers use, and _load_s2_guidance reads it from finetune_olmoearth.DATA_SPLITS.
-        from exp.pastis import finetune_olmoearth as fmod
-        fmod.DATA_SPLITS = str(data_splits)
+        # mAnyUp's guidance is the 13-band S2 composite, NOT the RGB the other upsamplers
+        # use; built from the LR cache's own time setup, by its sample ids.
+        split = {"valid": "val"}.get(args.split, args.split)
+        lr_cache = open_cache(root, args.lr_dir, split)
+        guide13 = PastisGuidance(split, lr_cache.meta,
+                                 guidance_spec("full", "s2", args.time_pool))
 
     # One figure per sample, 3 columns x 3 rows:
     #   row 0  context     : raw RGB | LR (what every upsampler starts from) | HR (the target)
@@ -168,7 +170,7 @@ def main() -> None:
             ups[method] = out.detach().float().squeeze(0).permute(1, 2, 0).cpu()  # (64,64,D)
         if manyup is not None:
             # 13-band guidance, batched to (1,13,64,64); features() returns (1,D,64,64).
-            g13 = _load_s2_guidance(args.split, r, tpool=args.time_pool).unsqueeze(0).to(device)
+            g13 = guide13(lr_cache.ids[r]).unsqueeze(0).to(device)
             with torch.no_grad():
                 m_hr = manyup.features(feats.to(device), g13)
             ups["manyup"] = m_hr.float().squeeze(0).permute(1, 2, 0).cpu()

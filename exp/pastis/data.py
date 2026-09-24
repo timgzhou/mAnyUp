@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import torch
 
-from exp.common.paths import DATA
+from exp.common.paths import DATA, FEATURES
 from manyup.data import Tiling
 from manyup.data.feature_cache import FeatureCache, LegacyReconstruction
 from manyup.data.guidance import LEGACY_S1_2, LEGACY_S2_13, GuidanceSpec, build_guidance
+from manyup.data.tensor_cache import TensorCache
 from manyup.data.time import month_bounds
 from manyup.data.datasets.pastis import LEGACY_OLMOEARTH_S2, PastisDataset, monthly
 from manyup.data.sample import MTMMBatch
@@ -100,17 +101,32 @@ def imagenet_norm(rgb01: torch.Tensor) -> torch.Tensor:
 
 class PastisGuidance:
     """Guidance by sample id, from the SAME time setup and sample size as a feature cache
-    (read from its meta.json), so features and guidance describe the same data."""
+    (read from its meta.json), so features and guidance describe the same data.
+
+    `__call__` computes one sample from raw PASTIS-R; `materialize` writes a guidance cache
+    once (FEATURES/guidance/<dataset key>__<spec key>/<split>) for loaders that read every
+    sample every epoch."""
 
     def __init__(self, split: str, cache_meta: dict, spec: GuidanceSpec, anyup_rgb: bool = False):
         temporal = cache_meta.get("temporal", "legacy")
         mods = [m for m, (pm, _) in MODALITIES.items() if pm in spec.bands]
         self.ds = make_dataset(split, mods, temporal, cache_meta.get("image_size", 64))
-        self.spec, self.anyup_rgb = spec, anyup_rgb
+        self.split, self.spec, self.anyup_rgb = split, spec, anyup_rgb
 
     def __call__(self, sample_id: str) -> torch.Tensor:
         g = build_guidance(self.ds[self.ds.index_of(sample_id)].modalities, self.spec)
         return imagenet_norm(g) if self.anyup_rgb else g
+
+    @property
+    def name(self) -> str:
+        return f"{self.ds.key}__{self.spec.key}" + ("_imagenet" if self.anyup_rgb else "")
+
+    def materialize(self, ids: list[str], root=FEATURES, num_workers: int = 8) -> TensorCache:
+        meta = {"dataset_key": self.ds.key, "guidance": self.spec.key,
+                "bands": {m: list(b) for m, b in self.spec.bands.items()},
+                "time_pool": self.spec.time_pool, "anyup_imagenet_norm": self.anyup_rgb}
+        where = root / "guidance" / self.name / f"pastis_r_{SPLIT_DIRS[self.split]}"
+        return TensorCache.ensure(where, ids, self, meta, num_workers)
 
 
 def open_cache(root, name: str, split: str) -> FeatureCache:

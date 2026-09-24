@@ -48,10 +48,10 @@ import matplotlib.colors            # ListedColormap for the binary query mask
 import matplotlib.patches           # Patch handles for the mask legend
 
 from exp.upsamplers.common import (
-    DATA_ROOT, FEATURES_ROOT, GUIDANCE_BANDS, guidance_mod_for, cfg_bits,
-    stage_to_tmpdir, warmup_cosine, pca_rgb_shared, raw_rgb,
+    FEATURES_ROOT, GUIDANCE_BANDS, guidance_mod_for, cfg_bits,
+    stage_caches, warmup_cosine, pca_rgb_shared, raw_rgb,
 )
-from exp.upsamplers.data_timanyup import TriFeatureDataset, check_arms
+from exp.upsamplers.data import TriFeatureDataset, check_arms
 from exp.common.paths import ANYUP_REPO
 
 DEFAULT_ANYUP_REPO = str(ANYUP_REPO)
@@ -284,7 +284,6 @@ def main():
                    help="train on one half of the split's ids so the upsampler and a downstream "
                         "LP probe can use disjoint samples")
     p.add_argument("--features_root", default=str(FEATURES_ROOT))
-    p.add_argument("--data_root", default=str(DATA_ROOT))
     p.add_argument("--anyup_repo", default=DEFAULT_ANYUP_REPO)
     p.add_argument("--guidance_mod", default=None, choices=list(GUIDANCE_BANDS))
     # --- model
@@ -341,30 +340,26 @@ def main():
     check_arms(args.lrhc_cfg, args.hrlc_cfg, args.hrhc_cfg)
 
     froot = Path(args.features_root)
-    lrhc_dir, hrlc_dir = froot / args.lrhc_cfg, froot / args.hrlc_cfg
-    hrhc_dir = froot / args.hrhc_cfg
-    data_root = Path(args.data_root)
-    if args.stage_to_tmpdir:
-        lrhc_dir, hrlc_dir, hrhc_dir = stage_to_tmpdir([lrhc_dir, hrlc_dir, hrhc_dir])
-        (staged,) = stage_to_tmpdir([data_root / f"pastis_r_{args.split}"])
-        data_root = staged.parent
-
     if args.guidance_mod is None:
         args.guidance_mod = guidance_mod_for(args.lrhc_cfg)
     guide_bands = GUIDANCE_BANDS[args.guidance_mod]
-    print(f"guidance: {args.guidance_mod} ({guide_bands}-band) from {data_root}")
-
-    ds = TriFeatureDataset(lrhc_dir, hrlc_dir, hrhc_dir, data_root, args.split,
-                           guidance_mod=args.guidance_mod, half=args.id_half)
+    print(f"guidance: {args.guidance_mod} ({guide_bands}-band), per timestep")
+    split = {"valid": "val"}.get(args.split, args.split)
+    mk = lambda root, sp, half: TriFeatureDataset(          # noqa: E731
+        root, args.lrhc_cfg, args.hrlc_cfg, args.hrhc_cfg, sp,
+        guidance_mod=args.guidance_mod, half=half, guidance_root=root)
+    ds = mk(froot, split, args.id_half)          # builds the guidance cache if missing
+    if args.stage_to_tmpdir:                     # then copy features + guidance to local disk
+        staged = stage_caches(froot, [args.lrhc_cfg, args.hrlc_cfg, args.hrhc_cfg,
+                                      str(ds.guide.dir.parent.relative_to(froot))])
+        ds = mk(staged, split, args.id_half)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True,
                         num_workers=args.num_workers, pin_memory=True, drop_last=True)
 
-    # Held-out TEST data: the per-epoch numbers that matter. Feature dirs may be staged, but
-    # test imagery only ever lives in the original data_root (only the train split is staged).
+    # Held-out TEST data: the per-epoch numbers that matter (read in place, not staged).
     test_loader, viz_sample = None, None
     try:
-        test_ds = TriFeatureDataset(lrhc_dir, hrlc_dir, hrhc_dir, Path(args.data_root), "test",
-                                    guidance_mod=args.guidance_mod)
+        test_ds = mk(froot, "test", "all")
         test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False,
                                  num_workers=max(2, args.num_workers // 2), pin_memory=True)
         viz_sample = test_ds[0]

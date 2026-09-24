@@ -28,8 +28,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from exp.upsamplers.common import DATA_ROOT, FEATURES_ROOT, GUIDANCE_BANDS
-from exp.upsamplers.data_timanyup import TriFeatureDataset, check_arms
+from exp.upsamplers.common import FEATURES_ROOT, GUIDANCE_BANDS
+from exp.upsamplers.data import TriFeatureDataset, check_arms
 from exp.upsamplers.train_timanyup import _import_timanyup, _flat_bt
 from exp.common.paths import ANYUP_REPO
 
@@ -48,7 +48,6 @@ def main():
     p.add_argument("--split", default="test")
     p.add_argument("--ks", default="64,256,512,1024,2048")
     p.add_argument("--features_root", default=str(FEATURES_ROOT))
-    p.add_argument("--data_root", default=str(DATA_ROOT))
     p.add_argument("--anyup_repo", default=str(ANYUP_REPO))
     args = p.parse_args()
 
@@ -60,9 +59,8 @@ def main():
     gmod = ca.get("guidance_mod", "s2")
 
     froot = Path(args.features_root)
-    ds = TriFeatureDataset(froot / ca["lrhc_cfg"], froot / ca["hrlc_cfg"],
-                           froot / ca["hrhc_cfg"], Path(args.data_root), args.split,
-                           guidance_mod=gmod)
+    ds = TriFeatureDataset(froot, ca["lrhc_cfg"], ca["hrlc_cfg"], ca["hrhc_cfg"],
+                           {"valid": "val"}.get(args.split, args.split), guidance_mod=gmod)
     lrhc0, _, hrhc0, _ = ds[0]
     T, C = lrhc0.shape[0], lrhc0.shape[1]
     GH, GW = hrhc0.shape[-2:]

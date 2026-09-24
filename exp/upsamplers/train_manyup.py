@@ -37,22 +37,21 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 
 import matplotlib
 matplotlib.use("Agg")        # headless cluster
 import matplotlib.pyplot as plt
 
-# Guidance time-pooling is shared with the UPA/UPMA/AnyUp paths (single source of truth).
-from exp.upsamplers.upa_anyup import time_pool, TIME_POOLS
+from exp.upsamplers.upa_anyup import TIME_POOLS
 # Plumbing shared with train_timanyup.py -- guidance normalization and the LR schedule in
 # particular MUST stay identical across trainers (see exp/upsamplers/common.py).
 from exp.upsamplers.common import (
-    DATA_ROOT, FEATURES_ROOT, GUIDANCE_BANDS, GUIDANCE_DIRS, guidance_mod_for,
-    cfg_bits as _cfg_bits_shared, norm_guidance as _norm_guidance,
-    stage_to_tmpdir, warmup_cosine as _warmup_cosine,
+    FEATURES_ROOT, GUIDANCE_BANDS, guidance_mod_for, cfg_bits as _cfg_bits_shared,
+    stage_caches, warmup_cosine as _warmup_cosine,
     pca_rgb_shared as _pca_rgb_shared, raw_rgb as _raw_rgb,
 )
+from exp.upsamplers.data import PairedFeatureDataset
 from exp.common.paths import ANYUP_REPO
 
 # ----- import stock AnyUp from the vendored repo; mAnyUp + loss live in ./manyup -----
@@ -79,66 +78,7 @@ def _import_anyup(repo: str, arch: str = "anyup"):
 
 
 # --------------------------------------------------------------------------------------------- #
-# Dataset: pair (LR feats, HR feats, S2 guidance) per sample, skipping any index missing in any
-# of the three sources (robust to partially-extracted feature dirs and to swapping the HR target).
-# --------------------------------------------------------------------------------------------- #
-class PairedFeatureDataset(Dataset):
-    def __init__(self, lr_dir: Path, hr_dir: Path, s2_dir: Path, split: str,
-                 time_pool: str = "mean", guidance_mod: str = "s2", half: str = "all"):
-        self.lr_dir = lr_dir / f"pastis_r_{split}"
-        self.hr_dir = hr_dir / f"pastis_r_{split}"
-        # Guidance imagery. Which modality guides the upsampling is a CHOICE, not a
-        # constant: guiding S1 features with S2 imagery is a cross-modal mismatch, so this
-        # defaults to the arm the features come from (see --guidance_mod).
-        self.guidance_mod = guidance_mod
-        self.guide_dirs = [s2_dir / f"pastis_r_{split}" / f"{m}_images"
-                           for m in GUIDANCE_DIRS[guidance_mod]]
-        self.s2_dir = self.guide_dirs[0]   # index/count checks use the first
-        # Guidance pooling is baked into the learned weights: the guidance encoder adapts to
-        # whatever composite it sees here, so a checkpoint trained with mean guidance must be
-        # evaluated with mean guidance. lp_on_cached_features._load_s2_guidance mirrors this,
-        # and the ckpt name records it so the two cannot silently drift apart.
-        self.time_pool = time_pool
-
-        def indices(d: Path):
-            return {int(p.stem) for p in d.glob("[0-9]*.pt")}
-
-        # Train only on indices present in ALL three sources.
-        common = indices(self.lr_dir) & indices(self.hr_dir) & indices(self.s2_dir)
-        self.ids = sorted(common)
-        # Optional disjoint half. The upsampler and the LP probe that reads its output are
-        # otherwise fitted on the SAME samples, so probe training sees features the upsampler
-        # has already fit -- a leak that flatters mAnyUp relative to a baseline probe trained
-        # on raw features. half="first"/"second" splits the ids so the two stages can be
-        # trained on disjoint data (the probe takes the other half via --id_half).
-        if half in ("first", "second"):
-            mid = len(self.ids) // 2
-            self.ids = self.ids[:mid] if half == "first" else self.ids[mid:]
-            print(f"[{split}] id_half={half}: {len(self.ids)} of {len(common)} samples")
-        if not self.ids:
-            raise RuntimeError(f"no common {split} samples across\n  {self.lr_dir}\n  {self.hr_dir}"
-                               f"\n  {self.s2_dir}")
-        n_lr, n_hr, n_s2 = len(indices(self.lr_dir)), len(indices(self.hr_dir)), len(indices(self.s2_dir))
-        print(f"[{split}] LR={n_lr} HR={n_hr} S2={n_s2} -> {len(self.ids)} common samples")
-
-    def __len__(self):
-        return len(self.ids)
-
-    def __getitem__(self, i):
-        idx = self.ids[i]
-        # features: (T, gH, gW, D) fp16 -> mean over T -> (D, gH, gW) fp32
-        lr = torch.load(self.lr_dir / f"{idx}.pt").float().mean(0).permute(2, 0, 1)   # (D, gh, gw)
-        hr = torch.load(self.hr_dir / f"{idx}.pt").float().mean(0).permute(2, 0, 1)   # (D, GH, GW)
-        # guidance: each (T, C, 64, 64) fp32 -> pooled over T -> (C, 64, 64), normalized, then
-        # concatenated on the band axis (s2 13 + s1 2 = 15 for the s2s1 arm). Normalizing BEFORE
-        # the concat keeps each modality on its own [0,1] scale -- S1 dB and S2 reflectance have
-        # very different dynamic ranges and a joint min-max would swamp one of them.
-        s2 = torch.cat([_norm_guidance(time_pool(torch.load(d / f"{idx}.pt").float(),
-                                                 self.time_pool))
-                        for d in self.guide_dirs], dim=0)
-        return lr, hr, s2
-
-
+# Data: exp.upsamplers.data.PairedFeatureDataset -- (LR feats, HR feats, guidance) by sample id.
 # --------------------------------------------------------------------------------------------- #
 @torch.no_grad()
 def save_epoch_viz(model, proj_head, sample, GH, GW, device, out_path, epoch,
@@ -205,7 +145,6 @@ def main():
                    help="train on only one half of the split's ids, so the upsampler and the "
                         "LP probe that consumes it can use disjoint samples")
     p.add_argument("--features_root", default=str(FEATURES_ROOT))
-    p.add_argument("--data_root", default=str(DATA_ROOT))
     p.add_argument("--anyup_repo", default=DEFAULT_ANYUP_REPO)
     p.add_argument("--arch", default="anyup", choices=("anyup", "manyup"),
                    help="anyup = stock (output is linear in the LR features); manyup = adds a "
@@ -264,37 +203,27 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     froot = Path(args.features_root)
-    lr_dir, hr_dir = froot / args.lr_cfg, froot / args.hr_cfg
-    data_root = Path(args.data_root)
-
-    # Optionally stage the big feature dirs + S2 images to node-local disk.
-    if args.stage_to_tmpdir:
-        lr_dir, hr_dir = stage_to_tmpdir([lr_dir, hr_dir])
-        # S2 images live under data_root/pastis_r_<split>/s2_images; stage the split dir.
-        s2_split = data_root / f"pastis_r_{args.split}"
-        (s2_split_staged,) = stage_to_tmpdir([s2_split])
-        data_root = s2_split_staged.parent   # so PairedFeatureDataset finds pastis_r_<split>/s2_images
-
     if args.guidance_mod is None:
         args.guidance_mod = guidance_mod_for(args.lr_cfg)
     guide_bands = GUIDANCE_BANDS[args.guidance_mod]
-    print(f"guidance: {args.guidance_mod} ({guide_bands}-band) from {data_root}")
-
-    ds = PairedFeatureDataset(lr_dir, hr_dir, data_root, args.split, half=args.id_half,
-                              time_pool=args.time_pool, guidance_mod=args.guidance_mod)
+    print(f"guidance: {args.guidance_mod} ({guide_bands}-band), time_pool {args.time_pool}")
+    split = {"valid": "val"}.get(args.split, args.split)
+    mk = lambda root, sp, half: PairedFeatureDataset(          # noqa: E731
+        root, args.lr_cfg, args.hr_cfg, sp, time_pool=args.time_pool,
+        guidance_mod=args.guidance_mod, half=half, guidance_root=root)
+    ds = mk(froot, split, args.id_half)          # builds the guidance cache if missing
+    if args.stage_to_tmpdir:                     # then copy features + guidance to local disk
+        staged = stage_caches(froot, [args.lr_cfg, args.hr_cfg,
+                                      str(ds.guide.dir.parent.relative_to(froot))])
+        ds = mk(staged, split, args.id_half)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True,
                         num_workers=args.num_workers, pin_memory=True, drop_last=True)
 
-    # Held-out TEST sample for the per-epoch viz. Feature dirs (possibly staged) contain the test
-    # split too; S2 test images come from the ORIGINAL data_root (only train S2 was staged).
+    # Held-out TEST sample for the per-epoch viz (same guidance_mod as training: the model's
+    # image encoder is built for that band count).
     viz_sample = None
     try:
-        # guidance_mod MUST match the train loader: the model's image encoder is built for that
-        # band count, so an s2-guided viz sample crashes an s1-guided model (13 vs 2 channels).
-        test_ds = PairedFeatureDataset(lr_dir, hr_dir, Path(args.data_root), "test",
-                                       time_pool=args.time_pool,
-                                       guidance_mod=args.guidance_mod)
-        viz_sample = test_ds[0]   # first common test sample: (lr, hr, s2)
+        viz_sample = mk(froot, "test", "all")[0]   # first common test sample: (lr, hr, s2)
     except RuntimeError as e:
         print(f"viz disabled: no usable test sample ({e})")
 

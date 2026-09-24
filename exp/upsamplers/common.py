@@ -1,10 +1,7 @@
-"""Shared plumbing for the feature-upsampler trainers (train_manyup, train_timanyup).
-
-These started life inside train_manyup.py. They are here so the timAnyUp trainer can REUSE
-them rather than fork them -- guidance normalization and the LR schedule in particular must
-stay bit-identical across trainers, because checkpoints from either are evaluated by the same
-lp_cached_features.py path and a silent drift in normalization would show up as an unexplained
-metric gap rather than as an error.
+"""Shared plumbing for the feature-upsampler trainers (train_manyup, train_timanyup): cfg-name
+parsing, node-local staging, the LR schedule and viz helpers. Their inputs (features, guidance)
+come from exp/upsamplers/data.py; guidance itself is built in manyup/data/guidance.py, so both
+trainers and the probe that evaluates their checkpoints share one implementation.
 """
 import math
 import os
@@ -15,16 +12,13 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from exp.common.paths import DATA, FEATURES
+from exp.common.paths import FEATURES
+from exp.pastis.data import GUIDANCE_MODS, guidance_spec
 
-DATA_ROOT = DATA / "pastis_olmoearth"
 FEATURES_ROOT = FEATURES
 
-# Guidance band counts per modality (PASTIS prep: s2 = 13-band L2A, s1 = 2-band VV/VH;
-# s2s1 stacks both -> 15 bands).
-GUIDANCE_BANDS = {"s2": 13, "s1": 2, "s2s1": 15}
-# Which per-sample image dirs a guidance modality reads, in channel order.
-GUIDANCE_DIRS = {"s2": ["s2"], "s1": ["s1"], "s2s1": ["s2", "s1"]}
+# Channels of the full guidance stack per guidance_mod (s2 13, s1 2, s2s1 15), from its spec.
+GUIDANCE_BANDS = {m: guidance_spec("full", m, "mean").channels for m in GUIDANCE_MODS}
 
 
 def guidance_mod_for(cfg: str) -> str:
@@ -42,52 +36,27 @@ def cfg_bits(cfg: str):
     return (m.group(1), m.group(2)) if m else ("mods", "?")
 
 
-def norm_guidance(s2: torch.Tensor) -> torch.Tensor:
-    """Per-image, per-band min-max normalize the guidance to [0,1]. No ImageNet stats -- with
-    13 bands and a from-scratch guidance encoder, a simple [0,1] scaling is the natural choice
-    (the encoder learns its own band statistics).
-
-    Accepts (C,H,W) or (T,C,H,W); normalizes each frame's bands independently, so a
-    per-timestep guidance stack is scaled exactly as the pooled composite would be."""
-    # min/max over the spatial axes only, so each (t, band) is scaled on its own -- identical
-    # to the original per-band (C,H,W) formula, and framewise for a (T,C,H,W) stack.
-    lo = s2.amin(dim=(-2, -1), keepdim=True)
-    hi = s2.amax(dim=(-2, -1), keepdim=True)
-    return (s2 - lo) / (hi - lo + 1e-6)
-
-
-def stage_to_tmpdir(dirs: list[Path]) -> list[Path]:
-    """Copy feature/data dirs into $SLURM_TMPDIR (node-local SSD) if set and they fit, returning
-    the new paths. Cached features + images are large and moved to GPU every step, so reading
-    them from fast local disk instead of Lustre is a big speedup. No-op (returns originals) if
-    SLURM_TMPDIR is unset or the data doesn't fit in the available space."""
+def stage_caches(root: Path, rel_dirs: list[str]) -> Path:
+    """Copy cache folders (feature caches, guidance caches) from `root` into $SLURM_TMPDIR at the
+    SAME relative paths, and return the root to read them from: the staged one, or `root` if
+    SLURM_TMPDIR is unset or they do not fit (then nothing is copied)."""
     tmp = os.environ.get("SLURM_TMPDIR")
     if not tmp:
-        print("SLURM_TMPDIR unset -> reading features in place (no staging).")
-        return dirs
-    tmp = Path(tmp)
-
-    def dir_bytes(p: Path) -> int:
-        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
-
-    total = sum(dir_bytes(d) for d in dirs)
+        print("SLURM_TMPDIR unset -> reading caches in place (no staging).")
+        return root
+    srcs = [root / r for r in rel_dirs]
+    total = sum(f.stat().st_size for d in srcs for f in d.rglob("*") if f.is_file())
     free = shutil.disk_usage(tmp).free
     if total > free * 0.95:
-        print(f"staging: need {total/1e9:.1f} GB but only {free/1e9:.1f} GB free in {tmp} "
-              f"-> reading in place.")
-        return dirs
-
-    staged = []
-    for d in dirs:
-        dst = tmp / d.name
-        if dst.exists():
-            print(f"staging: {dst} already present, reusing.")
-        else:
+        print(f"staging: need {total/1e9:.1f} GB, {free/1e9:.1f} GB free -> reading in place.")
+        return root
+    for r, src in zip(rel_dirs, srcs):
+        dst = Path(tmp) / r
+        if not dst.exists():
             t0 = time.time()
-            shutil.copytree(d, dst)
-            print(f"staged {d} -> {dst} ({dir_bytes(d)/1e9:.1f} GB, {time.time()-t0:.0f}s)")
-        staged.append(dst)
-    return staged
+            shutil.copytree(src, dst)
+            print(f"staged {src} -> {dst} ({time.time() - t0:.0f}s)")
+    return Path(tmp)
 
 
 def warmup_cosine(optimizer, total_steps, warmup_frac, lr, lr_min):
