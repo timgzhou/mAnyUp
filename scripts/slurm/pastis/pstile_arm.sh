@@ -21,14 +21,15 @@
 # Env vars:
 #   PATCH_SIZE  (required)
 #   TILE_SIZE   (required)
+#   TEMPORAL    (required) legacy | monthly, see exp/pastis/extract_features.py
 #   IMAGE_SIZE  (default 64; use 128 with DATA_SPLITS=data/pastis128_olmoearth)
 #   MODALITIES  (default sentinel2_l2a)
 #   EPOCHS      (default 32)  lp_cached_features epochs
 #   KEEP_FEATURES (default auto)
 #
 # Examples:
-#   sbatch --export=ALL,PATCH_SIZE=8,TILE_SIZE=16 scripts/slurm/pastis/pstile_arm.sh
-#   sbatch --export=ALL,PATCH_SIZE=4,TILE_SIZE=128,IMAGE_SIZE=128,DATA_SPLITS=data/pastis128_olmoearth scripts/slurm/pastis/pstile_arm.sh
+#   sbatch --export=ALL,TEMPORAL=monthly,PATCH_SIZE=8,TILE_SIZE=16 scripts/slurm/pastis/pstile_arm.sh
+#   sbatch --export=ALL,TEMPORAL=monthly,PATCH_SIZE=4,TILE_SIZE=128,IMAGE_SIZE=128,DATA_SPLITS=data/pastis128_olmoearth scripts/slurm/pastis/pstile_arm.sh
 
 EMAIL="tiange.zhou@outlook.com"
 export TQDM_DISABLE=1
@@ -65,11 +66,15 @@ cd "$SLURM_SUBMIT_DIR"
 mkdir -p logs/pastis results/pastis
 source env_setup/env_olmo.sh
 
-# Feature dir name must match extract_features.cfg_name(): oe_<size>_<mods>_ps<P>_tile<T>[_img<N>]
+# Feature dir name must match extract_features.cfg_name():
+#   oe_<size>_<mods>_ps<P>_tile<T>[_img<N>][_<temporal>]   (legacy adds no suffix)
+TEMPORAL="${TEMPORAL:?set TEMPORAL=legacy|monthly}"
 MODS=$(echo "$MODALITIES" | sed 's/sentinel2_l2a/s2/g; s/sentinel1/s1/g; s/,//g')
 IMGSUF=""
 [ "$IMAGE_SIZE" != "64" ] && IMGSUF="_img${IMAGE_SIZE}"
-FEATURES="oe_${MODEL_SIZE}_${MODS}_ps${PATCH_SIZE}_tile${TILE_SIZE}${IMGSUF}"
+TSUF=""
+[ "$TEMPORAL" != "legacy" ] && TSUF="_${TEMPORAL}"
+FEATURES="oe_${MODEL_SIZE}_${MODS}_ps${PATCH_SIZE}_tile${TILE_SIZE}${IMGSUF}${TSUF}"
 TAG="ps${PATCH_SIZE} tile${TILE_SIZE} img${IMAGE_SIZE}"
 
 echo "=== config $FEATURES (keep_features=$KEEP) ==="
@@ -79,7 +84,7 @@ echo "extract ps=$PATCH_SIZE tile=$TILE_SIZE img=$IMAGE_SIZE splits=$DATA_SPLITS
 python -u -m exp.pastis.extract_features \
     --model_size "$MODEL_SIZE" --modalities "$MODALITIES" \
     --patch_size "$PATCH_SIZE" --tile_size "$TILE_SIZE" --image_size "$IMAGE_SIZE" \
-    --data_splits "$DATA_SPLITS" --batch_size "$BATCH_SIZE" --out_root "$OUT_ROOT"
+    --temporal "$TEMPORAL" --batch_size "$BATCH_SIZE" --out_root "$OUT_ROOT"
 EXTRACT_STATUS=$?
 
 LP_STATUS=-1

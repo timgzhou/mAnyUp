@@ -19,7 +19,7 @@
 # exist (shuffle=False makes indices stable), so a successor resumes instead of restarting.
 # The chain stops when extraction completes, and the LAST job runs the LP probe.
 #
-#   sbatch scripts/slurm/pastis/extract_chain.sh
+#   sbatch --export=ALL,TEMPORAL=monthly scripts/slurm/pastis/extract_chain.sh
 
 EMAIL="tiange.zhou@outlook.com"
 export TQDM_DISABLE=1
@@ -30,9 +30,12 @@ PATCH_SIZE="${PATCH_SIZE:-1}"
 TILE_SIZE="${TILE_SIZE:-128}"
 IMAGE_SIZE="${IMAGE_SIZE:-128}"
 DATA_SPLITS="${DATA_SPLITS:-data/pastis128_olmoearth}"
+TEMPORAL="${TEMPORAL:?set TEMPORAL=legacy|monthly (see exp/pastis/extract_features.py)}"
 IMGSUF=""
 [ "$IMAGE_SIZE" != "64" ] && IMGSUF="_img${IMAGE_SIZE}"
-FEATURES="oe_base_s2_ps${PATCH_SIZE}_tile${TILE_SIZE}${IMGSUF}"
+TSUF=""
+[ "$TEMPORAL" != "legacy" ] && TSUF="_${TEMPORAL}"
+FEATURES="oe_base_s2_ps${PATCH_SIZE}_tile${TILE_SIZE}${IMGSUF}${TSUF}"
 OUT_ROOT="${OUT_ROOT:-$HOME/projects/aip-gpleiss/timz/features}"
 RESULTS_CSV="results/pastis/lp_olmoearth_pastis.csv"
 MAX_LINKS="${MAX_LINKS:-8}"          # safety stop so a bug cannot chain forever
@@ -66,7 +69,7 @@ fi
 python -u -m exp.pastis.extract_features \
     --model_size base --modalities sentinel2_l2a \
     --patch_size $PATCH_SIZE --tile_size $TILE_SIZE --image_size $IMAGE_SIZE \
-    --data_splits "$DATA_SPLITS" --batch_size 1 --out_root "$OUT_ROOT"
+    --temporal "$TEMPORAL" --batch_size 1 --out_root "$OUT_ROOT"
 EXTRACT_STATUS=$?
 
 HAVE=$(total_have)

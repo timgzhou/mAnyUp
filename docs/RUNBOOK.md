@@ -31,10 +31,13 @@ space, override with `$MANYUP_FEATURES`), checkpoints under `checkpoints/`, CSVs
 
 Code: `exp/pastis/` · Results: `results/pastis/`
 
-### Data prep (once)
+### Data
 
-Needs about 256 GB RAM and no GPU. `PASTISRProcessor` holds every fold in memory before
-saving.
+Feature extraction reads raw `data/PASTIS-R` through `manyup.data.datasets.PastisDataset`
+(S2 and S1A on their own dates; 64 px tiles; see `monthly()` for the default time setup).
+The legacy OlmoEarth prep below is still read by fine-tuning and by the probes (labels,
+AnyUp guidance) until they move to the data layer. It needs about 256 GB RAM and no GPU.
+**Its S1 is misaligned** (S1A frames grouped by S2 dates), so never use it for S1.
 
 ```shell
 sbatch -J prep --gres=none --mem=256G scripts/slurm/run.sh exp.pastis.prepare_data
@@ -58,12 +61,15 @@ python -u -m exp.pastis.finetune_olmoearth --set model_size=tiny modalities=sent
 
 ### Cached features + linear probe
 
-Feature caches are named `oe_<size>_<mods>_ps<P>_tile<T>[_img128][_single][_ft<tag>]`.
+Feature caches are named `oe_<size>_<mods>_ps<P>_tile<T>[_single][_img128][_monthly][_ft<tag>]`;
+`meta.json` records the exact temporal keys and `ids.txt` the sample id of every index.
+`--temporal` is required: `monthly` (default setup) or `legacy` (OlmoEarth's prep, S2 only;
+the pre-existing caches, whose names carry no suffix).
 
 ```shell
-# extract (tile 128 needs --image_size 128 --data_splits data/pastis128_olmoearth)
+# extract (--image_size 128 = whole 128 px patches)
 sbatch -J extract --time=9:00:00 scripts/slurm/run.sh exp.pastis.extract_features \
-    --modalities sentinel2_l2a --patch_size 4 --tile_size 64
+    --temporal monthly --modalities sentinel2_l2a,sentinel1 --patch_size 4 --tile_size 64
 #   --temporal_mode single   T independent T=1 calls (no cross-timestep attention)
 #   --init_ckpt <ckpt.pt>    features from a FINE-TUNED encoder (separate _ft cache)
 
@@ -80,8 +86,8 @@ unless it is kept (ps1 and ps8 by default). A cache too slow for one job's wallt
 self-resubmitting chain:
 
 ```shell
-sbatch --export=ALL,PATCH_SIZE=8,TILE_SIZE=16 scripts/slurm/pastis/pstile_arm.sh
-sbatch --export=ALL,PATCH_SIZE=1,TILE_SIZE=128,IMAGE_SIZE=128 scripts/slurm/pastis/extract_chain.sh
+sbatch --export=ALL,TEMPORAL=monthly,PATCH_SIZE=8,TILE_SIZE=16 scripts/slurm/pastis/pstile_arm.sh
+sbatch --export=ALL,TEMPORAL=monthly,PATCH_SIZE=1,TILE_SIZE=128,IMAGE_SIZE=128 scripts/slurm/pastis/extract_chain.sh
 ```
 
 ### Visualization

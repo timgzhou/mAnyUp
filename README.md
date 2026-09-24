@@ -45,8 +45,9 @@ node-local disk (`$SLURM_TMPDIR`, else `$TMPDIR`), never inside the repo. Everyt
 **from the repo root**, interactively or through the generic launcher:
 
 ```shell
-python -u -m exp.pastis.extract_features --patch_size 4 --tile_size 64
-sbatch -J extract --time=9:00:00 scripts/slurm/run.sh exp.pastis.extract_features --patch_size 4 --tile_size 64
+python -u -m exp.pastis.extract_features --temporal monthly --patch_size 4 --tile_size 64
+sbatch -J extract --time=9:00:00 scripts/slurm/run.sh exp.pastis.extract_features \
+    --temporal monthly --patch_size 4 --tile_size 64
 ```
 
 See [docs/RUNBOOK.md](docs/RUNBOOK.md) for every experiment.

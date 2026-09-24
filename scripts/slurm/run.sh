@@ -14,7 +14,7 @@
 # the log (logs/<job-name>_<jobid>.out) says what ran:
 #
 #   sbatch -J extract --time=9:00:00 scripts/slurm/run.sh exp.pastis.extract_features \
-#       --modalities sentinel2_l2a --patch_size 4 --tile_size 64
+#       --temporal monthly --modalities sentinel2_l2a --patch_size 4 --tile_size 64
 #   sbatch -J prep --gres=none --mem=256G scripts/slurm/run.sh exp.pastis.prepare_data
 #   sbatch -J mu --time=12:00:00 scripts/slurm/run.sh exp.upsamplers.train_manyup \
 #       --lr_cfg oe_base_s2_ps16_tile64 --hr_cfg oe_base_s2_ps4_tile64 --stage_to_tmpdir

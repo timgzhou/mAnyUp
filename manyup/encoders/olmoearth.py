@@ -35,51 +35,33 @@ LEGACY_S2_IMPUTE = {"B01": "B02", "B09": "B8A"}
 MAX_FOLDED_ITEMS = 16384   # cap on batch width when folding tiles/time into the batch
 
 
-class OlmoEarthEncoder(Encoder):
-    TEMPORAL_MODES = ("series", "per_timestep")
-    KEEPS_TIME = True
+class OlmoEarthInput:
+    """Packs an MTMMBatch into OlmoEarth's MaskedOlmoEarthSample. No model: fine-tuning code
+    that needs gradients through OlmoEarth uses this directly; OlmoEarthEncoder wraps it."""
 
-    def __init__(self, model_id: str, modality_map: dict[str, str], patch_size: int,
-                 tile_size: int, impute: dict[str, dict[str, str]] | None = None,
-                 name: str | None = None, amp: bool = True):
-        super().__init__()
-        self.model_id, self.patch_size, self.tile_size, self.amp = model_id, patch_size, tile_size, amp
+    def __init__(self, modality_map: dict[str, str],
+                 impute: dict[str, dict[str, str]] | None = None):
         self.modality_map = dict(modality_map)
         self.olmo = {m: Modality.get(o) for m, o in self.modality_map.items()}
         self.impute = {m: dict((impute or {}).get(m, {})) for m in self.modality_map}
-        self.key = name or model_id.lower()
-        model = load_model_from_id(getattr(ModelID, model_id), load_weights=True)
-        self.encoder = model.encoder if hasattr(model, "encoder") else model
         self.normalizer = Normalizer(Strategy.COMPUTED)
 
-    # --- requirements ---------------------------------------------------------------------
-    def requirements(self) -> Requirements:
-        bands = {}
-        for m, om in self.olmo.items():
-            need = [b for b in om.band_order if b not in self.impute[m]]
-            bands[m] = tuple(need) + tuple(self.impute[m].values())
-        return Requirements(bands=bands, aligned_time=True, max_frames=None,
-                            size_multiple=self.tile_size)
+    def bands(self) -> dict[str, tuple[str, ...]]:
+        """Dataset bands read per modality (OlmoEarth order, imputation sources last)."""
+        return {m: tuple(b for b in om.band_order if b not in self.impute[m])
+                + tuple(self.impute[m].values()) for m, om in self.olmo.items()}
 
-    def check(self, dataset: MTMMDataset, temporal_mode: str) -> None:
-        # dataset band names may differ in case ("VV" vs "vv"); compare case-insensitively
-        needed = {m: tuple(b.upper() for b in bs) for m, bs in self.requirements().bands.items()}
-        for m, need in needed.items():
+    def check(self, dataset: MTMMDataset) -> None:
+        for m, need in self.bands().items():
             if m not in dataset.modalities:
-                raise ValueError(f"{self.key} needs modality {m!r}; dataset gives "
+                raise ValueError(f"OlmoEarth input needs modality {m!r}; dataset gives "
                                  f"{sorted(dataset.modalities)}")
             have = {b.upper() for b in dataset.SPEC.modalities[m].bands}
-            if set(need) - have:
-                raise ValueError(f"{self.key}: {dataset.SPEC.name}/{m} lacks bands "
-                                 f"{sorted(set(need) - have)}; add them to `impute`")
-        if temporal_mode not in self.TEMPORAL_MODES:
-            raise ValueError(f"temporal_mode {temporal_mode!r} not in {self.TEMPORAL_MODES}")
-        size = dataset.tiling.size if dataset.tiling else min(dataset.SPEC.native_shape)
-        if size % self.tile_size or self.tile_size % self.patch_size:
-            raise ValueError(f"sample {size}, tile {self.tile_size}, patch {self.patch_size} "
-                             "must nest")
+            lacking = {b.upper() for b in need} - have
+            if lacking:
+                raise ValueError(f"{dataset.SPEC.name}/{m} lacks bands {sorted(lacking)}; "
+                                 "add them to `impute`")
 
-    # --- MTMMBatch -> MaskedOlmoEarthSample ---------------------------------------------------
     def _band_index(self, m: str, bands: tuple[str, ...]) -> list[int]:
         by_name = {b.upper(): i for i, b in enumerate(bands)}
         idx = []
@@ -91,7 +73,8 @@ class OlmoEarthEncoder(Encoder):
         return idx
 
     def to_olmoearth(self, batch: MTMMBatch) -> tuple[MaskedOlmoEarthSample, torch.Tensor]:
-        """Returns the packed sample and frame_valid (B, T) shared by the mapped modalities."""
+        """Returns the packed sample and frame_valid (B, T): a step is valid if any mapped
+        modality has data there."""
         mods = [batch.modalities[m] for m in self.modality_map]
         ref = mods[0]
         for m, mb in zip(self.modality_map, mods):
@@ -100,16 +83,14 @@ class OlmoEarthEncoder(Encoder):
             if not torch.equal(mb.t_start, ref.t_start):
                 raise ValueError(f"{m}: time axis differs from {list(self.modality_map)[0]}; "
                                  "OlmoEarth needs aligned modalities (e.g. one Pool window)")
-        d = {"timestamps": self._timestamps(ref.t_start)}
-        for m, mb in zip(self.modality_map, mods):
-            x = mb.data.float()[:, :, self._band_index(m, mb.bands)]          # (B,T,C,H,W)
-            x = x.permute(0, 3, 4, 1, 2).contiguous().numpy()                  # (B,H,W,T,C)
-            d[self.olmo[m].name] = torch.from_numpy(
-                self.normalizer.normalize(self.olmo[m], x)).float()
-        # One mask entry per value, same shape as the data (what OlmoEarth's own eval builds):
-        # ONLINE_ENCODER everywhere except the frames the data marks invalid.
+        d = {"timestamps": _timestamps(ref.t_start)}
         for m, mb in zip(self.modality_map, mods):
             name = self.olmo[m].name
+            x = mb.data.float()[:, :, self._band_index(m, mb.bands)]          # (B,T,C,H,W)
+            x = x.permute(0, 3, 4, 1, 2).contiguous().numpy()                  # (B,H,W,T,C)
+            d[name] = torch.from_numpy(self.normalizer.normalize(self.olmo[m], x)).float()
+            # One mask entry per value, same shape as the data (what OlmoEarth's own eval
+            # builds): ONLINE_ENCODER except on the frames the data marks invalid.
             mask = torch.full_like(d[name], MaskValue.ONLINE_ENCODER.value)
             b_idx, t_idx = (~mb.frame_valid).nonzero(as_tuple=True)
             mask[b_idx, :, :, t_idx] = MaskValue.MISSING.value
@@ -117,29 +98,70 @@ class OlmoEarthEncoder(Encoder):
         frame_valid = torch.stack([mb.frame_valid for mb in mods]).any(0)
         return MaskedOlmoEarthSample(**d), frame_valid
 
-    @staticmethod
-    def _timestamps(t_start: torch.Tensor) -> torch.Tensor:
-        """(B, T) days -> (B, T, 3) [day, month (0-11), year]; padding reuses a real date."""
-        B, T = t_start.shape
-        out = torch.zeros(B, T, 3, dtype=torch.long)
-        for b in range(B):
-            fill = int(t_start[b][t_start[b] >= 0][0])
-            for t in range(T):
-                d = from_days(int(t_start[b, t]) if t_start[b, t] >= 0 else fill)
-                out[b, t] = torch.tensor([d.day, d.month - 1, d.year])
-        return out
+
+def _timestamps(t_start: torch.Tensor) -> torch.Tensor:
+    """(B, T) days -> (B, T, 3) [day, month (0-11), year]; padding reuses a real date."""
+    B, T = t_start.shape
+    out = torch.zeros(B, T, 3, dtype=torch.long)
+    for b in range(B):
+        fill = int(t_start[b][t_start[b] >= 0][0])
+        for t in range(T):
+            d = from_days(int(t_start[b, t]) if t_start[b, t] >= 0 else fill)
+            out[b, t] = torch.tensor([d.day, d.month - 1, d.year])
+    return out
+
+
+class OlmoEarthEncoder(Encoder):
+    TEMPORAL_MODES = ("series", "per_timestep")
+    KEEPS_TIME = True
+
+    def __init__(self, model_id: str, inputs: OlmoEarthInput, patch_size: int, tile_size: int,
+                 name: str | None = None, amp: bool = True):
+        super().__init__()
+        self.model_id, self.inputs = model_id, inputs
+        self.patch_size, self.tile_size, self.amp = patch_size, tile_size, amp
+        self.key = name or model_id.lower()
+        model = load_model_from_id(getattr(ModelID, model_id), load_weights=True)
+        self.encoder = model.encoder if hasattr(model, "encoder") else model
+
+    def requirements(self) -> Requirements:
+        return Requirements(bands=self.inputs.bands(), aligned_time=True, max_frames=None,
+                            size_multiple=self.tile_size)
+
+    def check(self, dataset: MTMMDataset, temporal_mode: str) -> None:
+        if temporal_mode not in self.TEMPORAL_MODES:
+            raise ValueError(f"temporal_mode {temporal_mode!r} not in {self.TEMPORAL_MODES}")
+        self.inputs.check(dataset)
+        size = dataset.tiling.size if dataset.tiling else min(dataset.SPEC.native_shape)
+        if size % self.tile_size or self.tile_size % self.patch_size:
+            raise ValueError(f"sample {size}, tile {self.tile_size}, patch {self.patch_size} "
+                             "must nest")
+
+    def load_finetuned(self, ckpt_path: str) -> None:
+        """Replace the pretrained weights with the backbone of an exp.pastis.finetune_olmoearth
+        checkpoint (keys under "backbone."), strictly: a mismatch is an error."""
+        sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        sd = sd.get("model", sd)
+        bb = {k[len("backbone."):]: v for k, v in sd.items() if k.startswith("backbone.")}
+        if not bb:
+            raise ValueError(f"{ckpt_path} has no 'backbone.' keys "
+                             f"(prefixes {sorted({k.split('.')[0] for k in sd})})")
+        missing, unexpected = self.encoder.load_state_dict(bb, strict=False)
+        if missing or unexpected:
+            raise ValueError(f"{ckpt_path}: {len(missing)} missing, {len(unexpected)} unexpected "
+                             f"keys (first {missing[:3]} / {unexpected[:3]})")
 
     # --- encoding -------------------------------------------------------------------------
     @torch.no_grad()
     def encode(self, batch: MTMMBatch, temporal_mode: str) -> FeatureSeries:
         if temporal_mode not in self.TEMPORAL_MODES:
             raise ValueError(f"temporal_mode {temporal_mode!r} not in {self.TEMPORAL_MODES}")
-        sample, frame_valid = self.to_olmoearth(batch)
+        sample, frame_valid = self.inputs.to_olmoearth(batch)
         device = next(self.encoder.parameters()).device
         sample = _to_device(sample, device, torch.bfloat16 if self.amp else torch.float32)
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=self.amp):
             tokens = self._encode_tiled(sample, temporal_mode)                  # (B,T,gH,gW,D)
-        ref = batch.modalities[next(iter(self.modality_map))]
+        ref = batch.modalities[next(iter(self.inputs.modality_map))]
         gH, gW = tokens.shape[2:4]
         return FeatureSeries(
             ids=list(batch.ids), tokens=tokens, t_start=ref.t_start, t_end=ref.t_end,
@@ -148,8 +170,9 @@ class OlmoEarthEncoder(Encoder):
             provenance={"encoder": self.key, "model_id": self.model_id,
                         "patch_size": self.patch_size, "tile_size": self.tile_size,
                         "temporal_mode": temporal_mode,
-                        "modalities": {m: batch.modalities[m].history for m in self.modality_map},
-                        "impute": self.impute})
+                        "modalities": {m: batch.modalities[m].history
+                                       for m in self.inputs.modality_map},
+                        "impute": self.inputs.impute})
 
     def _encode_tiled(self, sample: MaskedOlmoEarthSample, temporal_mode: str) -> torch.Tensor:
         B, Hs = sample.timestamps.shape[0], _spatial_size(sample)

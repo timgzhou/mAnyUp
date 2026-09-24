@@ -25,20 +25,20 @@ def E():
 
 def _enc(E, modality_map, ps=4, tile=64, impute=None):
     impute = {"S2": E.LEGACY_S2_IMPUTE} if impute is None else impute
-    return E.OlmoEarthEncoder("OLMOEARTH_V1_BASE", modality_map, ps, tile, impute=impute,
-                              name="base").cuda().eval()
+    return E.OlmoEarthEncoder("OLMOEARTH_V1_BASE", E.OlmoEarthInput(modality_map, impute),
+                              ps, tile, name="base").cuda().eval()
 
 
 def test_packs_bands_by_name_in_olmoearth_order(E):
     enc = _enc(E, {"S2": "sentinel2_l2a", "S1A": "sentinel1"})
     ds = PastisDataset("val", monthly())
     b = mtmm_collate([ds[0]])
-    sample, _ = enc.to_olmoearth(b)
+    sample, _ = enc.inputs.to_olmoearth(b)
     raw = b.modalities["S2"].data[0, 0, :, 0, 0]              # t=0, pixel (0,0), dataset order
     bands = b.modalities["S2"].bands
-    order = enc.olmo["S2"].band_order                            # B02 B03 B04 B08 ... B01 B09
-    got = torch.from_numpy(enc.normalizer.normalize(
-        enc.olmo["S2"], raw[[bands.index(E.LEGACY_S2_IMPUTE.get(x, x)) for x in order]]
+    order = enc.inputs.olmo["S2"].band_order                            # B02 B03 B04 B08 ... B01 B09
+    got = torch.from_numpy(enc.inputs.normalizer.normalize(
+        enc.inputs.olmo["S2"], raw[[bands.index(E.LEGACY_S2_IMPUTE.get(x, x)) for x in order]]
         .numpy()[None])).float()[0]
     assert torch.allclose(sample.sentinel2_l2a[0, 0, 0, 0], got)
     assert sample.sentinel1.shape[-1] == 2                       # VV, VH only (VV-VH dropped)
@@ -56,7 +56,7 @@ def test_misaligned_modalities_are_refused(E):
     enc = _enc(E, {"S2": "sentinel2_l2a", "S1A": "sentinel1"})
     b = mtmm_collate([PastisDataset("val", {"S2": All(), "S1A": All()}, None)[0]])
     with pytest.raises(ValueError, match="aligned"):
-        enc.to_olmoearth(b)
+        enc.inputs.to_olmoearth(b)
 
 
 def test_missing_s2_month_uses_s1_alone(E):
@@ -67,7 +67,8 @@ def test_missing_s2_month_uses_s1_alone(E):
     b = mtmm_collate([s])
     both = _enc(E, {"S2": "sentinel2_l2a", "S1A": "sentinel1"}).encode(b, "series")
     assert both.frame_valid[0].all() and torch.isfinite(both.tokens).all()
-    sample, _ = _enc(E, {"S2": "sentinel2_l2a", "S1A": "sentinel1"}).to_olmoearth(b)
+    sample, _ = E.OlmoEarthInput({"S2": "sentinel2_l2a", "S1A": "sentinel1"},
+                                 {"S2": E.LEGACY_S2_IMPUTE}).to_olmoearth(b)
     assert (sample.sentinel2_l2a_mask[0, :, :, 2] == E.MaskValue.MISSING.value).all()
     assert E._has_missing(sample)
     s2_only = _enc(E, {"S2": "sentinel2_l2a"}).encode(b, "series")
