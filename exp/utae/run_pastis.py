@@ -1,9 +1,10 @@
 """Train/eval the UTAE baseline on PASTIS (uni- or multi-modal).
 
-Vendored UTAE model + official PASTIS_Dataset live in utae/. Mirrors the OlmoEarth
-finetune harness (config YAML, AdamW, CE w/ ignore_index, per-epoch val eval,
-best-by-mIoU checkpoint, CSV log) but uses the official dataloader (full time series +
-dates) which UTAE needs.
+Data: PastisDataset (raw PASTIS-R, every acquisition on its own date, whole 128 px
+patches) packed by exp.utae.inputs.UTAEInput exactly as the official PASTIS loader did
+(bit-identical inputs, dates and labels). Model: third_party/utae + our fusion builders.
+Harness: config YAML, AdamW, CE w/ ignore_index, per-epoch val eval, best-by-mIoU
+checkpoint, CSV log.
 
 Run inside a GPU salloc:
     source env_setup/env_olmo.sh
@@ -27,13 +28,14 @@ from tqdm import tqdm
 # Metrics come from a plain-torch confusion matrix (no torchmetrics), so the UTAE numbers
 # do not depend on that package's version.
 
-from third_party.utae.dataloader import PASTIS_Dataset
-from third_party.utae.collate import pad_collate
 from exp.utae.fusion import build_model
+from exp.utae.inputs import UTAEInput
+from manyup.data import All, mtmm_collate
+from manyup.data.datasets.pastis import PastisDataset
 
 NUM_CLASSES = 20
 IGNORE_INDEX = 19          # PASTIS void label
-ALLOWED_SATS = ("S2", "S1A", "S1D")
+ALLOWED_SATS = tuple(PastisDataset.SPEC.modalities)   # S2, S1A (S1D is not on disk)
 RESULTS_CSV = "results/pastis/utae_pastis.csv"
 CSV_FIELDS = ["timestamp", "checkpoint", "modalities", "fusion",
               "test_miou", "test_overall_acc", "test_macro_acc", "test_macro_f1"]
@@ -113,23 +115,21 @@ def load_config(path: str | None = None, overrides: list[str] | None = None) -> 
     return UTAEConfig(**data)
 
 
-def make_loader(cfg: UTAEConfig, folds, shuffle):
-    ds = PASTIS_Dataset(folder=cfg.data_root, norm=True, target="semantic",
-                        folds=folds, sats=cfg.modalities)
-    return DataLoader(ds, batch_size=cfg.batch_size, shuffle=shuffle,
-                      num_workers=cfg.num_workers, collate_fn=pad_collate)
+def make_loader(cfg: UTAEConfig, split: str, shuffle: bool):
+    """Loader over whole patches with every native acquisition, plus the matching packer
+    (normalization statistics depend on the split's folds)."""
+    ds = PastisDataset(split, {s: All() for s in cfg.modalities}, tiling=None,
+                       root=cfg.data_root)
+    loader = DataLoader(ds, batch_size=cfg.batch_size, shuffle=shuffle,
+                        num_workers=cfg.num_workers, collate_fn=mtmm_collate)
+    return loader, UTAEInput(cfg.modalities, split, cfg.data_root)
 
 
-def _subset(d, mods):
-    return {k: d[k] for k in mods}
-
-
-def _forward(model, batch, device, mods):
-    (data, dates), target = batch
-    data = {k: v.to(device) for k, v in _subset(data, mods).items()}
-    dates = {k: v.to(device) for k, v in _subset(dates, mods).items()}
-    target = target.to(device)
-    return model(data, dates), target
+def _forward(model, batch, device, pack):
+    data, dates = pack(batch)
+    data = {k: v.to(device) for k, v in data.items()}
+    dates = {k: v.to(device) for k, v in dates.items()}
+    return model(data, dates), batch.target.to(device)
 
 
 def _metrics_from_confmat(cm):
@@ -152,11 +152,11 @@ def _metrics_from_confmat(cm):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, mods):
+def evaluate(model, loader, device, pack):
     model.eval()
     cm = torch.zeros(NUM_CLASSES, NUM_CLASSES, dtype=torch.long)
     for batch in loader:
-        logits, target = _forward(model, batch, device, mods)
+        logits, target = _forward(model, batch, device, pack)
         pred = logits.argmax(1).cpu().flatten()
         lab = target.cpu().flatten()
         valid = lab != IGNORE_INDEX
@@ -182,9 +182,9 @@ def main(cfg: UTAEConfig):
     torch.manual_seed(cfg.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_loader = make_loader(cfg, folds=[1, 2, 3], shuffle=True)
-    val_loader = make_loader(cfg, folds=[4], shuffle=False)
-    test_loader = make_loader(cfg, folds=[5], shuffle=False)
+    train_loader, train_pack = make_loader(cfg, "train", shuffle=True)
+    val_loader, val_pack = make_loader(cfg, "val", shuffle=False)
+    test_loader, test_pack = make_loader(cfg, "test", shuffle=False)
 
     model = build_model(cfg.modalities, cfg.fusion, NUM_CLASSES).to(device)
     n_params = sum(p.numel() for p in model.parameters()) / 1e6
@@ -199,13 +199,13 @@ def main(cfg: UTAEConfig):
         model.train()
         last = float("nan")
         for batch in tqdm(train_loader, desc=f"epoch {epoch+1}/{cfg.epochs}", leave=False):
-            logits, target = _forward(model, batch, device, cfg.modalities)
+            logits, target = _forward(model, batch, device, train_pack)
             loss = loss_fn(logits, target)
             opt.zero_grad()
             loss.backward()
             opt.step()
             last = loss.item()
-        val = evaluate(model, val_loader, device, cfg.modalities)
+        val = evaluate(model, val_loader, device, val_pack)
         print(f"epoch {epoch+1}/{cfg.epochs} | train_loss {last:.4f} | val miou {val['miou']:.4f} | {val}")
         if val["miou"] > best_miou:
             best_miou = val["miou"]
@@ -214,7 +214,7 @@ def main(cfg: UTAEConfig):
     model.load_state_dict(best_state)
     os.makedirs("checkpoints", exist_ok=True)
     torch.save(best_state, cfg.ckpt_path)
-    test = evaluate(model, test_loader, device, cfg.modalities)
+    test = evaluate(model, test_loader, device, test_pack)
     print(f"\nBEST val miou {best_miou:.4f}")
     print(f"TEST {test}")
     _append_csv({

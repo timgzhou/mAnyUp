@@ -7,7 +7,7 @@ here, guided by that paper. All builders expose the same call interface:
     logits = model(data, dates)   # data/dates are dicts keyed by sat (e.g. {"S2": ...})
     # logits: (B, num_classes, H, W)
 
-This matches what the vendored PASTIS_Dataset yields (per-sat dicts), so the training
+This matches what exp.utae.inputs.UTAEInput packs (per-sat dicts), so the training
 loop stays modality-agnostic.
 
 PASTIS channel counts: S2=10, S1A/S1D=3. num_classes=20 (class 19 = void, ignored).

@@ -19,7 +19,6 @@ dependencies = [
     "tqdm",
     "pyyaml",
     "pandas",
-    "geopandas",       # UTAE's PASTIS dataloader
     "rasterio",        # GEOID-Flood prep / visualization
     "torchmetrics",
 ]

@@ -22,4 +22,4 @@ virtualenv -q --no-download --system-site-packages "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
 $PIP --no-index --upgrade pip
 $PIP --no-index torch==$TORCH_VERSION torchvision==$TORCHVISION_VERSION pytest   # cluster wheels
-$PIP "olmoearth-pretrain[training]==$OLMOEARTH_VERSION" geopandas torchmetrics
+$PIP "olmoearth-pretrain[training]==$OLMOEARTH_VERSION" torchmetrics

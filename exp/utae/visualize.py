@@ -24,8 +24,10 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
 
-from third_party.utae.dataloader import PASTIS_Dataset
+from manyup.data import All, mtmm_collate
+from manyup.data.datasets.pastis import PastisDataset
 from exp.utae.fusion import build_model
+from exp.utae.inputs import UTAEInput
 from exp.utae import run_pastis as UP   # reuse evaluate / metrics / collate / constants
 
 DATA_ROOT = "data/PASTIS-R"
@@ -93,13 +95,11 @@ def visualize(rgb, pred, mask, filename):
     plt.close(fig)
 
 
-def _rgb_of(split_folds, idx=0):
-    """Raw (un-normalized) S2 -> time-averaged natural-color RGB. PASTIS S2 raw band
-    order is [B2,B3,B4,...]; RGB = B4,B3,B2 = indices 2,1,0."""
-    ds = PASTIS_Dataset(folder=DATA_ROOT, norm=False, folds=split_folds, sats=["S2"])
-    (data, _), _ = ds[idx]
-    s2 = data["S2"].float()                       # (T,10,128,128)
-    rgb = s2.mean(0)[[2, 1, 0]].permute(1, 2, 0).numpy()
+def _rgb_of(sample):
+    """Raw S2 -> time-averaged natural-color RGB (bands picked by name)."""
+    s2 = sample.modalities["S2"]
+    idx = [s2.bands.index(b) for b in ("B04", "B03", "B02")]
+    rgb = s2.data.float().mean(0)[idx].permute(1, 2, 0).numpy()
     return (rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-6)
 
 
@@ -113,7 +113,6 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     ts = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%m%d%H%M")
 
-    SPLITS = {"train": [1, 2, 3], "test": [5]}
     for ckpt in available:
         mods, fusion = _infer_run(ckpt)
         tag = os.path.basename(ckpt).replace("_best.pt", "")
@@ -123,23 +122,21 @@ def main():
         model.eval()
 
         # visualize first sample of each split
-        for split, folds in SPLITS.items():
-            ds = PASTIS_Dataset(folder=DATA_ROOT, norm=True, target="semantic",
-                                folds=folds, sats=mods)
-            (data, dates), target = ds[0]
-            batch = ((  {k: v.unsqueeze(0) for k, v in data.items()},
-                        {k: v.unsqueeze(0) for k, v in dates.items()}), target.unsqueeze(0))
+        for split in ("train", "test"):
+            ds = PastisDataset(split, {s: All() for s in set(mods) | {"S2"}}, tiling=None,
+                               root=DATA_ROOT)
+            sample = ds[0]
+            pack = UTAEInput(mods, split, DATA_ROOT)
             with torch.no_grad():
-                logits, _ = UP._forward(model, batch, device, mods)
+                logits, _ = UP._forward(model, mtmm_collate([sample]), device, pack)
             pred = logits.argmax(1)[0].cpu().numpy()
-            mask = target.numpy()
-            rgb = _rgb_of(folds, idx=0)
-            visualize(rgb, pred, mask, os.path.join(OUT_DIR, f"{tag}_pred_{split}.png"))
+            visualize(_rgb_of(sample), pred, sample.target.numpy(),
+                      os.path.join(OUT_DIR, f"{tag}_pred_{split}.png"))
 
         # full test-set eval + CSV (reuse utae_pastis' evaluate + CSV writer)
-        test_loader = UP.make_loader(
-            UP.UTAEConfig(modalities=mods, fusion=fusion), folds=[5], shuffle=False)
-        res = UP.evaluate(model, test_loader, device, mods)
+        test_loader, test_pack = UP.make_loader(
+            UP.UTAEConfig(modalities=mods, fusion=fusion), "test", shuffle=False)
+        res = UP.evaluate(model, test_loader, device, test_pack)
         print(f"  test miou={res['miou']:.4f} acc={res['overall_acc']:.4f}")
         UP._append_csv({
             "timestamp": ts,
