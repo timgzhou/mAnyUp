@@ -19,7 +19,7 @@
 #   sbatch scripts/slurm/geoidflood/sweep.sh
 #   bash   scripts/slurm/geoidflood/sweep.sh     # inside a GPU salloc
 #
-# SMOKE=1 caps the source tiles and epochs so the whole three-arm sweep runs in minutes
+# SMOKE=1 caps the chips and epochs so the whole three-arm sweep runs in minutes
 # on a fraction of the data -- use it to confirm the pipeline end-to-end on REAL data
 # before committing a 12h GPU job. Smoke results go to a separate CSV so they can never
 # be mistaken for the real numbers.
@@ -35,12 +35,14 @@ source env_setup/env_olmo.sh
 
 if [[ -n "${SMOKE:-}" ]]; then
   CSV=results/geoidflood/lp_smoke.csv
-  PREP_EXTRA="--limit 40"
-  LP_EXTRA="--epochs 2"
-  echo "### SMOKE MODE: --limit 40 source tiles, 2 epochs -> $CSV (NOT real results)"
+  # a separate feature root, so partial smoke caches can never pass for real ones
+  ROOT_ARG="--out_root ${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/geoid_smoke_features"
+  EXTRACT_EXTRA="--limit 256 $ROOT_ARG"
+  LP_EXTRA="--epochs 2 $ROOT_ARG"
+  echo "### SMOKE MODE: 256 chips per split, 2 epochs -> $CSV (NOT real results)"
 else
   CSV=results/geoidflood/lp.csv
-  PREP_EXTRA=""
+  EXTRACT_EXTRA=""
   LP_EXTRA=""
 fi
 
@@ -49,13 +51,15 @@ CONFIGS=("8 128" "4 64" "1 16")
 
 for cfg in "${CONFIGS[@]}"; do
   set -- $cfg; PS=$1; TILE=$2
-  echo "=== PREP tile=$TILE ==="
-  python -u -m exp.geoidflood.prep_tiles --splits train,val --tile_size "$TILE" $PREP_EXTRA
+  if [[ ! -f "data/GEOID-Flood-full/geoid-flood/chip_index_c${TILE}_mapped0.5_class2.json" ]]; then
+    echo "=== CHIP INDEX size=$TILE ==="
+    python -u -m manyup.data.datasets.geoidflood --build_index --size "$TILE"
+  fi
 
   FEAT="geoid_base_s1_ps${PS}_res10_t${TILE}"
   echo "=== EXTRACT ps=$PS tile=$TILE -> $FEAT ==="
   python -u -m exp.geoidflood.extract_features --splits train,val \
-      --tile_size "$TILE" --patch_size "$PS"
+      --tile_size "$TILE" --patch_size "$PS" $EXTRACT_EXTRA
 
   for HEAD in concat diff; do
     echo "=== LP $FEAT head=$HEAD ==="

@@ -10,7 +10,7 @@ WHY A LINEAR PROBE FOR THIS QUESTION. The study asks what the frozen representat
 contains at each (patch_size, tile_size), so the head must stay too weak to compensate for
 a bad representation. A linear per-pixel probe is the standard instrument for that.
 
-CLASSES (see exp/geoidflood/prep_tiles.py for the label remap):
+CLASSES (see manyup/data/datasets/geoidflood.py; the extractor maps 255 to -1):
     0 background, 1 permanent water, 2 flood; -1 = ignore (outside the CEMS-mapped area).
 HEADLINE METRIC is mIoU over {background, flood} -- classes 0 and 2. Permanent water
 (class 1) is reported separately rather than folded in, because it is NOT a change signal:
@@ -61,7 +61,7 @@ class TiledFeatureDataset(torch.utils.data.Dataset):
 
     def __init__(self, feat_dir: Path, split: str):
         self.dir = feat_dir / split
-        self.n = len(list(self.dir.glob("*.pt")))
+        self.n = len(list(self.dir.glob("[0-9]*.pt")))
         if self.n == 0:
             raise FileNotFoundError(f"no feature tiles in {self.dir}")
 
@@ -205,9 +205,15 @@ def build_result_row(args, meta, headline, pw_iou, res_metrics, stats) -> dict:
 
 
 @torch.no_grad()
-def visualize_first_val(head, feat_dir: Path, tiles_root: Path, device, out_path: str,
+def visualize_first_val(head, feat_dir: Path, tile_size: int, device, out_path: str,
                         n: int = 3):
-    """Prediction vs GT for the first few val sub-tiles, next to the pre/post S1 VV."""
+    """Prediction vs GT for the first few val chips, next to the pre/post S1 VV (read back
+    from the dataset by the chip id recorded in the cache's ids.txt)."""
+    from manyup.data import All
+    from manyup.data.datasets.geoidflood import ChipSelection, GeoidFloodDataset
+    ds = GeoidFloodDataset("val", {"S1GRD": All()}, ChipSelection(tile_size))
+    pos = {ds.sample_id(i): i for i in range(len(ds))}
+    ids = (feat_dir / "val" / "ids.txt").read_text().split()
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -219,24 +225,17 @@ def visualize_first_val(head, feat_dir: Path, tiles_root: Path, device, out_path
     fig, axes = plt.subplots(n, 4, figsize=(17, 4.4 * n), squeeze=False)
     for r in range(n):
         f = feat_dir / "val" / f"{r}.pt"
-        t = tiles_root / "val" / f"{r}.pt"
-        if not f.exists() or not t.exists():
-            # Say WHICH input is missing rather than emitting a silently blank panel --
-            # a blank figure otherwise reads as "the model predicted nothing".
+        if not f.exists() or r >= len(ids):
+            # a blank panel would read as "the model predicted nothing"; say what is missing
             for c in range(4):
                 axes[r][c].axis("off")
-            axes[r][0].text(0.5, 0.5, f"missing: {'features' if not f.exists() else ''}"
-                                      f"{' and ' if not f.exists() and not t.exists() else ''}"
-                                      f"{'raw tiles' if not t.exists() else ''}\n"
-                                      f"(idx {r})", ha="center", va="center",
-                            fontsize=11, color="#b00")
-            print(f"  !! viz: missing input for val idx {r} "
-                  f"(feat={f.exists()}, tile={t.exists()})")
+            axes[r][0].text(0.5, 0.5, f"missing features (idx {r})", ha="center",
+                            va="center", fontsize=11, color="#b00")
             continue
         rec = torch.load(f)
         pred = head(rec["feat"].float().unsqueeze(0).to(device)).argmax(1)[0].cpu().numpy()
         gt = rec["label"].long().numpy()
-        s1 = torch.load(t)["s1"].float().numpy()          # (T=2,C=2,H,W) dB
+        s1 = ds[pos[ids[r]]].modalities["S1GRD"].data.float().numpy()   # (T=2,C=2,H,W) dB
 
         def g(x):
             lo, hi = np.percentile(x, [2, 98])
@@ -275,7 +274,6 @@ def main() -> None:
                    help="inverse-frequency class weights in CE. Flood is a small minority "
                         "of pixels even after flood-only chip filtering, so without this "
                         "the probe collapses toward all-background.")
-    p.add_argument("--tiles_root", default="data/geoidflood_tiles")
     p.add_argument("--viz_out", default=None)
     p.add_argument("--results_csv", default="results/geoidflood/lp.csv")
     args = p.parse_args()
@@ -356,8 +354,7 @@ def main() -> None:
                        build_result_row(args, meta, headline, pw, metrics, stats))
     print(f"Appended results to {args.results_csv}")
 
-    visualize_first_val(head, feat_dir, Path(f"{args.tiles_root}_t{tile_size}"), device,
-                        args.viz_out)
+    visualize_first_val(head, feat_dir, tile_size, device, args.viz_out)
 
 
 if __name__ == "__main__":

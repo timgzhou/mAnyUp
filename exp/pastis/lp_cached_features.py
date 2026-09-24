@@ -190,7 +190,7 @@ class CachedFeatureDataset(torch.utils.data.Dataset):
         # never float-cast / ship the full T tensor per step. Keeps a singleton T so heads that
         # do feats.mean(dim=1) / feats.shape[1] stay correct unchanged.
         self.reduce_time = reduce_time
-        self.n = len(list(self.feat_dir.glob("*.pt")))
+        self.n = len(list(self.feat_dir.glob("[0-9]*.pt")))
         if self.n != len(self.labels):
             raise ValueError(
                 f"{split}: {self.n} feature files != {len(self.labels)} labels. "
@@ -346,7 +346,7 @@ class TimAnyUpFeatureDataset(CachedFeatureDataset):
         self.hrlc_dir_root = Path(hrlc_dir)
         super().__init__(features_dir, *args, **kwargs)
         self.hrlc_dir = self.hrlc_dir_root / f"pastis_r_{self.split}"
-        n_hrlc = len(list(self.hrlc_dir.glob("*.pt")))
+        n_hrlc = len(list(self.hrlc_dir.glob("[0-9]*.pt")))
         if n_hrlc < self.n:
             raise ValueError(f"{self.split}: F_hrlc has {n_hrlc} files but need {self.n} "
                              f"({self.hrlc_dir})")

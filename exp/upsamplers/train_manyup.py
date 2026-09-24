@@ -101,7 +101,7 @@ class PairedFeatureDataset(Dataset):
         self.time_pool = time_pool
 
         def indices(d: Path):
-            return {int(p.stem) for p in d.glob("*.pt")}
+            return {int(p.stem) for p in d.glob("[0-9]*.pt")}
 
         # Train only on indices present in ALL three sources.
         common = indices(self.lr_dir) & indices(self.hr_dir) & indices(self.s2_dir)

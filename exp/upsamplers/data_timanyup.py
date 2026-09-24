@@ -69,7 +69,7 @@ class TriFeatureDataset(Dataset):
                            for m in GUIDANCE_DIRS[guidance_mod]]
 
         def indices(d: Path):
-            return {int(p.stem) for p in d.glob("*.pt")}
+            return {int(p.stem) for p in d.glob("[0-9]*.pt")}
 
         srcs = [self.lrhc_dir, self.hrlc_dir, self.hrhc_dir, self.guide_dirs[0]]
         counts = [len(indices(d)) for d in srcs]

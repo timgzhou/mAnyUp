@@ -175,15 +175,21 @@ scheme all differ.
 
 Layout: 1024×1024 tiles at 10 m. `s1grd`/`s1rtc` pre+post (VV, VH), `s2l2a` **pre-only**,
 `dem`, plus `label`/`floodmask`/`permwater`/`validity`/`cloudmask`. Labels: `0` background,
-`1` permanent water, `2` flood, **`255` = outside the mapped AOI, NOT background**. Prep
-remaps it to `-1`, and the probe passes `ignore_index=-1`.
+`1` permanent water, `2` flood, **`255` = outside the mapped AOI, NOT background**. The
+extractor remaps it to `-1`, and the probe passes `ignore_index=-1`.
+
+Data layer: `manyup.data.datasets.GeoidFloodDataset`. Samples are chips of a tile, chosen by
+a `ChipSelection` (chip size, >= 50% mapped, >= 1 flood pixel) and listed in a chip index
+built once per size (`python -m manyup.data.datasets.geoidflood --build_index --size 128`;
+the sweep builds missing ones). Chips are read as windows of the GeoTIFFs; S1 comes back in
+dB with nodata flagged in `pixel_valid`.
 
 Data folders (all kept):
 
 | Folder | What |
 |---|---|
-| `data/GEOID-Flood-full/` | the `s1grd`+`label`+`validity` download (~205 GB), source for `prep_tiles` |
-| `data/geoidflood_tiles_t<T>/` | prepped sub-tiles the pipeline reads |
+| `data/GEOID-Flood-full/` | the `s1grd`+`label`+`validity` download (~205 GB) the dataset reads, plus its `chip_index_*.json` |
+| `data/geoidflood_tiles_t128/` | chips from the retired `prep_tiles.py` (a smoke prefix); the tests check the dataset against them |
 | `data/GEOID-Flood/` | the small sample split, used by `visualize_samples` |
 | `data/GEOID-Flood-aux/` | `s2l2a`/`cloudmask` for the cloud-guidance probe |
 
@@ -200,11 +206,10 @@ and parameter count in every arm. Only the ground per token and the chip footpri
 
 ```shell
 bash scripts/download_geoid_flood.sh                  # once -> data/GEOID-Flood-full/
-sbatch scripts/slurm/geoidflood/sweep.sh              # prep -> extract -> LP, 3 arms x {concat, diff}
+sbatch scripts/slurm/geoidflood/sweep.sh              # index -> extract -> LP, 3 arms x {concat, diff}
 SMOKE=1 bash scripts/slurm/geoidflood/sweep.sh        # minutes, on a slice; separate CSV
 
 # one arm by hand
-python -u -m exp.geoidflood.prep_tiles       --splits train,val --tile_size 128
 python -u -m exp.geoidflood.extract_features --splits train,val --tile_size 128 --patch_size 8
 python -u -m exp.geoidflood.lp --features geoid_base_s1_ps8_res10_t128 --weighted_ce
 
@@ -212,9 +217,9 @@ python -u -m exp.geoidflood.visualize_samples         # -> dataset_visualization
 ```
 
 Notes:
-- `prep_tiles` converts `s1grd` from linear sigma0 to **dB** (OlmoEarth's S1 pretraining
-  units). It keeps chips with at least one flood pixel and at least 50% mapped pixels, so
-  val numbers are flood-conditional in all three arms alike.
+- `s1grd` is converted from linear sigma0 to **dB** (OlmoEarth's S1 pretraining units).
+  Only chips with at least one flood pixel and at least 50% mapped pixels are kept, so val
+  numbers are flood-conditional in all three arms alike.
 - The split is per-TILE and lives only in `data_tiles_s256_st128.csv`; 51 of 210 events
   span several splits.
 - The headline metric is mIoU over {background, flood}. Permanent water is reported

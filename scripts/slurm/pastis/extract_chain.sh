@@ -50,7 +50,7 @@ if [ "$IMAGE_SIZE" = "128" ]; then
 else
     NEED_TRAIN=5820; NEED_VALID=1928; NEED_TEST=1984
 fi
-count() { ls "$OUT_ROOT/$FEATURES/pastis_r_$1"/*.pt 2>/dev/null | wc -l; }
+count() { ls "$OUT_ROOT/$FEATURES/pastis_r_$1"/[0-9]*.pt 2>/dev/null | wc -l; }
 total_have() { echo $(( $(count train) + $(count valid) + $(count test) )); }
 NEED_TOTAL=$(( NEED_TRAIN + NEED_VALID + NEED_TEST ))
 
