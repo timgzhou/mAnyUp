@@ -1,8 +1,7 @@
 """Cut GEOID-Flood 1024x1024 tiles into fixed-size sub-tiles for the OlmoEarth study.
 
-Mirrors exp/urbansarfloods/prep_tiles.py: one .pt per KEPT sub-tile holding the raw S1
-bands plus the label crop, so feature extraction later applies the OlmoEarth band
-mapping/normalization (and the whole pipeline stays comparable to the UrbanSARFloods run).
+One .pt per KEPT sub-tile holding the S1 bands plus the label crop, so feature extraction
+later applies the OlmoEarth band mapping/normalization.
 
 WHAT WE STORE per sub-tile:
     data/geoidflood_tiles_t<tile>/<split>/<idx>.pt = {
@@ -13,7 +12,7 @@ WHAT WE STORE per sub-tile:
         "date_pre": "YYYYMMDD", "date_post": "YYYYMMDD",
     }
 
-WHY dB AT PREP TIME (differs from the UrbanSARFloods prep, which stored raw): GEOID ships
+WHY dB AT PREP TIME: GEOID ships
 s1grd as LINEAR sigma0, but OlmoEarth's S1 encoder was pretrained on dB. Converting here
 means the stored tile is already in the encoder's units and every downstream config reads
 the identical array. Zeros/negatives in GRD are nodata, so they become NaN under log10 and

@@ -1,6 +1,6 @@
 """Linear-probe flood segmentation on FROZEN OlmoEarth features (GEOID-Flood).
 
-Change-detection framing, identical in structure to exp/urbansarfloods/lp.py: each cached
+Change-detection framing: each cached
 sub-tile holds per-timestep features (T=2, gH, gW, D) for the pre-event (t0) and post-event
 (t1) S1 acquisition. The head combines them -- concat [pre,post] or diff (post-pre) -- and
 a 1x1 conv maps each token to patch_size^2 sub-pixel logits, which unfold to label
@@ -8,9 +8,7 @@ resolution. The backbone stays frozen; only the head trains.
 
 WHY A LINEAR PROBE FOR THIS QUESTION. The study asks what the frozen representation
 contains at each (patch_size, tile_size), so the head must stay too weak to compensate for
-a bad representation. A linear per-pixel probe is the standard instrument for that, and it
-is what the UrbanSARFloods results in results/urbansarfloods/lp.csv used -- so the two
-datasets' numbers are directly comparable.
+a bad representation. A linear per-pixel probe is the standard instrument for that.
 
 CLASSES (see exp/geoidflood/prep_tiles.py for the label remap):
     0 background, 1 permanent water, 2 flood; -1 = ignore (outside the CEMS-mapped area).

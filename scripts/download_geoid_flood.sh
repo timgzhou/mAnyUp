@@ -4,8 +4,7 @@
 # We take s1grd (pre+post VV/VH -- the T=2 change-detection signal), label (the 3-class
 # target) and validity (the per-pixel "imaged and mapped" mask). We deliberately SKIP
 # s1rtc (192GB) and s2l2a (177GB): the full 584GB does not fit, and s1grd+label+validity
-# (~205GB) mirrors the S1-only framing already used for UrbanSARFloods, so the
-# patch-size comparison stays like-for-like.
+# (~205GB) is all the S1-only pre/post pipeline needs.
 #
 # NOTE: this only needs huggingface_hub + tqdm, NOT the full OlmoEarth stack. Sourcing
 # env_olmo.sh here would rebuild the shared /tmp/env_olmo venv and race any interactive

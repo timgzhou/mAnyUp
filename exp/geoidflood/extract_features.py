@@ -28,8 +28,7 @@ head can use pre/post separately -- that is the change-detection signal:
     }
 
 Reuses pool_per_timestep from exp/pastis/finetune_olmoearth, the same per-timestep spatial
-pooling used by the PASTIS and UrbanSARFloods extractors, so features are directly
-comparable across all three datasets.
+pooling used by the PASTIS extractor, so features are directly comparable across datasets.
 
 Run (OlmoEarth venv, GPU):
     python -u -m exp.geoidflood.extract_features --splits train,val --tile_size 128 --patch_size 8
@@ -62,15 +61,15 @@ from exp.common.config import MODEL_SIZE_TO_ID
 from exp.pastis.finetune_olmoearth import pool_per_timestep
 
 POOLING_TYPE = PoolingType.MEAN
-INPUT_RES = 10                 # GEOID-Flood is 10 m (unlike UrbanSARFloods' 20 m)
+INPUT_RES = 10                 # GEOID-Flood is 10 m
 NUM_CLASSES = 3                # 0 background, 1 permanent water, 2 flood
 
 
 def date_to_timestamps(dates: list[str]) -> torch.Tensor:
     """(T,3) [day, month(0-indexed), year] per timestep. OlmoEarth uses month for its
     seasonal encoding, and GEOID's pre/post are often months apart (and in GEOID's case
-    frequently across a season boundary), so unlike the UrbanSARFloods loader -- which
-    only had one event date and reused it -- we pass each timestep its OWN date."""
+    frequently across a season boundary), so each timestep gets its OWN date rather than
+    one shared event date."""
     rows = []
     for d in dates:
         if d and len(d) == 8 and d.isdigit():
@@ -137,7 +136,7 @@ def extract_split(encoder, split, tiles_dir, out_dir, args, device, normalizer) 
         ds, batch_size=args.batch_size, num_workers=args.num_workers,
         shuffle=False, collate_fn=_collate)
     # bf16 autocast on CUDA only: FlexiViT's patch-resize uses bicubic+antialias, which has
-    # no bf16 CPU kernel. Same constraint as the UrbanSARFloods extractor.
+    # no bf16 CPU kernel.
     use_amp = device.type == "cuda"
     n_sanitized = 0
     for masked, label, idxs in tqdm(loader, desc=f"extract {split}"):

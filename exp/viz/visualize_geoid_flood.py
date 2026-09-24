@@ -3,7 +3,7 @@
 GEOID-Flood (https://huggingface.co/datasets/links-ads/geoid-flood, arXiv:2608.02315) is
 a flood-segmentation benchmark built from 219 Copernicus EMS Rapid Mapping activations
 across 65 countries (2016-2026). It is NOT the same dataset as ImpactMesh-Flood
-(ibm-esa-geospatial) that exp/viz/visualize_impactmesh.py plots -- different publisher,
+(ibm-esa-geospatial) -- different publisher,
 different tiling, different label scheme. The two are easy to confuse because both are
 CEMS-derived multimodal flood sets; keep them separate.
 
@@ -14,18 +14,17 @@ Layout per sample:
   row 3: the label, its component floodmask / permwater / validity layers, and the label
          drawn over the post-event S1 VV so the AOI edge is visible against real imagery
 
-TEMPORAL STRUCTURE. Unlike ImpactMesh's four phases, GEOID gives S1 at exactly two dates
+TEMPORAL STRUCTURE. GEOID gives S1 at exactly two dates
 (pre, post) and S2 only PRE-event -- a cloud-filtered composite. So there is no post-event
-optical view: the change signal is S1-only. That is what makes this dataset a clean fit
-for the S1 pre/post framing already used for UrbanSARFloods.
+optical view: the change signal is S1-only, which is why the pipeline uses the S1
+pre/post framing.
 
 LABEL SEMANTICS (the part that silently breaks training if ignored):
     0   = background
     1   = permanent water
     2   = flooded water
     255 = IGNORE -- outside the CEMS-mapped area, NOT background
-The 255 class is the analyst's delineation boundary clipped to the tile, exactly analogous
-to ImpactMesh's -1. Folding it into class 0 scores predictions against labels that were
+The 255 class is the analyst's delineation boundary clipped to the tile. Folding it into class 0 scores predictions against labels that were
 never drawn, so it is rendered explicitly (grey + hatch) here and must be passed as
 ignore_index downstream.
 
