@@ -11,6 +11,11 @@ of `--tile_size` px, `--patch_size`) -> the task's pa2px head (time mean, or pos
 Both: AdamW, ReduceLROnPlateau on the validation metric, the best validation epoch is kept
 and evaluated on test. One CSV row per learning rate in results/<task>/olmoearth.csv.
 
+Resumable: the full training state is saved after every epoch (checkpoints/<run>_state.pt) and
+a rerun of the same command continues from it (or exits at once if the run is finished).
+With --max_hours the job stops cleanly before an epoch that would not fit, so long runs go
+as a chain of shorter jobs (scripts/slurm/sweep.sh).
+
 `--from_cache per_timestep|reduced` (lp only) reads the frozen features from the matching
 exp.olmoearth.extract cache instead of running the encoder: the same probe, without the
 forward pass. A reduced cache already holds what the head reads, so its head reduces nothing.
@@ -158,6 +163,8 @@ def main():
                     help="cap train/eval batches per epoch (smoke tests, throughput); "
                          "results then go to a _smoke CSV")
     ap.add_argument("--results_csv", default=None)
+    ap.add_argument("--max_hours", type=float, default=None,
+                    help="stop (state saved) before an epoch that would end past this")
     a = ap.parse_args()
 
     task = TASKS[a.task]
@@ -194,6 +201,10 @@ def main():
               for s in ("train", "val", "test")}
         embed_dim = encoder.encoder.embedding_size
     better = task.meter().higher_is_better
+    state_path = Path(f"checkpoints/{name}_lr{'-'.join(f'{x:g}' for x in lrs)}{smoke}_state.pt")
+    if state_path.exists() and torch.load(state_path, weights_only=False).get("done"):
+        print(f"{state_path} says this run is finished; nothing to do")
+        return
 
     arms = []
     for lr in lrs:
@@ -203,15 +214,24 @@ def main():
         params = list(head.parameters()) + (list(encoder.parameters()) if a.mode == "fft" else [])
         arms.append(Arm(lr, head, params, task, better))
     freeze_epochs = math.ceil(FREEZE_EPOCH_FRACTION * a.epochs) if a.mode == "fft" else a.epochs
-    encoder.requires_grad_(False)
     loss_fn = task.loss().cuda()
     heads = [arm.head for arm in arms]
+    start_epoch, hours_before, epoch_s = 0, 0.0, None
+    if state_path.exists():
+        start_epoch, hours_before, epoch_s = _load_state(state_path, encoder, arms, a.mode)
+        print(f"Resumed from {state_path} after epoch {start_epoch}")
     t_start = time.time()
 
-    for epoch in range(a.epochs):
+    for epoch in range(start_epoch, a.epochs):
+        if a.max_hours and epoch_s and (time.time() - t_start + 1.1 * epoch_s) / 3600 > a.max_hours:
+            print(f"STOPPED before epoch {epoch + 1}: it would not fit in --max_hours "
+                  f"{a.max_hours}; rerun the same command to resume")
+            return
+        e0 = time.time()
+        torch.manual_seed(a.seed + epoch)          # same shuffle order with or without resuming
         tuning = a.mode == "fft" and epoch >= freeze_epochs
+        encoder.requires_grad_(tuning)
         if a.mode == "fft" and epoch == freeze_epochs:
-            encoder.requires_grad_(True)
             arms[0].opt.param_groups[0]["lr"] = lrs[0] * UNFREEZE_LR_FACTOR
             print(f"epoch {epoch + 1}: backbone unfrozen, lr -> {lrs[0] * UNFREEZE_LR_FACTOR:g}")
         encoder.train(tuning)
@@ -266,9 +286,12 @@ def main():
                 if a.mode == "fft":
                     arm.state["encoder"] = {k: t.detach().cpu().clone()
                                             for k, t in encoder.encoder.state_dict().items()}
+        epoch_s = time.time() - e0
+        hours = hours_before + (time.time() - t_start) / 3600
+        _save_state(state_path, epoch + 1, hours, epoch_s, encoder, arms, a.mode)
 
     # test every arm at its best validation epoch
-    elapsed = time.time() - t_start
+    elapsed = (hours_before * 3600) + time.time() - t_start
     os.makedirs("checkpoints", exist_ok=True)
     for arm in arms:
         if arm.state is None:
@@ -293,6 +316,34 @@ def main():
                **{f"test_{k}": round(x, 5) for k, x in test.items()}}
         _append(csv_path, row)
     print(f"Wrote {csv_path}")
+    torch.save({"done": True}, state_path)          # the full state is no longer needed
+
+
+def _save_state(path, epochs_done, hours, epoch_s, encoder, arms, mode):
+    """Everything needed to continue after `epochs_done` epochs; written atomically."""
+    state = {"epochs_done": epochs_done, "hours": hours, "epoch_s": epoch_s, "arms": [
+        {"head": a.head.state_dict(), "opt": a.opt.state_dict(), "sched": a.sched.state_dict(),
+         "best": a.best, "best_epoch": a.best_epoch, "best_val": a.best_val, "state": a.state}
+        for a in arms]}
+    if mode == "fft":
+        state["encoder"] = encoder.encoder.state_dict()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    torch.save(state, tmp)
+    tmp.replace(path)
+
+
+def _load_state(path, encoder, arms, mode):
+    state = torch.load(path, map_location="cpu", weights_only=False)
+    if mode == "fft":
+        encoder.encoder.load_state_dict(state["encoder"])
+    for arm, s in zip(arms, state["arms"], strict=True):
+        arm.head.load_state_dict(s["head"])
+        arm.opt.load_state_dict(s["opt"])
+        arm.sched.load_state_dict(s["sched"])
+        arm.best, arm.best_epoch, arm.best_val = s["best"], s["best_epoch"], s["best_val"]
+        arm.state = s["state"]
+    return state["epochs_done"], state["hours"], state["epoch_s"]
 
 
 def _rows(sample, lo, hi):
