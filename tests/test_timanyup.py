@@ -7,9 +7,10 @@ ordering, and gradient reaching the heads that should learn (and NOT the ones th
     source env_setup/env_olmo.sh && python tests/test_timanyup.py
 """
 import sys
+from pathlib import Path
 import torch
 
-sys.path.insert(0, "/scratch/timz/mAnyUp")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from manyup.timAnyUp import (TimAnyUp, QueryHead, TransformHead, topk_mask,   # noqa: E402
                             random_mask, blend, rank_normalize)
 

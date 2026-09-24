@@ -59,6 +59,7 @@ from olmoearth_pretrain.datatypes import MaskedOlmoEarthSample, OlmoEarthSample
 
 from exp.common.config import MODEL_SIZE_TO_ID
 from exp.pastis.finetune_olmoearth import pool_per_timestep
+from exp.common.paths import FEATURES
 
 POOLING_TYPE = PoolingType.MEAN
 INPUT_RES = 10                 # GEOID-Flood is 10 m
@@ -166,7 +167,7 @@ def main() -> None:
     p.add_argument("--patch_size", type=int, default=8)
     p.add_argument("--tile_size", type=int, default=128)
     p.add_argument("--tiles_root", default="data/geoidflood_tiles")
-    p.add_argument("--out_root", default="features")
+    p.add_argument("--out_root", default=str(FEATURES))
     p.add_argument("--splits", default="train,val")
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--num_workers", type=int, default=4)
@@ -185,10 +186,8 @@ def main() -> None:
           f"{args.patch_size * INPUT_RES} m per token) reading {tiles_dir}/")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    local = Path("/scratch/timz/OlmoEarth-v1-Base")
-    model_ref = str(local) if (args.model_size == "base" and local.exists()) \
-        else getattr(ModelID, MODEL_SIZE_TO_ID[args.model_size])
-    model = load_model_from_id(model_ref, load_weights=True)
+    model = load_model_from_id(getattr(ModelID, MODEL_SIZE_TO_ID[args.model_size]),
+                               load_weights=True)
     encoder = cast(nn.Module, model.encoder if hasattr(model, "encoder") else model)
     encoder = encoder.to(device).eval()
     for prm in encoder.parameters():

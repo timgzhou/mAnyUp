@@ -48,8 +48,9 @@ import torch
 
 from exp.viz.visualize_features import (raw_rgb, pca_rgb, pca_rgb_shared, nearest_resize,
                                         s2_path, DISPLAY_PX)
+from exp.common.paths import FEATURES
 
-FEATURES_ROOT = "~/projects/aip-gpleiss/timz/features"
+FEATURES_ROOT = str(FEATURES)
 DATA_SPLITS = "data/pastis_olmoearth"
 
 

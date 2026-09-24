@@ -52,8 +52,9 @@ from exp.upsamplers.common import (
     stage_to_tmpdir, warmup_cosine, pca_rgb_shared, raw_rgb,
 )
 from exp.upsamplers.data_timanyup import TriFeatureDataset, check_arms
+from exp.common.paths import ANYUP_REPO
 
-DEFAULT_ANYUP_REPO = "/scratch/timz/mAnyUp/third_party/anyup"
+DEFAULT_ANYUP_REPO = str(ANYUP_REPO)
 
 
 def _import_timanyup(repo: str):

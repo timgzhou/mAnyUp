@@ -45,7 +45,7 @@ Temporal handling (--temporal_mode):
 
 Runs in the OlmoEarth venv (torch 2.7.x), via salloc:
     source env_setup/env_olmo.sh
-    python -u -m exp.pastis.extract_features --model_size base --patch_size 1 --tile_size 32 --out_root ~/projects/aip-gpleiss/timz/features
+    python -u -m exp.pastis.extract_features --model_size base --patch_size 1 --tile_size 32
     python -u -m exp.pastis.extract_features --model_size base --patch_size 1 --tile_size 32 --temporal_mode single
 """
 import os
@@ -76,6 +76,7 @@ from olmoearth_pretrain.data.constants import BASE_GSD
 
 from exp.common.config import MODEL_SIZE_TO_ID, ALLOWED_MODALITIES
 from exp.pastis.finetune_olmoearth import pool_per_timestep
+from exp.common.paths import FEATURES
 
 POOLING_TYPE = PoolingType.MEAN          # matches finetune default
 IMAGE_SIZE = 64                          # DEFAULT sample size; override with --image_size
@@ -379,7 +380,7 @@ def main() -> None:
                    help="short tag for the --init_ckpt cache suffix; defaults to the "
                         "checkpoint's patch size + epochs (e.g. p16ep64)")
     p.add_argument("--data_splits", default="data/pastis_olmoearth")
-    p.add_argument("--out_root", default="features")
+    p.add_argument("--out_root", default=str(FEATURES))
     p.add_argument("--splits", default=",".join(SPLITS),
                    help="comma-separated subset of train,valid,test")
     p.add_argument("--batch_size", type=int, default=16)

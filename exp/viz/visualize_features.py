@@ -26,6 +26,7 @@ matplotlib.use("Agg")        # headless cluster: never try an interactive backen
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+from exp.common.paths import FEATURES
 
 RGB_BANDS = [3, 2, 1]        # B04/B03/B02 = R,G,B in the 13-band stack
 DISPLAY_PX = 128             # all feature panels rendered at this size (nearest, keeps blocks)
@@ -347,7 +348,7 @@ def fig3_anyup(root: Path, split: str, n_images: int, d: Path, out: Path,
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--features_root", default="~/projects/aip-gpleiss/timz/features")
+    ap.add_argument("--features_root", default=str(FEATURES))
     ap.add_argument("--data_splits", default=None,
                     help="dir holding pastis_r_<split>/s2_images/*.pt (the raw S2 shown in the "
                          "left column). Defaults to <features_root>/../data/pastis_olmoearth; "

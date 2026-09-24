@@ -47,6 +47,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from torch.optim.lr_scheduler import LambdaLR
+from exp.common.paths import FEATURES
 
 RGB_BANDS = [3, 2, 1]        # B04/B03/B02 = R,G,B in the 13-band stack
 # Surface-structure bands for UPMA guidance: B02-B08A + B11/B12. Drops B01 (aerosol, 60m),
@@ -478,7 +479,7 @@ def main():
     p.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2],
                    help="repo root (holds exp/ and data/)")
     p.add_argument("--features_root", type=Path,
-                   default=Path("~/projects/aip-gpleiss/timz/features").expanduser())
+                   default=FEATURES)
     p.add_argument("--lr_dir", default="oe_base_s2_ps4_tile64",
                    help="low-res feature dir to upsample (16x16x768 -> scale 4 up to 64x64)")
     p.add_argument("--ref_dir", default="oe_base_s2_ps1_tile32",

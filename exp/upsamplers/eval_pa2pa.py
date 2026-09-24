@@ -70,6 +70,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 # UPA/UPMA + guidance normalization come from the comparison script (no duplicate kernel code).
 from exp.upsamplers.upa_anyup import (UPA, UPMA, percentile_stretch, time_pool, TIME_POOLS,
                                      RGB_BANDS, SURFACE_BANDS)
+from exp.common.paths import FEATURES
 
 RESULTS_CSV = "results/upsamplers/upsampler_pa2pa.csv"
 # eval_mode distinguishes the two protocols that share this file:
@@ -336,7 +337,7 @@ def main():
     # to exp/upsamplers/data/pastis_olmoearth, which does not exist.
     p.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
     p.add_argument("--features_root", type=Path,
-                   default=Path("~/projects/aip-gpleiss/timz/features").expanduser())
+                   default=FEATURES)
     p.add_argument("--features", default="oe_base_s2_ps4_tile64",
                    help="LR feature config the head is trained on and the upsamplers consume")
     p.add_argument("--split", default="test")

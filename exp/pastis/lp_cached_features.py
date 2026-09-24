@@ -49,6 +49,7 @@ from exp.pastis.finetune_olmoearth import AnyUpUpsampleProbe, _load_rgb_guidance
 
 # Guidance time-pooling ("mean"|"median"), shared with the UPA/UPMA/AnyUp eval paths.
 from exp.upsamplers.upa_anyup import time_pool, TIME_POOLS
+from exp.common.paths import ANYUP_REPO, FEATURES
 
 # Cosine annealing decays the LR from args.lr to SCHEDULER_MIN_LR over args.epochs.
 SCHEDULER_MIN_LR = 1e-6
@@ -590,7 +591,7 @@ class CachedManyUp(nn.Module):
                  time_pool: str = "mean", native_out: bool = False):
         super().__init__()
         import sys
-        sys.path.insert(0, "/scratch/timz/mAnyUp/third_party/anyup")
+        sys.path.insert(0, str(ANYUP_REPO))
         from anyup.model import AnyUp
 
         ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
@@ -803,7 +804,7 @@ class CachedTimAnyUp(nn.Module):
                  label_size: int = LABEL_SIZE, native_out: bool = False):
         super().__init__()
         import sys
-        sys.path.insert(0, "/scratch/timz/mAnyUp/third_party/anyup")
+        sys.path.insert(0, str(ANYUP_REPO))
         from manyup.timAnyUp import TimAnyUp, topk_mask, blend
 
         ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
@@ -1100,7 +1101,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description="LP on cached OlmoEarth features.")
     p.add_argument("--features", required=True,
                    help="extraction config folder name under --out_root, e.g. oe_base_s2s1_ps4_tile64")
-    p.add_argument("--out_root", default="~/projects/aip-gpleiss/timz/features")
+    p.add_argument("--out_root", default=str(FEATURES))
     p.add_argument("--data_splits", default="data/pastis_olmoearth")
     p.add_argument("--head_mode", default="lp_pa2px",
                    choices=list(HEAD_GUIDANCE))

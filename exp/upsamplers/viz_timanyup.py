@@ -27,6 +27,7 @@ from exp.upsamplers.common import DATA_ROOT, FEATURES_ROOT, GUIDANCE_BANDS, cfg_
 from exp.upsamplers.data_timanyup import TriFeatureDataset, check_arms
 from exp.upsamplers.train_timanyup import (_import_timanyup, _flat_bt, save_epoch_viz,
                                            _forward_losses)
+from exp.common.paths import ANYUP_REPO
 
 
 def main():
@@ -48,7 +49,7 @@ def main():
                    help="default: <ckpt dir>/viz_samples/<ckpt stem>")
     p.add_argument("--features_root", default=str(FEATURES_ROOT))
     p.add_argument("--data_root", default=str(DATA_ROOT))
-    p.add_argument("--anyup_repo", default="/scratch/timz/mAnyUp/third_party/anyup")
+    p.add_argument("--anyup_repo", default=str(ANYUP_REPO))
     args = p.parse_args()
 
     A = _import_timanyup(args.anyup_repo)

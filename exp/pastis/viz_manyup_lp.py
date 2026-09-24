@@ -27,6 +27,7 @@ import torch.nn.functional as F
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from exp.common.paths import FEATURES
 
 # 20-class PASTIS scheme, same colormap as exp/pastis/visualize.py so figures are consistent.
 CMAP = plt.get_cmap("tab20", 20)
@@ -275,7 +276,7 @@ def main() -> None:
     p.add_argument("--time_pool", default="mean")
     args = p.parse_args()
 
-    out_root = Path(args.out_root or (Path.home() / "projects/aip-gpleiss/timz/features"))
+    out_root = Path(args.out_root or FEATURES)
     splits = Path(args.data_splits)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

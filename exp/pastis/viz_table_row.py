@@ -36,6 +36,7 @@ from exp.pastis.lp_cached_features import (
     CachedFeatureDataset, build_cached_head, IGNORE_LABEL, NUM_CLASSES,
 )
 from exp.pastis.viz_manyup_lp import _pca_rgb_shared, _raw_rgb, _miou, CMAP
+from exp.common.paths import FEATURES
 
 HEADS = Path("checkpoints/lp_heads")
 
@@ -92,7 +93,7 @@ def main() -> None:
     p.add_argument("--data_splits", default="data/pastis_olmoearth")
     args = p.parse_args()
 
-    root = Path(args.out_root or (Path.home() / "projects/aip-gpleiss/timz/features"))
+    root = Path(args.out_root or FEATURES)
     splits = Path(args.data_splits)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     lr_cfg = f"oe_base_{args.mods}_ps{args.lr_ps}_tile64"

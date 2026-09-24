@@ -9,9 +9,10 @@ failure. These tests make that loud instead.
     python -m pytest tests/test_cosmse_map.py -q
 """
 import sys
+from pathlib import Path
 import torch
 
-sys.path.insert(0, "/scratch/timz/mAnyUp")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from manyup.loss import Cosine_MSE, cosmse_map    # noqa: E402
 
 

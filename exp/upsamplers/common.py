@@ -15,9 +15,10 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from exp.common.paths import DATA, FEATURES
 
-DATA_ROOT = Path("/scratch/timz/mAnyUp/data/pastis_olmoearth")
-FEATURES_ROOT = Path("/home/timz/projects/aip-gpleiss/timz/features")
+DATA_ROOT = DATA / "pastis_olmoearth"
+FEATURES_ROOT = FEATURES
 
 # Guidance band counts per modality (PASTIS prep: s2 = 13-band L2A, s1 = 2-band VV/VH;
 # s2s1 stacks both -> 15 bands).

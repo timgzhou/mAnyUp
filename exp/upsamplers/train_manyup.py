@@ -53,9 +53,10 @@ from exp.upsamplers.common import (
     stage_to_tmpdir, warmup_cosine as _warmup_cosine,
     pca_rgb_shared as _pca_rgb_shared, raw_rgb as _raw_rgb,
 )
+from exp.common.paths import ANYUP_REPO
 
 # ----- import stock AnyUp from the vendored repo; mAnyUp + loss live in ./manyup -----
-DEFAULT_ANYUP_REPO = "/scratch/timz/mAnyUp/third_party/anyup"
+DEFAULT_ANYUP_REPO = str(ANYUP_REPO)
 
 
 def _import_anyup(repo: str, arch: str = "anyup"):

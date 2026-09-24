@@ -46,6 +46,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 from olmoearth_pretrain.evals.metrics import segmentation_metrics, _build_confusion_matrix
+from exp.common.paths import FEATURES
 
 SCHEDULER_MIN_LR = 1e-6
 NUM_CLASSES = 3                 # 0 background, 1 permanent water, 2 flood
@@ -263,7 +264,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description="LP flood seg on frozen OlmoEarth features (GEOID).")
     p.add_argument("--features", required=True,
                    help="folder under --out_root, e.g. geoid_base_s1_ps8_res10_t128")
-    p.add_argument("--out_root", default="features")
+    p.add_argument("--out_root", default=str(FEATURES))
     p.add_argument("--epochs", type=int, default=15)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--batch_size", type=int, default=64)

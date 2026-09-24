@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 
 import torch
+from exp.common.paths import ANYUP_REPO
 
 CKPT_TMPL = ("checkpoints/manyup/oe_base_{m}_ps{lr}_tile64__to__oe_base_{m}_ps4_tile64/"
              "manyup_oe_base_{m}_ps{lr}_tile64_to_oe_base_{m}_ps4_tile64_ep31.pth")
@@ -46,7 +47,7 @@ CSV_COLUMNS = ["modality", "guidance_bands", "ckpt", "lr_patch", "lr_grid", "out
 
 def load_upsampler(path: str, device):
     """Rebuild the checkpoint's architecture and load it, mirroring CachedManyUp.__init__."""
-    sys.path.insert(0, "/scratch/timz/mAnyUp/third_party/anyup")
+    sys.path.insert(0, str(ANYUP_REPO))
     from anyup.model import AnyUp
     ck = torch.load(path, map_location="cpu", weights_only=False)
     arch = ck.get("arch", "anyup")
