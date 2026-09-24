@@ -2,8 +2,9 @@
 
 Two tiers, by design (explicit-over-implicit, so you can't accidentally launch the
 wrong experiment):
-  - REQUIRED architecture fields (no default): model_size, input_modalities,
-    head_mode, freeze_backbone. If any is unset, load_config errors.
+  - REQUIRED fields (no default): model_size, input_modalities, head_mode,
+    freeze_backbone, and temporal (which time setup the data uses, see
+    exp/pastis/data.py). If any is unset, load_config errors.
   - Tuning knobs with defaults on the Config dataclass below: epochs, lr, batch_size,
     num_workers, seed, data_splits, dataset.
 
@@ -16,7 +17,6 @@ Dependency-light (stdlib dataclasses + pyyaml only).
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, fields, asdict
 from typing import Optional
 
@@ -46,7 +46,8 @@ ALLOWED_MODALITIES = ("sentinel2_l2a", "sentinel1")
 ALLOWED_HEADS = ("lp", "lp_tcat", "anyup", "anyup_t2", "anyup_t1")
 
 # Architecture fields that MUST be set explicitly (no usable default).
-REQUIRED = ("model_size", "input_modalities", "head_mode", "freeze_backbone")
+REQUIRED = ("model_size", "input_modalities", "head_mode", "freeze_backbone", "temporal")
+TEMPORAL = ("monthly", "legacy")   # see exp/pastis/data.py
 
 
 @dataclass
@@ -58,6 +59,8 @@ class Config:
     head_mode: Optional[str] = None
     # freeze_backbone: True -> encoder frozen all epochs (+ frozen AnyUp) -> only head trains.
     freeze_backbone: Optional[bool] = None
+    # temporal: monthly | legacy (legacy = OlmoEarth's own S2 prep; S2 only)
+    temporal: Optional[str] = None
 
     # --- tuning knobs ---
     # patch_size: token grid = 64/patch_size per side. OlmoEarth's LP eval uses 4
@@ -68,7 +71,7 @@ class Config:
     batch_size: int = 32
     num_workers: int = 0
     seed: int = 0
-    data_splits: str = "data/pastis_olmoearth"
+    image_size: int = 64     # 64: 64 px tiles of each patch (legacy order); 128: whole patches
     dataset: str = "pastis"
 
     def __post_init__(self) -> None:
@@ -87,6 +90,10 @@ class Config:
             raise ValueError(f"input_modalities {bad} not in {list(ALLOWED_MODALITIES)}")
         if self.head_mode not in ALLOWED_HEADS:
             raise ValueError(f"head_mode={self.head_mode!r} not in {list(ALLOWED_HEADS)}")
+        if self.temporal not in TEMPORAL:
+            raise ValueError(f"temporal={self.temporal!r} not in {list(TEMPORAL)}")
+        if self.image_size not in (64, 128):
+            raise ValueError(f"image_size={self.image_size} not in (64, 128)")
 
     # --- derived ---
     @property
@@ -96,13 +103,6 @@ class Config:
     @property
     def head(self) -> str:
         return self.head_mode
-
-    @property
-    def image_size(self) -> int:
-        """Sample size of the prepared splits, read off the data_splits path.
-        prepare_data.py --image_size 128 writes data/pastis128_olmoearth; the default
-        64 prep has no digits in its name."""
-        return 128 if "128" in os.path.basename(self.data_splits.rstrip("/")) else 64
 
     @property
     def run_name(self) -> str:
@@ -115,8 +115,10 @@ class Config:
         # does not disambiguate 64 from 128, so p8 at both sizes would otherwise share
         # one ckpt_path and silently overwrite each other. Mirrors extract_features.cfg_name().
         img = "" if self.image_size == 64 else f"_img{self.image_size}"
+        # legacy adds nothing, so pre-existing checkpoint names keep their meaning
+        tmp = "" if self.temporal == "legacy" else f"_{self.temporal}"
         return (f"oe_{self.dataset}_{self.model_size}_{mods}_{self.head}{frz}"
-                f"_p{self.patch_size}{img}_lr{self.lr:g}_ep{self.epochs}")
+                f"_p{self.patch_size}{img}{tmp}_lr{self.lr:g}_ep{self.epochs}")
 
     @property
     def ckpt_path(self) -> str:

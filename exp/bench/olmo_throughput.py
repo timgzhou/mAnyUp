@@ -56,7 +56,7 @@ from olmoearth_pretrain.data.constants import BASE_GSD
 from olmoearth_pretrain.datatypes import MaskedOlmoEarthSample, OlmoEarthSample
 
 from exp.common.config import MODEL_SIZE_TO_ID
-from exp.pastis.finetune_olmoearth import pool_per_timestep
+from manyup.encoders.olmoearth import pool_timestep
 
 POOLING_TYPE = PoolingType.MEAN
 
@@ -210,7 +210,7 @@ def run_step(encoder, sample, patch_size: int, tile: int, n_tiles: int, device) 
         for _ in range(n_tiles):
             tam = encoder(sample, patch_size=patch_size, input_res=BASE_GSD,
                           fast_pass=True)["tokens_and_masks"]
-            per_t = [pool_per_timestep(tam, t, POOLING_TYPE) for t in range(NUM_TIMESTEPS)]
+            per_t = [pool_timestep(tam, t) for t in range(NUM_TIMESTEPS)]
             torch.stack(per_t, dim=-2)
 
 

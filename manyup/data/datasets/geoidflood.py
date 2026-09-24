@@ -61,6 +61,7 @@ class ChipSelection:
 CHIP_COUNTS: dict[str, dict[str, int]] = {
     "c128_mapped0.5_class2": {"train": 79738, "val": 10957, "test": 17908},
     "c64_mapped0.5_class2": {"train": 211725, "val": 32259, "test": 46048},
+    "c16_mapped0.5_class2": {"train": 1739110, "val": 323043, "test": 341410},
 }
 
 

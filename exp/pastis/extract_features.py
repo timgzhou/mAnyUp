@@ -37,28 +37,15 @@ from tqdm import tqdm  # noqa: E402
 
 from exp.common.config import MODEL_SIZE_TO_ID  # noqa: E402
 from exp.common.paths import FEATURES  # noqa: E402
-from manyup.data import Tiling, mtmm_collate  # noqa: E402
-from manyup.data.datasets.pastis import LEGACY_OLMOEARTH_S2, PastisDataset, monthly  # noqa: E402
+from exp.pastis.data import MODALITIES, TEMPORAL, make_dataset  # noqa: E402
+from manyup.data import mtmm_collate  # noqa: E402
+from manyup.data.datasets.pastis import PastisDataset  # noqa: E402
 from manyup.encoders.olmoearth import (LEGACY_S2_IMPUTE, OlmoEarthEncoder,  # noqa: E402
                                        OlmoEarthInput)
 
-# CLI modality names (as in cache names and old runs) -> PASTIS modality, OlmoEarth modality
-MODALITIES = {"sentinel2_l2a": ("S2", "sentinel2_l2a"), "sentinel1": ("S1A", "sentinel1")}
 SHORT = {"sentinel2_l2a": "s2", "sentinel1": "s1"}
 SPLIT_DIRS = {"train": "train", "val": "valid", "test": "test"}   # legacy folder names
 TEMPORAL_MODES = {"series": "series", "single": "per_timestep"}
-
-
-def temporal_setup(name: str, modalities: list[str]) -> dict:
-    if name == "monthly":
-        full = monthly()
-        return {MODALITIES[m][0]: full[MODALITIES[m][0]] for m in modalities}
-    if name == "legacy":
-        if modalities != ["sentinel2_l2a"]:
-            raise ValueError("--temporal legacy is S2-only: OlmoEarth's prep aligned S1 by "
-                             "S2's dates, so legacy S1 cannot be reproduced; use monthly")
-        return {"S2": LEGACY_OLMOEARTH_S2}
-    raise ValueError(f"--temporal {name!r} not in (monthly, legacy)")
 
 
 def cfg_name(model_size: str, modalities: list[str], patch_size: int, tile_size: int,
@@ -103,7 +90,7 @@ def extract_split(encoder, ds, out_dir: Path, args, mode: str) -> int:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Cache OlmoEarth per-timestep features for PASTIS.")
-    p.add_argument("--temporal", required=True, choices=("monthly", "legacy"))
+    p.add_argument("--temporal", required=True, choices=TEMPORAL)
     p.add_argument("--model_size", default="base", choices=list(MODEL_SIZE_TO_ID))
     p.add_argument("--modalities", default="sentinel2_l2a",
                    help="comma-separated subset of " + ",".join(MODALITIES))
@@ -135,10 +122,10 @@ def main() -> None:
                                                              if m else stem[:16]))
     name = cfg_name(args.model_size, modalities, args.patch_size, tile, args.temporal_mode,
                     args.image_size, args.temporal, ft_tag)
-    temporal = temporal_setup(args.temporal, modalities)      # validates before touching disk
-    out_dir = Path(args.out_root) / name
+    splits = [s for s in args.splits.split(",") if s]
+    datasets = {s: make_dataset(s, modalities, args.temporal, args.image_size) for s in splits}
+    out_dir = Path(args.out_root) / name              # created only once the setup is valid
     out_dir.mkdir(parents=True, exist_ok=True)
-    tiling = Tiling(64, "col-major") if args.image_size == 64 else None
     inputs = OlmoEarthInput({MODALITIES[m][0]: MODALITIES[m][1] for m in modalities},
                             impute={"S2": LEGACY_S2_IMPUTE})
     encoder = OlmoEarthEncoder(MODEL_SIZE_TO_ID[args.model_size], inputs, args.patch_size, tile,
@@ -149,11 +136,9 @@ def main() -> None:
     mode = TEMPORAL_MODES[args.temporal_mode]
     print(f"Extraction config: {name}")
 
-    counts, datasets = {}, {}
-    for split in [s for s in args.splits.split(",") if s]:
-        ds = PastisDataset(split, temporal, tiling)
+    counts = {}
+    for split, ds in datasets.items():
         encoder.check(ds, mode)
-        datasets[split] = ds
         counts[SPLIT_DIRS[split]] = extract_split(encoder, ds, out_dir, args, mode)
 
     first = next(iter(datasets.values()))
@@ -164,7 +149,7 @@ def main() -> None:
         "image_size": args.image_size, "grid": args.image_size // args.patch_size,
         "modalities": modalities, "temporal": args.temporal,
         "temporal_keys": {m: pol.resolved_key(PastisDataset.SPEC.modalities[m])
-                          for m, pol in temporal.items()},
+                          for m, pol in first.modalities.items()},
         "dataset_key": first.key, "impute": inputs.impute,
         "temporal_mode": args.temporal_mode,
         "cross_timestep_attention": args.temporal_mode == "series",

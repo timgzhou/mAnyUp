@@ -1,15 +1,16 @@
 """Fine-tune OlmoEarth on PASTIS semantic segmentation.
 
-Reuses OlmoEarth's own eval pipeline (PASTISRDataset, BackboneWithHead, eval_seg)
-so band-mapping / temporal aggregation / pooling / seg-head all match their
-benchmark. The training loop is lifted from olmoearth_pretrain.evals.finetune.train
-.run_finetune_eval, minus the olmo_core.Trainer / wandb wrapper (we only need the
-inner loop + the freeze-then-unfreeze warmup).
+Data: PastisDataset (raw PASTIS-R, time setup from config `temporal`, see exp/pastis/data.py)
+packed into OlmoEarth's input by OlmoEarthInput. Model: OlmoEarth's own BackboneWithHead /
+get_eval_wrapper (seg head, pooling) or our AnyUp heads, whose RGB guidance comes from the
+same batch's S2 bands. The training loop is lifted from olmoearth_pretrain.evals.finetune
+.train.run_finetune_eval, minus the olmo_core Trainer / wandb wrapper (inner loop + the
+freeze-then-unfreeze warmup).
 
 Run inside a GPU salloc:
     source env_setup/env_olmo.sh
-    python -u -m exp.pastis.prepare_data   # one-time, builds data/pastis_olmoearth/
-    python -u -m exp.pastis.finetune_olmoearth
+    python -u -m exp.pastis.finetune_olmoearth --set model_size=base modalities=sentinel2_l2a \
+        head_mode=lp freeze_backbone=false temporal=monthly
 """
 import os
 import sys
@@ -34,8 +35,6 @@ from torch.utils.data import DataLoader
 # package's encoder class matches it.
 from olmoearth_pretrain.model_loader import ModelID, load_model_from_id
 from olmoearth_pretrain.evals.datasets.configs import DATASET_TO_CONFIG, TaskType
-from olmoearth_pretrain.evals.datasets.pastis_dataset import PASTISRDataset
-from olmoearth_pretrain.evals.datasets.utils import eval_collate_fn
 from olmoearth_pretrain.evals.finetune.constants import (
     FREEZE_EPOCH_FRACTION,
     SCHEDULER_COOLDOWN,
@@ -53,18 +52,25 @@ from olmoearth_pretrain.evals.finetune.model import (
     to_device,
 )
 from olmoearth_pretrain.nn.flexi_vit import PoolingType
-from olmoearth_pretrain.nn.pooling import pool_unmasked_tokens
 
 from exp.common.config import Config, load_config, to_dict
+from exp.pastis.data import MODALITIES, labels, make_dataset
+from manyup.data import mtmm_collate
+from manyup.data.sample import MTMMBatch
+from manyup.encoders.olmoearth import LEGACY_S2_IMPUTE, OlmoEarthInput, pool_timestep
 
 # ---- runtime config (module globals; helpers below read these at call time) ----
 # These are populated from a Config by _apply_config() in main(). The defaults here
 # mirror Config()'s defaults so the module is importable/usable without a YAML (e.g.
 # visualize_olmoearth_pastis.py imports DATA_SPLITS / INPUT_MODALITIES / etc.).
-DATA_SPLITS = "data/pastis_olmoearth"   # output of exp/pastis/prepare_data.py
+# Legacy prep, still read by _load_rgb_guidance for scripts not yet on the data layer
+# (probes, upsampler evals, some viz); fine-tuning itself does not use it.
+DATA_SPLITS = "data/pastis_olmoearth"
 MODEL_ID = ModelID.OLMOEARTH_V1_BASE
 DATASET = "pastis"                       # 64x64 config (matches resize_to_64=True)
 INPUT_MODALITIES = ["sentinel2_l2a", "sentinel1"]
+TEMPORAL = "legacy"
+IMAGE_SIZE = 64
 POOLING_TYPE = PoolingType.MEAN          # evaluator_callback default
 EPOCHS = 64
 BATCH_SIZE = 32
@@ -92,8 +98,9 @@ def _apply_config(cfg: Config) -> None:
     """Populate the module globals from a Config. Helpers read these names at call
     time, so setting them here (before building loaders/model) is sufficient."""
     g = globals()
-    g["DATA_SPLITS"] = cfg.data_splits
     g["DATASET"] = cfg.dataset
+    g["TEMPORAL"] = cfg.temporal
+    g["IMAGE_SIZE"] = cfg.image_size
     g["INPUT_MODALITIES"] = cfg.input_modalities
     g["MODEL_ID"] = getattr(ModelID, cfg.model_id_name)
     g["EPOCHS"] = cfg.epochs
@@ -140,31 +147,18 @@ def _load_rgb_guidance(split: str, idx: int, temporal: bool = False,
     return _norm_rgb(rgb)
 
 
-class _GuidancePASTIS(torch.utils.data.Dataset):
-    """Wraps PASTISRDataset to also yield AnyUp's RGB guidance. temporal=True yields a
-    per-timestep guidance stack (T,3,64,64); else a single time-averaged (3,64,64)."""
-
-    def __init__(self, split: str, temporal: bool):
-        self.ds = PASTISRDataset(
-            path_to_splits=Path(DATA_SPLITS), split=split,
-            norm_stats_from_pretrained=True, input_modalities=INPUT_MODALITIES,
-        )
-        self.split = split
-        self.temporal = temporal
-
-    def __len__(self):
-        return len(self.ds)
-
-    def __getitem__(self, i):
-        masked, label = self.ds[i]
-        return masked, label, _load_rgb_guidance(self.split, i, self.temporal)
-
-
-def _guidance_collate(batch):
-    samples = [(m, l) for m, l, _ in batch]
-    masked, label = eval_collate_fn(samples)
-    rgb = torch.stack([r for _, _, r in batch])   # (B,3,64,64) or (B,T,3,64,64)
-    return masked, label, rgb
+def batch_rgb_guidance(batch: MTMMBatch, temporal: bool) -> torch.Tensor:
+    """AnyUp's RGB guidance from the batch's own S2 (B04/B03/B02, picked by name), normalized
+    per image: (B,T,3,H,W) if temporal, else the mean over the frames that have data
+    (B,3,H,W). With the legacy time setup this equals _load_rgb_guidance exactly."""
+    s2 = batch.modalities["S2"]
+    rgb = s2.data.float()[:, :, [s2.bands.index(b) for b in ("B04", "B03", "B02")]]
+    if temporal:
+        if not s2.frame_valid.all():
+            raise ValueError("per-timestep AnyUp heads need every timestep to have data")
+        return _norm_rgb(rgb)
+    w = s2.frame_valid.float().view(*s2.frame_valid.shape, 1, 1, 1)
+    return _norm_rgb((rgb * w).sum(1) / w.sum(1).clamp(min=1))
 
 
 class AnyUpUpsampleProbe(nn.Module):
@@ -294,23 +288,10 @@ class AnyUpHeadT1(AnyUpHead):
         tam = self.encoder(masked, patch_size=self.wrapper.patch_size,
                            fast_pass=True)["tokens_and_masks"]
         T = rgb.shape[1]
-        feats_per_t = [pool_per_timestep(tam, t, POOLING_TYPE).permute(0, 3, 1, 2).contiguous()
+        feats_per_t = [pool_timestep(tam, t).permute(0, 3, 1, 2).contiguous()
                        for t in range(T)]
         logits = self.up(feats_per_t, rgb.to(dev), out_size=label.shape[-2:])
         return logits, label
-
-
-def pool_per_timestep(tam, t, pooling_type):
-    """Pool only timestep t of a TokensAndMasks -> (B, gH, gW, D), reusing the model's
-    own spatial/bandset/modality reduction (a time-mean over a single sliced step is a
-    no-op). Shared by AnyUpHeadT1 and the offline feature extractor so both produce
-    identical per-timestep features."""
-    repl = {}
-    for m in tam.modalities:
-        mn = tam.get_masked_modality_name(m)
-        repl[m] = getattr(tam, m)[:, :, :, t:t + 1]
-        repl[mn] = getattr(tam, mn)[:, :, :, t:t + 1]
-    return pool_unmasked_tokens(tam._replace(**repl), pooling_type, spatial_pooling=True)
 
 
 class TimeConcatHead(nn.Module):
@@ -382,38 +363,25 @@ def build_head(head: str, encoder, patch_size, task_config):
 
 
 def make_loader(split: str, shuffle: bool) -> DataLoader:
-    if _is_anyup():
-        # temporal heads need per-timestep guidance (T,3,64,64); plain anyup a single (3,64,64)
-        return DataLoader(_GuidancePASTIS(split, temporal=_is_temporal_anyup()),
-                          batch_size=BATCH_SIZE, num_workers=NUM_WORKERS,
-                          shuffle=shuffle, collate_fn=_guidance_collate)
-    ds = PASTISRDataset(
-        path_to_splits=Path(DATA_SPLITS),
-        split=split,
-        norm_stats_from_pretrained=True,
-        input_modalities=INPUT_MODALITIES,
-    )
-    return DataLoader(
-        ds,
-        batch_size=BATCH_SIZE,
-        num_workers=NUM_WORKERS,
-        shuffle=shuffle,
-        collate_fn=eval_collate_fn,
-    )
+    """AnyUp heads also need S2 for guidance, even when the model input is S1 only."""
+    ds = make_dataset(split, INPUT_MODALITIES, TEMPORAL, IMAGE_SIZE, with_s2=_is_anyup())
+    return DataLoader(ds, batch_size=BATCH_SIZE, num_workers=NUM_WORKERS, shuffle=shuffle,
+                      collate_fn=mtmm_collate)
+
+
+def _pack():
+    return OlmoEarthInput({MODALITIES[m][0]: MODALITIES[m][1] for m in INPUT_MODALITIES},
+                          impute={"S2": LEGACY_S2_IMPUTE})
 
 
 def _forward_logits(ft, batch, device, task_config, patch_size):
-    """Unified forward -> (B, num_classes, 64, 64) for both heads.
-
-    LP batch is (masked, label); AnyUp batch is (masked, label, rgb).
-    """
+    """Unified forward -> (B, num_classes, H, W) for every head."""
+    masked, _ = _pack().to_olmoearth(batch)
+    label = labels(batch).to(device)
     if _is_anyup():
-        masked, label, rgb = batch
-        label = label.to(device)
+        rgb = batch_rgb_guidance(batch, temporal=_is_temporal_anyup())
         logits, label = ft(to_device(masked, device), label, rgb, is_train=ft.training)
         return logits, label  # already (B, C, H, W)
-    masked, label = batch
-    label = label.to(device)
     logits, label = ft(to_device(masked, device), label)          # (B, h, w, C*p*p)
     h, w = logits.shape[1], logits.shape[2]
     logits = rearrange(logits, "b h w (c i j) -> b c (h i) (w j)",
@@ -448,7 +416,7 @@ def main(cfg: Config) -> None:
     assert task_config.task_type == TaskType.SEGMENTATION
 
     train_loader = make_loader("train", shuffle=True)
-    val_loader = make_loader("valid", shuffle=False)
+    val_loader = make_loader("val", shuffle=False)
     test_loader = make_loader("test", shuffle=False)
 
     model = load_model_from_id(MODEL_ID, load_weights=True)

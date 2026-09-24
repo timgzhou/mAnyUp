@@ -25,7 +25,6 @@ import argparse
 import glob
 import os
 import re
-from pathlib import Path
 from typing import cast
 
 from exp.common import olmo_bootstrap  # type: ignore[import-not-found]
@@ -41,14 +40,14 @@ import matplotlib.patches as mpatches  # noqa: E402
 
 from olmoearth_pretrain.model_loader import ModelID, load_model_from_id  # noqa: E402
 from olmoearth_pretrain.evals.datasets.configs import DATASET_TO_CONFIG, TaskType  # noqa: E402
-from olmoearth_pretrain.evals.datasets.pastis_dataset import PASTISRDataset  # noqa: E402
-from olmoearth_pretrain.evals.datasets.utils import eval_collate_fn  # noqa: E402
 
 from exp.pastis import finetune_olmoearth as FT  # noqa: E402
 from exp.pastis.visualize import CLASSES, CMAP, compute_metrics  # noqa: E402
 from exp.common.config import MODEL_SIZE_TO_ID  # noqa: E402
+from exp.pastis.data import labels, make_dataset  # noqa: E402
+from manyup.data import mtmm_collate  # noqa: E402
+from manyup.data.datasets.pastis import PastisDataset  # noqa: E402
 
-SPLITS = {64: "data/pastis_olmoearth", 128: "data/pastis128_olmoearth"}
 # 64px quadrant order within a 128px patch, verified against targets.pt (column-major).
 QUAD_ORDER = ["TL", "BL", "TR", "BR"]
 QUAD_SLICE = {"TL": (slice(0, 64), slice(0, 64)),   "TR": (slice(0, 64), slice(64, 128)),
@@ -66,14 +65,20 @@ def infer_run(ckpt: str) -> dict:
     # run_name appends _img<N> for non-64 preps (see exp/common/config.py).
     mi = re.search(r"_img(\d+)_", name)
     img = int(mi.group(1)) if mi else 64
+    mods = next(v for k, v in (("_s2s1_", ["sentinel2_l2a", "sentinel1"]),
+                               ("_s2_", ["sentinel2_l2a"]), ("_s1_", ["sentinel1"]))
+                if k in name)
     return {"ckpt": ckpt, "patch_size": ps, "image_size": img, "model_size": size,
+            "modalities": mods, "temporal": "monthly" if "_monthly_" in name else "legacy",
             "label": f"ps{ps} img{img}", "grid": img // ps}
 
 
 def load_rgb128(idx: int) -> np.ndarray:
-    """Natural-color RGB for a 128px test sample, time-averaged. 13-band L1C: B04/B03/B02."""
-    s2 = torch.load(Path(SPLITS[128]) / "pastis_r_test" / "s2_images" / f"{idx}.pt")
-    rgb = s2.float().mean(0)[[3, 2, 1]].permute(1, 2, 0).numpy()
+    """Natural-color RGB of whole test patch idx: B04/B03/B02 (by name), averaged over the
+    frames that have data."""
+    s2 = make_dataset("test", ["sentinel2_l2a"], "monthly", 128)[idx].modalities["S2"]
+    x = s2.data.float()[:, [s2.bands.index(b) for b in ("B04", "B03", "B02")]]
+    rgb = x[s2.frame_valid].mean(0).permute(1, 2, 0).numpy()
     lo, hi = np.percentile(rgb, 2), np.percentile(rgb, 98)   # stretch for visibility
     return np.clip((rgb - lo) / (hi - lo + 1e-6), 0, 1)
 
@@ -84,30 +89,26 @@ def build_model(run: dict, task_config, device, encoders: dict) -> nn.Module:
     if size not in encoders:
         m = load_model_from_id(getattr(ModelID, MODEL_SIZE_TO_ID[size]), load_weights=True)
         encoders[size] = cast(nn.Module, m.encoder if hasattr(m, "encoder") else m)
-    FT.HEAD = "lp"
-    FT.DATA_SPLITS = SPLITS[run["image_size"]]
-    FT.INPUT_MODALITIES = ["sentinel2_l2a", "sentinel1"]
+    FT.HEAD, FT.INPUT_MODALITIES, FT.TEMPORAL = "lp", run["modalities"], run["temporal"]
     ft = FT.build_head("lp", encoders[size], run["patch_size"], task_config).to(device)
     # Lazy-init the probe (in_dim depends on embed dim) before load_state_dict.
     with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-        FT._forward_logits(ft, sample_batch(run["image_size"], 0), device,
+        FT._forward_logits(ft, sample_batch(run, run["image_size"], 0), device,
                            task_config, run["patch_size"])
     ft.load_state_dict(torch.load(run["ckpt"], map_location=device))
     ft.eval()
     return ft
 
 
-_DS_CACHE: dict[int, PASTISRDataset] = {}
+_DS_CACHE: dict[tuple, object] = {}
 
 
-def sample_batch(image_size: int, idx: int):
-    """One test sample from the prep matching image_size, collated as the head expects."""
-    if image_size not in _DS_CACHE:
-        _DS_CACHE[image_size] = PASTISRDataset(
-            path_to_splits=Path(SPLITS[image_size]), split="test",
-            norm_stats_from_pretrained=True,
-            input_modalities=["sentinel2_l2a", "sentinel1"])
-    return eval_collate_fn([_DS_CACHE[image_size][idx]])
+def sample_batch(run: dict, image_size: int, idx: int):
+    """One test sample (64 px tile or 128 px patch) for this run's modalities/time setup."""
+    key = (tuple(run["modalities"]), run["temporal"], image_size)
+    if key not in _DS_CACHE:
+        _DS_CACHE[key] = make_dataset("test", run["modalities"], run["temporal"], image_size)
+    return mtmm_collate([_DS_CACHE[key][idx]])
 
 
 @torch.no_grad()
@@ -116,9 +117,10 @@ def _encode(ft, batch, device) -> torch.Tensor:
 
     This is exactly the tensor BackboneWithHead.forward feeds to its linear head
     (`emb, labels = self.wrapper(...)`), i.e. the final representation the probe sees."""
-    masked, label = batch
+    masked, _ = FT._pack().to_olmoearth(batch)
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-        emb, _ = ft.wrapper(FT.to_device(masked, device), label.to(device), is_train=False)
+        emb, _ = ft.wrapper(FT.to_device(masked, device), labels(batch).to(device),
+                            is_train=False)
     return cast(torch.Tensor, emb)[0].float().cpu()
 
 
@@ -132,7 +134,7 @@ def predict_128(ft, run: dict, idx128: int, task_config, device) -> tuple:
     how those models would be applied to this ground."""
     ps = run["patch_size"]
     if run["image_size"] == 128:
-        batch = sample_batch(128, idx128)
+        batch = sample_batch(run, 128, idx128)
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
             logits, label = FT._forward_logits(ft, batch, device, task_config, ps)
         return (logits.argmax(1)[0].cpu().numpy(), label[0].cpu().numpy(),
@@ -143,7 +145,7 @@ def predict_128(ft, run: dict, idx128: int, task_config, device) -> tuple:
     g = 64 // ps                      # tokens per 64px quadrant side
     feat = None
     for k, quad in enumerate(QUAD_ORDER):
-        batch = sample_batch(64, 4 * idx128 + k)
+        batch = sample_batch(run, 64, 4 * idx128 + k)
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
             logits, label = FT._forward_logits(ft, batch, device, task_config, ps)
         r, c = QUAD_SLICE[quad]
@@ -204,6 +206,10 @@ def main() -> None:
     assert task_config.task_type == TaskType.SEGMENTATION
 
     runs = [infer_run(c) for c in sorted(glob.glob(args.ckpt_glob))]
+    for r in [r for r in runs if r["temporal"] == "legacy" and r["modalities"] != ["sentinel2_l2a"]]:
+        print(f"skip {os.path.basename(r['ckpt'])}: legacy S1 inputs were misaligned by "
+              "OlmoEarth's prep and cannot be reproduced; rerun it with temporal=monthly")
+        runs.remove(r)
     if not runs:
         raise SystemExit(f"no checkpoints matching {args.ckpt_glob}")
     # rows ordered by patch size, then image size
@@ -215,7 +221,7 @@ def main() -> None:
     if args.indices:
         idxs = [int(x) for x in args.indices.split(",")]
     else:
-        n = len(torch.load(Path(SPLITS[128]) / "pastis_r_test" / "targets.pt"))
+        n = PastisDataset.SPEC.split_sizes["test"]          # whole 128 px test patches
         idxs = np.linspace(0, n - 1, args.samples).astype(int).tolist()
     print("test indices (128px):", idxs)
 

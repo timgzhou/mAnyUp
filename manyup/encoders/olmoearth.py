@@ -199,10 +199,10 @@ class OlmoEarthEncoder(Encoder):
         if temporal_mode == "per_timestep":
             folded = _cat([_slice_time(sample, t) for t in range(T)])
             tam = self._run(folded)
-            per_t = list(_pool_timestep(tam, 0).chunk(T, dim=0))
+            per_t = list(pool_timestep(tam, 0).chunk(T, dim=0))
         else:
             tam = self._run(sample)
-            per_t = [_pool_timestep(tam, t) for t in range(T)]
+            per_t = [pool_timestep(tam, t) for t in range(T)]
         return torch.stack(per_t, dim=-2)
 
     def _run(self, sample: MaskedOlmoEarthSample):
@@ -210,7 +210,7 @@ class OlmoEarthEncoder(Encoder):
                             fast_pass=not _has_missing(sample))["tokens_and_masks"]
 
 
-def _pool_timestep(tam, t: int) -> torch.Tensor:
+def pool_timestep(tam, t: int) -> torch.Tensor:
     """Tokens of step t averaged over bandsets, then over the modalities present at each
     (sample, location) -> (B, gH, gW, D). With every token present this is exactly OlmoEarth's
     pool_spatially (mean over bandsets, then over modalities), bit for bit."""

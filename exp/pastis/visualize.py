@@ -35,8 +35,6 @@ from torchmetrics.functional.classification import (  # noqa: E402
 
 from olmoearth_pretrain.model_loader import ModelID, load_model_from_id  # noqa: E402
 from olmoearth_pretrain.evals.datasets.configs import DATASET_TO_CONFIG, TaskType  # noqa: E402
-from olmoearth_pretrain.evals.datasets.pastis_dataset import PASTISRDataset  # noqa: E402
-from olmoearth_pretrain.evals.datasets.utils import eval_collate_fn  # noqa: E402
 from olmoearth_pretrain.evals.finetune.model import BackboneWithHead, to_device  # noqa: E402
 from olmoearth_pretrain.nn.flexi_vit import PoolingType  # noqa: E402
 
@@ -44,12 +42,10 @@ from olmoearth_pretrain.nn.flexi_vit import PoolingType  # noqa: E402
 from exp.pastis import finetune_olmoearth as FT  # noqa: E402
 from exp.common.config import MODEL_SIZE_TO_ID  # noqa: E402
 
-# ---- config (inherited from the finetune module) ----
-DATA_SPLITS = FT.DATA_SPLITS
-MODEL_ID = FT.MODEL_ID
+from exp.pastis.data import make_dataset  # noqa: E402
+from manyup.data import mtmm_collate  # noqa: E402
+
 DATASET = FT.DATASET
-INPUT_MODALITIES = FT.INPUT_MODALITIES
-POOLING_TYPE = FT.POOLING_TYPE
 OUT_DIR = "results/pastis/predictions"
 IGNORE_INDEX = -1  # OlmoEarth maps PASTIS void (19) -> -1
 
@@ -130,11 +126,12 @@ def visualize(rgb, pred, mask, filename, grid_hw):
     plt.close(fig)
 
 
-def load_rgb(split, idx=0):
-    """Raw (un-normalized) S2 -> natural-color RGB, time-averaged. 13-band L1C order:
-    B04/B03/B02 = indices 3/2/1."""
-    s2 = torch.load(Path(DATA_SPLITS) / f"pastis_r_{split}" / "s2_images" / f"{idx}.pt")
-    rgb = s2.float().mean(0)[[3, 2, 1]].permute(1, 2, 0).numpy()  # (H, W, 3)
+def load_rgb(batch):
+    """Natural-color RGB of the batch's first sample: B04/B03/B02 (by name), averaged over
+    the frames that have data."""
+    s2 = batch.modalities["S2"]
+    x = s2.data[0].float()[:, [s2.bands.index(b) for b in ("B04", "B03", "B02")]]
+    rgb = x[s2.frame_valid[0]].mean(0).permute(1, 2, 0).numpy()   # (H, W, 3)
     return (rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-6)
 
 
@@ -142,16 +139,11 @@ def _build_head(head, encoder, patch_size, task_config, device):
     return FT.build_head(head, encoder, patch_size, task_config).to(device)
 
 
-def _first_sample_batch(split, head):
-    """First sample (index 0) of `split`, in the batch form the head's forward expects."""
-    ds = PASTISRDataset(path_to_splits=Path(DATA_SPLITS), split=split,
-                        norm_stats_from_pretrained=True, input_modalities=INPUT_MODALITIES)
-    masked, label = eval_collate_fn([ds[0]])
-    if not head.startswith("anyup"):
-        return (masked, label)
-    temporal = head in ("anyup_t1", "anyup_t2")
-    rgb = FT._load_rgb_guidance(split, 0, temporal=temporal).unsqueeze(0)  # (1,3,64,64) or (1,T,3,64,64)
-    return (masked, label, rgb)
+def _first_sample_batch(split):
+    """First sample (index 0) of `split` for the run FT is configured for, with S2 included
+    for the RGB panel."""
+    ds = make_dataset(split, FT.INPUT_MODALITIES, FT.TEMPORAL, FT.IMAGE_SIZE, with_s2=True)
+    return mtmm_collate([ds[0]])
 
 
 def _infer_run(ckpt_path):
@@ -172,7 +164,12 @@ def _infer_run(ckpt_path):
     # patch size encoded as _p<N>_ in run_name; default 4 for older names without it.
     m = re.search(r"_p(\d+)_", name)
     patch_size = int(m.group(1)) if m else 4
-    return head, size, patch_size
+    mods = next(v for k, v in (("_s2s1_", ["sentinel2_l2a", "sentinel1"]),
+                               ("_s2_", ["sentinel2_l2a"]), ("_s1_", ["sentinel1"]))
+                if k in name)
+    temporal = "monthly" if "_monthly_" in name else "legacy"
+    image_size = 128 if "_img128" in name else 64
+    return head, size, patch_size, mods, temporal, image_size
 
 
 def main():
@@ -193,30 +190,35 @@ def main():
     # Cache encoders by model size (different checkpoints may use different sizes).
     encoders: dict[str, nn.Module] = {}
     for ckpt in available:
-        head, size, patch_size = _infer_run(ckpt)
+        head, size, patch_size, mods, temporal, image_size = _infer_run(ckpt)
         tag = os.path.basename(ckpt).replace("_best.pt", "")
+        if temporal == "legacy" and mods != ["sentinel2_l2a"]:
+            print(f"  skip {tag}: legacy S1 inputs were misaligned by OlmoEarth's prep and "
+                  "cannot be reproduced; rerun it with temporal=monthly")
+            continue
         if size not in encoders:
             m = load_model_from_id(getattr(ModelID, MODEL_SIZE_TO_ID[size]), load_weights=True)
             encoders[size] = cast(nn.Module, m.encoder if hasattr(m, "encoder") else m)
         encoder = encoders[size]
 
-        FT.HEAD = head  # FT.make_loader / _forward_logits branch on this module global
+        # FT.make_loader / _forward_logits read these module globals
+        FT.HEAD, FT.INPUT_MODALITIES, FT.TEMPORAL, FT.IMAGE_SIZE = head, mods, temporal, image_size
         ft = _build_head(head, encoder, patch_size, task_config, device)
         # Lazy-init the head, then load finetuned weights.
         with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-            FT._forward_logits(ft, _first_sample_batch("train", head), device, task_config, patch_size)
+            FT._forward_logits(ft, _first_sample_batch("train"), device, task_config, patch_size)
         ft.load_state_dict(torch.load(ckpt, map_location=device))
         ft.eval()
 
         # --- visualize first train + test sample ---
         for split in ["train", "test"]:
-            batch = _first_sample_batch(split, head)
+            batch = _first_sample_batch(split)
             with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
                 logits, label = FT._forward_logits(ft, batch, device, task_config, patch_size)
             pred = logits.argmax(dim=1)[0].cpu().numpy()
             mask = label[0].cpu().numpy()
-            rgb = load_rgb(split, idx=0)
-            grid_hw = (64 // patch_size, 64 // patch_size)  # encoder token grid (8x8)
+            rgb = load_rgb(batch)
+            grid_hw = (image_size // patch_size, image_size // patch_size)  # encoder token grid
             out = os.path.join(OUT_DIR, f"{tag}_pred_{split}.png")
             visualize(rgb, pred, mask, out, grid_hw=grid_hw)
 
