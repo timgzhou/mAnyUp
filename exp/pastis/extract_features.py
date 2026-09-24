@@ -39,14 +39,13 @@ from tqdm import tqdm  # noqa: E402
 
 from exp.common.config import MODEL_SIZE_TO_ID  # noqa: E402
 from exp.common.paths import FEATURES  # noqa: E402
-from exp.pastis.data import MODALITIES, TEMPORAL, make_dataset  # noqa: E402
+from exp.pastis.data import MODALITIES, SPLIT_DIRS, TEMPORAL, make_dataset  # noqa: E402
 from manyup.data import mtmm_collate  # noqa: E402
 from manyup.data.datasets.pastis import PastisDataset  # noqa: E402
 from manyup.encoders.olmoearth import (LEGACY_S2_IMPUTE, OlmoEarthEncoder,  # noqa: E402
                                        OlmoEarthInput)
 
 SHORT = {"sentinel2_l2a": "s2", "sentinel1": "s1"}
-SPLIT_DIRS = {"train": "train", "val": "valid", "test": "test"}   # legacy folder names
 TEMPORAL_MODES = {"series": "series", "single": "per_timestep"}
 
 

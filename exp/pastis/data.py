@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import torch
 
+from exp.common.paths import DATA
 from manyup.data import Tiling
+from manyup.data.feature_cache import LegacyReconstruction
+from manyup.data.time import month_bounds
 from manyup.data.datasets.pastis import LEGACY_OLMOEARTH_S2, PastisDataset, monthly
 from manyup.data.sample import MTMMBatch
 
@@ -19,6 +22,7 @@ from manyup.data.sample import MTMMBatch
 MODALITIES = {"sentinel2_l2a": ("S2", "sentinel2_l2a"), "sentinel1": ("S1A", "sentinel1")}
 TEMPORAL = ("monthly", "legacy")
 IGNORE_LABEL = -1          # what PASTIS's void class (19) becomes for the losses/metrics
+SPLIT_DIRS = {"train": "train", "val": "valid", "test": "test"}   # feature-cache folder names
 
 
 def temporal_setup(name: str, modalities: list[str]) -> dict:
@@ -50,3 +54,20 @@ def labels(batch: MTMMBatch) -> torch.Tensor:
     t = batch.target.clone()
     t[t == PastisDataset.SPEC.target.ignore_index] = IGNORE_LABEL
     return t
+
+
+
+def legacy_reconstruction(split: str, image_size: int) -> LegacyReconstruction:
+    """ids / validity / dates for a feature cache made before caches recorded them. Those
+    were all extracted from OlmoEarth's legacy prep, in the order PastisDataset reproduces,
+    with the prep's months (first 12 non-empty, every step valid) as the time axis."""
+    ds = make_dataset(split, ["sentinel2_l2a"], "legacy", image_size)
+    prep = DATA / ("pastis_olmoearth" if image_size == 64 else "pastis128_olmoearth")
+    months = torch.load(prep / f"pastis_r_{SPLIT_DIRS[split]}" / "months.pt")   # (N, 12) yyyymm
+    if len(months) != len(ds):
+        raise ValueError(f"legacy prep has {len(months)} samples, dataset {len(ds)}")
+    bounds = [[month_bounds(int(m) // 100, int(m) % 100) for m in row] for row in months.tolist()]
+    t = torch.tensor(bounds, dtype=torch.long)                                  # (N, 12, 2)
+    return LegacyReconstruction(ids=[ds.sample_id(i) for i in range(len(ds))],
+                                frame_valid=torch.ones(months.shape, dtype=torch.bool),
+                                t_start=t[..., 0], t_end=t[..., 1])

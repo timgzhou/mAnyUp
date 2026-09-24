@@ -79,6 +79,12 @@ class MTMMDataset(Dataset, ABC):
         nid, off = self._index[i]
         return nid if off is None else Tiling.tile_id(nid, *off)
 
+    def index_of(self, sample_id: str) -> int:
+        """Dataset index of a sample id (the join key with feature caches and other streams)."""
+        if not hasattr(self, "_id_to_index"):
+            self._id_to_index = {self.sample_id(i): i for i in range(len(self))}
+        return self._id_to_index[sample_id]
+
     def __getitem__(self, i: int) -> MTMMSample:
         nid, off = self._index[i]
         if self._last is not None and self._last[0] == nid:
