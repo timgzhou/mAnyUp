@@ -13,10 +13,9 @@
 #   per_timestep for ps4ts4. PASTIS keeps every timestep (upsamplers train on it);
 #   BioMassters / GEOID store only what the head reads, since every timestep would need
 #   ~2.5 TB / ~0.7 TB.
-# Epochs, batch and walltimes per task come from a throughput benchmark on an L40S (see
-# docs/RUNBOOK.md, "Task sweep"); walltimes carry ~1.5x headroom.
+# LP jobs that read a cache must run after "extract" has finished.
 set -euo pipefail
-TASK="${1:?usage: bash scripts/slurm/sweep.sh <task> [olmoearth|utae|all]}"
+TASK="${1:?usage: bash scripts/slurm/sweep.sh <task> [olmoearth|utae|extract|all]}"
 WHAT="${2:-all}"
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 [ -f env_setup/env_olmo.sh ] || { echo "not the repo root: $PWD" >&2; exit 1; }
@@ -34,23 +33,34 @@ case "$TASK" in
   *) echo "unknown task $TASK" >&2; exit 1 ;;
 esac
 
-# walltime <task> <patch> <tile> <mode lp|fft|utae> -> H:MM:SS  (filled from the benchmark)
-walltime() {
+# Walltimes: ~1.5x the benchmark (L40S, FFT samples/s after unfreezing, eval included):
+#   pastis  ps4 5.5-9.5 /s  (~22 min/epoch)   ps16 ~37 /s (~4 min)
+#   bio     ps4 6.0-10.6 /s (~3.4 h/epoch)    ps16 ~26 /s (~1 h, data-loading bound)
+#   geoid   ps4ts4 60-74 /s (~1 h/epoch)      ps4ts64 ~200 /s (~20 min)   ps16 ~370 /s (~12 min)
+# LP runs the encoder forward only (~1/3 of FFT), or reads a cache (disk bound).
+walltime() {   # walltime <task> <patch> <tile> <fft|lp|lp_cache|utae>
   case "$1:$2:$3:$4" in
-    *) echo "3-00:00:00" ;;
+    pastis:4:*:fft)        echo 1-04:00:00 ;;  pastis:16:*:fft)       echo 6:00:00 ;;
+    pastis:4:*:lp)         echo 12:00:00 ;;    pastis:16:*:lp)        echo 4:00:00 ;;
+    biomassters:4:*:fft)   echo 2-06:00:00 ;;  biomassters:16:*:fft)  echo 16:00:00 ;;
+    biomassters:4:*:lp)    echo 1-00:00:00 ;;  biomassters:16:*:lp)   echo 12:00:00 ;;
+    geoidflood:4:4:fft)    echo 16:00:00 ;;    geoidflood:4:64:fft)   echo 6:00:00 ;;
+    geoidflood:16:*:fft)   echo 4:00:00 ;;     geoidflood:*:lp)       echo 6:00:00 ;;
+    *:lp_cache)            echo 8:00:00 ;;
+    pastis:*:utae)         echo 8:00:00 ;;     biomassters:*:utae)    echo 12:00:00 ;;
+    geoidflood:*:utae)     echo 8:00:00 ;;
+    *) echo "no walltime for $1:$2:$3:$4" >&2; exit 1 ;;
   esac
 }
-# micro-batch for FFT where batch 8 does not fit in 46 GB (empty = none)
-micro() {
-  case "$1:$2:$3" in
-    *) echo "" ;;
-  esac
+# LP reads the exp.olmoearth.extract cache where one was made (see "extract" below)
+has_cache() {   # has_cache <mode> <patch> <tile>
+  [[ "$1" == series || "$1:$2:$3" == per_timestep:4:4 ]]
 }
 
-submit() {   # submit <job name> <walltime> <module> [args...]
+submit() {   # submit <job name> <walltime> <module> [args...]; $AFTER = job id to wait for
   local name=$1 time=$2; shift 2
   local cmd=(sbatch -J "$name" --time="$time" --cpus-per-task="$CPUS" $EXCLUDE
-             scripts/slurm/run.sh "$@")
+             ${AFTER:+--dependency=afterok:$AFTER} scripts/slurm/run.sh "$@")
   if [ -n "${DRY:-}" ]; then echo "${cmd[*]}"; else "${cmd[@]}"; fi
 }
 
@@ -61,12 +71,18 @@ if [[ "$WHAT" == olmoearth || "$WHAT" == all ]]; then
       common=(exp.olmoearth.train --task "$TASK" --temporal_mode "$mode" --patch_size "$ps"
               --tile_size "$ts" --epochs "$OE_EPOCHS" --num_workers $((CPUS - 1)))
       tag="${TASK:0:3}_${mode:0:3}_ps${ps}ts${ts}"
-      submit "oe_${tag}_lp" "$(walltime "$TASK" "$ps" "$ts" lp)" \
-          "${common[@]}" --mode lp --lrs "$(IFS=,; echo "${LRS[*]}")"
-      mb=$(micro "$TASK" "$ps" "$ts")
+      if has_cache "$mode" "$ps" "$ts"; then
+        # wait for the extraction job if it is still queued or running
+        AFTER=$(squeue -u "$USER" -h -n "ext_${TASK:0:3}_${mode:0:3}_ps${ps}ts${ts}" -o %i | head -1) \
+        submit "oe_${tag}_lp" "$(walltime "$TASK" "$ps" "$ts" lp_cache)" \
+            "${common[@]}" --mode lp --lrs "$(IFS=,; echo "${LRS[*]}")" --from_cache "$STORE"
+      else
+        submit "oe_${tag}_lp" "$(walltime "$TASK" "$ps" "$ts" lp)" \
+            "${common[@]}" --mode lp --lrs "$(IFS=,; echo "${LRS[*]}")"
+      fi
       for lr in "${LRS[@]}"; do
         submit "oe_${tag}_fft_lr${lr}" "$(walltime "$TASK" "$ps" "$ts" fft)" \
-            "${common[@]}" --mode fft --lrs "$lr" ${mb:+--micro_batch $mb}
+            "${common[@]}" --mode fft --lrs "$lr"
       done
     done
   done
