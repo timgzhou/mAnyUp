@@ -3,54 +3,27 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "any_disaster"
-version = "0.0.1"
-
+name = "manyup"
+version = "0.1.0"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
+# What exp/, manyup/ and the vendored UTAE import. On the cluster, env_setup/env_olmo.sh
+# installs these from the wheelhouse; this list is the portable record of the same thing.
 dependencies = [
-    "numpy==1.26.4",
     "torch",
     "torchvision",
-    "albumentations==1.4.24",
-    "pyyaml",
-    "tqdm",
-    "imageio",
-    "tifffile",
-    "imagecodecs",
-    "scikit-image",
+    "olmoearth-pretrain==0.1.0",
+    "numpy",
+    "einops",
     "matplotlib",
-    "rasterio",
-    "termcolor",
-    "prettytable",
-    "safetensors",
-    "yacs",          # for HRNet config
-    "timm",          # for SegFormer, SatMAE, etc.
-    "h5py",          # for Landslide4Sense, FireSpread
-    "hdf5plugin",    # for FLOGA
-    "scikit-learn",  # for FLOGA
-    "einops",        # for ChangeMamba
-    "fvcore",        # for ChangeMamba
-    "tensorboardX",  # for logging
-    # foundation model dependencies (optional, needed for specific models)
-    "transformers==4.57.0",  # for Mask2Former, CLIPDPT, SAMDPT; 5.x has breaking changes
-    "peft",          # for DINOV2DPT_LoRA
-    "hydra-core",    # for SAM2
+    "tqdm",
+    "pyyaml",
     "pandas",
-    # data setup
-    "Pillow",
-    "huggingface_hub>=0.34,<1",     # for the UrbanSARFloods download helper; transformers 4.x requires <1
-    "opencv-python-headless",
-    "shapely",              # for xBD polygon masks
-    "xarray",
-    "zarr<3",               # ImpactMesh .zarr.zip archives are zarr v2 format; 3.x cannot open them
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest",
+    "geopandas",       # UTAE's PASTIS dataloader
+    "rasterio",        # GEOID-Flood prep / visualization
+    "torchmetrics",
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*", "exp*", "reference*"]
+include = ["manyup*", "exp*", "third_party*"]

@@ -1,6 +1,6 @@
 {
   "python.defaultInterpreterPath": "env/bin/python",
   "python.analysis.extraPaths": [
-    "/scratch/timz/mAnyUp/third_party/anyup"
+    "${workspaceFolder}/third_party/anyup"
   ]
 }

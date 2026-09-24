@@ -1,69 +1,56 @@
-# rs-change-detection
+# mAnyUp
 
-Remote-sensing change detection and segmentation research. The repo holds two independent
-bodies of code:
+Feature upsampling for remote-sensing foundation models. OlmoEarth features are cheap at
+coarse patch sizes and expensive at fine ones; mAnyUp and timAnyUp learn to recover the
+fine features from coarse ones (plus cheap guidance), and are evaluated by linear probing
+on three datasets:
 
-- **`exp/`** — OlmoEarth research: feature extraction, linear probing, and upsampler
-  (UPA / AnyUp) experiments on PASTIS and UrbanSARFloods. This is the active work.
-- **`src/`** — a config-driven benchmark framework (~15 datasets × ~40 model
-  architectures × seg/cd/scd tasks), driven by `configs/` and entered via `train.py` /
-  `test.py`.
-
-They share no code. Start from [docs/RUNBOOK.md](docs/RUNBOOK.md) for `exp/`, and
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for `src/`.
+- **PASTIS**: crop-type segmentation from S2/S1 time series (UTAE is the baseline)
+- **GEOID-Flood**: flood segmentation from S1 pre/post pairs
+- **Biomassters**: forest biomass regression (not yet ported)
 
 ## Layout
 
 ```
-exp/                    OlmoEarth research code (run as `python -m exp.<pkg>.<module>`)
-  common/               shared config + OlmoEarth import bootstrap
-  pastis/               PASTIS: prepare -> finetune -> extract features -> linear probe
-  urbansarfloods/       UrbanSARFloods: tile -> extract features -> linear probe
-  upsamplers/           UPA / AnyUp upsampler library, training, and evals
-  utae/                 UTAE baseline runner + visualization
-  viz/                  dataset sample plots and results plots
-  notebooks/            exploratory notebooks
+manyup/                   the upsamplers: mAnyUp, timAnyUp, loss
+exp/                      experiments, run as `python -m exp.<pkg>.<module>`
+  common/                 run config, paths (data / feature caches), OlmoEarth import shims
+  pastis/                 prepare -> extract features -> linear probe / fine-tune -> visualize
+  geoidflood/             prep tiles -> extract features -> linear probe -> visualize
+  upsamplers/             train + evaluate mAnyUp, timAnyUp, UPA/UPMA
+  utae/                   UTAE baseline on PASTIS (+ our early/late fusion)
+  bench/                  throughput / FLOPs benchmarks
+  viz/                    results plots
+third_party/              vendored upstream code: anyup (wimmerth/anyup), utae (utae-paps)
+scripts/slurm/            run.sh (generic launcher) + multi-step pipelines
+tests/                    unit tests for the upsampler building blocks
+results/                  CSVs, tracked; figures, untracked
+dataset_visualization/    dataset sample figures (untracked)
+docs/RUNBOOK.md           the command behind every experiment
 
-src/                    benchmark framework (core / datasets / models / tasks)
-configs/                YAML configs for both: defaults for exp/, full matrix for src/
-scripts/
-  slurm/                sbatch launchers: pastis/ urbansarfloods/ upsamplers/ utae/
-  data_prep/            dataset preparation for the src/ framework
-env_setup/              cluster environment setup (env.sh, env_olmo.sh, env_login.sh)
-docs/                   RUNBOOK, ARCHITECTURE, EXTENSION_GUIDE
-results/                CSVs and figures, grouped by experiment line
-reference/              kept for reference, not actively maintained (see below)
-
-data/ features/ checkpoints/ logs/     gitignored artifacts
+data/ checkpoints/ logs/  gitignored; feature caches live in project space (exp/common/paths.py)
 ```
 
 ## Setup
 
 ```shell
-source env_setup/env_olmo.sh    # OlmoEarth venv (PASTIS, UrbanSARFloods, upsamplers)
-source env_setup/env.sh         # torchgeo venv (UTAE, src/ framework)
+source env_setup/env_olmo.sh
 ```
 
-The two venvs are deliberately separate: `olmoearth-pretrain` pins `torch<2.8`, which
-conflicts with the torchgeo stack.
-
-Run everything **from the repo root**, in module form (so `exp.*` imports resolve) or via
-an sbatch launcher:
+Builds the OlmoEarth venv: per job in `$SLURM_TMPDIR` under Slurm, in `./env_olmo`
+otherwise. Everything runs **from the repo root**, interactively or through the generic
+launcher:
 
 ```shell
-python -u -m exp.pastis.finetune_olmoearth --set model_size=base modalities=sentinel1 head_mode=lp freeze_backbone=true
-sbatch scripts/slurm/pastis/finetune_olmoearth.sh --set model_size=base modalities=sentinel1 head_mode=lp freeze_backbone=true
+python -u -m exp.pastis.extract_features --patch_size 4 --tile_size 64
+sbatch -J extract --time=9:00:00 scripts/slurm/run.sh exp.pastis.extract_features --patch_size 4 --tile_size 64
 ```
 
-Optionally `pip install -e .` to make the packages importable from any directory.
-Note `zarr<3` is required — the ImpactMesh `.zarr.zip` archives are zarr v2 format.
+See [docs/RUNBOOK.md](docs/RUNBOOK.md) for every experiment.
 
-## `reference/`
+## Tests
 
-Kept because it may be useful, but not part of the active codebase:
-
-| Path | What |
-|---|---|
-| `reference/utae_vendored/utae/` | Third-party UTAE implementation, unmodified. Used by the `exp/utae/` baseline. |
-| `reference/dead_code/` | `pastis.py`, `olmoearth_utils.py`, `test_checkpoint.py` — an earlier torchgeo/Lightning pipeline that imports `olmoearth_pretrain_minimal`, a module no longer installed. Superseded by `exp/pastis/finetune_olmoearth.py`. |
-| `reference/debug_probes/` | One-off probes (`debug_nan_tile.py`, `gpu_nan_probe.py`) from a since-resolved NaN investigation. |
+```shell
+python tests/test_timanyup.py
+python tests/test_cosmse_map.py
+```

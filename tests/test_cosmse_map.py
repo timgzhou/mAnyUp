@@ -6,7 +6,7 @@ quantities, the mask learns to predict an error the loss is not actually minimiz
 failure. These tests make that loud instead.
 
     source env_setup/env_olmo.sh
-    python -m pytest tests/test_cosmse_map.py -q
+    python tests/test_cosmse_map.py
 """
 import sys
 from pathlib import Path
@@ -54,3 +54,10 @@ def test_matches_across_shapes_and_seeds():
         pred, target = _pair(b, c, h, w, seed=seed)
         assert torch.allclose(cosmse_map(pred, target).mean(),
                               Cosine_MSE()(pred, target)["total"], atol=1e-5), (b, c, h, w)
+
+
+if __name__ == "__main__":
+    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    for f in fns:
+        f(); print(f"  PASS {f.__name__}")
+    print(f"all {len(fns)} passed")
