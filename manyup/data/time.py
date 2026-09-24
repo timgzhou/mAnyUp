@@ -2,7 +2,10 @@
 
 A single acquisition is [d, d]. A pooled bin is [first day, last day] of the bin, and keeps
 which source dates went into it. `precision` says what the dates can be trusted to:
-"day" (an acquisition date) or "month" (only the month is known, e.g. monthly composites).
+  "day"            an acquisition date;
+  "month"          the month is known (e.g. a monthly composite of a known year);
+  "month_of_year"  only the calendar month is known, not the year (e.g. BioMassters). Days
+                   then sit on a documented PLACEHOLDER year; never read the year back.
 """
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ from dataclasses import dataclass, field
 import torch
 
 EPOCH = dt.date(1970, 1, 1)
-PRECISIONS = ("day", "month")
+PRECISIONS = ("day", "month", "month_of_year")
 
 
 def to_days(d: dt.date) -> int:
