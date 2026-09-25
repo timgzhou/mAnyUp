@@ -14,7 +14,7 @@ import torch
 from exp.common.paths import DATA, FEATURES
 from manyup.data import Tiling
 from manyup.data.feature_cache import FeatureCache, LegacyReconstruction
-from manyup.data.guidance import LEGACY_S1_2, LEGACY_S2_13, GuidanceSpec, build_guidance
+from manyup.data.guidance import LEGACY_GUIDANCE, S2_RGB, GuidanceSpec, build_guidance
 from manyup.data.tensor_cache import TensorCache
 from manyup.data.time import month_bounds
 from manyup.data.datasets.pastis import LEGACY_OLMOEARTH_S2, PastisDataset, monthly
@@ -78,7 +78,7 @@ def legacy_reconstruction(split: str, image_size: int) -> LegacyReconstruction:
 # ---- guidance for upsamplers / guided probes ------------------------------------------------
 # guidance_mod (as in checkpoints and CLI: s2 | s1 | s2s1) -> PASTIS modalities, channel order
 GUIDANCE_MODS = {"s2": ("S2",), "s1": ("S1A",), "s2s1": ("S2", "S1A")}
-RGB = ("B04", "B03", "B02")
+RGB = S2_RGB
 _IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
 _IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 
@@ -89,8 +89,7 @@ def guidance_spec(kind: str, guidance_mod: str, time_pool: str | None) -> Guidan
     if kind == "rgb":
         return GuidanceSpec({"S2": RGB}, time_pool)
     if kind == "full":
-        full = {"S2": LEGACY_S2_13, "S1A": LEGACY_S1_2}
-        return GuidanceSpec({m: full[m] for m in GUIDANCE_MODS[guidance_mod]}, time_pool)
+        return GuidanceSpec(LEGACY_GUIDANCE[guidance_mod], time_pool)
     raise ValueError(f"guidance kind {kind!r} not in (rgb, full)")
 
 

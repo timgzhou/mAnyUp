@@ -38,3 +38,9 @@ class FeatureSeries:
     @property
     def dim(self) -> int:
         return self.tokens.shape[-1]
+
+
+def time_mean(tokens: torch.Tensor, frame_valid: torch.Tensor) -> torch.Tensor:
+    """(B, T, gH, gW, D), (B, T) bool -> (B, gH, gW, D), averaging valid steps only."""
+    w = frame_valid.to(tokens.dtype).view(*frame_valid.shape, 1, 1, 1)
+    return (tokens * w).sum(1) / w.sum(1).clamp(min=1)

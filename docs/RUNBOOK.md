@@ -102,7 +102,23 @@ python -u -m exp.pastis.make_rs_video --patches 20013 --gif   # -> dataset_visua
 
 ## Upsamplers: mAnyUp / timAnyUp / UPA
 
+One interface: `manyup/upsamplers/` wraps every upsampler as a `FeatureUpsampler`
+(`FeatureSeries` + `MTMMBatch` guidance -> `FeatureSeries` on the target grid): `Bilinear`,
+`AnyUp`, `JBU.upa()` / `JBU.upma()`, `MAnyUp.from_checkpoint`, `TimAnyUp.from_checkpoint`
+(side feature `hr=`). Guidance is a `GuidanceSpec` (modalities/bands by name, norm, time_pool);
+per-timestep guidance is matched to feature steps by date. Tests: `tests/test_upsamplers.py`.
+The legacy scripts below still use their own heads.
+
 Code: `manyup/` (models, loss) and `exp/upsamplers/` (training, evals) · Results:
+`manyup/upsamplers/` wraps every upsampler behind one interface, `FeatureUpsampler`:
+`forward(lr: FeatureSeries, guidance: MTMMBatch | None, target: list[Geometry], **side)`.
+Each declares its guidance (`GuidanceSpec`: modalities and bands by name, `norm`, `time_pool`),
+`time_matching` (`pooled`, or per step with guidance picked by date: `nearest` /
+`within_range`), `side_features` (timAnyUp's `hr` arm) and `output_space` (`input` / `target`):
+`Bilinear`, `AnyUp`, `JBU.upa()` / `JBU.upma()`, `MAnyUp.from_checkpoint`,
+`TimAnyUp.from_checkpoint`. tests/test_upsamplers.py checks each against its legacy path.
+The legacy heads below (exp/pastis/lp_cached_features.py) do not use them yet.
+
 `results/pastis/` (`upsampler_pa2pa.csv`, rows in `lp_olmoearth_pastis.csv`) and
 `results/geoidflood/cloud_upsample/`
 

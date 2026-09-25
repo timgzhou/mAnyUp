@@ -12,13 +12,9 @@ import torch
 from einops import rearrange
 from torch import nn
 
+from manyup.data.features import time_mean  # noqa: F401  (re-exported)
+
 REDUCTIONS = ("time_mean", "diff")
-
-
-def time_mean(tokens: torch.Tensor, frame_valid: torch.Tensor) -> torch.Tensor:
-    """(B, T, gH, gW, D), (B, T) bool -> (B, gH, gW, D), averaging valid steps only."""
-    w = frame_valid.to(tokens.dtype).view(*frame_valid.shape, 1, 1, 1)
-    return (tokens * w).sum(1) / w.sum(1).clamp(min=1)
 
 
 class Pa2PxHead(nn.Module):
