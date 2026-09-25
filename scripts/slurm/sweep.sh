@@ -7,6 +7,7 @@
 #   DRY=1 ...                                        # print the sbatch lines only
 #   ONLY=<regex> ...                                 # submit only jobs whose name matches
 #   LRS="1e-2 5e-3" ...                             # learning rates (default 1e-3 1e-4 3e-5)
+#   STORE=per_timestep|reduced ...                   # cache store (default: per task, below)
 #
 # extract: frozen-feature caches, series encoding for the 3 (patch, tile) configs plus
 #   per_timestep for ps4ts4. PASTIS keeps every timestep (upsamplers train on it);
@@ -32,11 +33,12 @@ MAX_JOB_H=23                         # longer runs are chained (24 h+ L40S jobs 
 
 # per task: OlmoEarth epochs, UTAE epochs, CPUs (loader workers + 1), cache store
 case "$TASK" in
-  pastis)      OE_EPOCHS=50; UTAE_EPOCHS=100; CPUS=9;  STORE=per_timestep ;;
-  biomassters) OE_EPOCHS=10; UTAE_EPOCHS=50;  CPUS=17; STORE=reduced ;;
-  geoidflood)  OE_EPOCHS=10; UTAE_EPOCHS=20;  CPUS=9;  STORE=reduced ;;
+  pastis)      OE_EPOCHS=50; UTAE_EPOCHS=100; CPUS=9;  DEFAULT_STORE=per_timestep ;;
+  biomassters) OE_EPOCHS=10; UTAE_EPOCHS=50;  CPUS=17; DEFAULT_STORE=reduced ;;
+  geoidflood)  OE_EPOCHS=10; UTAE_EPOCHS=20;  CPUS=9;  DEFAULT_STORE=reduced ;;
   *) echo "unknown task $TASK" >&2; exit 1 ;;
 esac
+STORE="${STORE:-$DEFAULT_STORE}"
 
 # Hours per job: ~1.5x the L40S benchmark (FFT samples/s after unfreezing, eval included)
 #   base  pastis ps4 5.5-9.5/s (~22 min/epoch), ps16 ~37/s | bio ps4 6-10.6/s (~3.4 h/epoch),
