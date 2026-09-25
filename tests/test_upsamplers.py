@@ -252,3 +252,17 @@ def test_meters_merge_like_one_pass():
         b.update(logits[1:], target[1:])
         x, y = one.compute(), a.merge(b).compute()
         assert all(np.isclose(x[k], y[k], rtol=1e-6, equal_nan=True) for k in x)
+
+
+@torch.no_grad()
+def test_timanyup_k0_is_upsample_plus_projection():
+    torch.manual_seed(0)
+    lr = _series(torch.randn(1, 12, 4, 4, 8), [list(range(12))])
+    hr = _series(torch.randn(1, 12, 16, 16, 8), [list(range(12))])
+    g = _batch({"S2": _mb(torch.rand(1, 12, 10, 16, 16), [list(range(12))])})
+    up = TimAnyUp(_tiny_timanyup(8), GuidanceSpec({"S2": ("B04",)}, None), k=0).eval()
+    out = up(lr, g, [Geometry.unknown((16, 16))], hr=hr).tokens.permute(0, 1, 4, 2, 3)
+    m = up.model
+    ref = m.project(m.upsample(lr.tokens.permute(0, 1, 4, 2, 3).contiguous(),
+                               up.build_guidance(g, lr), (16, 16)))
+    assert torch.allclose(out, ref, atol=1e-6) and up.key.endswith("k0")

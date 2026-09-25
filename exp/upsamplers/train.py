@@ -7,6 +7,7 @@
 
 mAnyUp follows the task's time handling (exp/upsamplers/methods.py): time-pooled features,
 guidance and target where the head averages over time, else every timestep on its own.
+manyup_t is mAnyUp per timestep on every task: timAnyUp without the high-res lookup.
 Loss: Cosine_MSE (AnyUp's), as legacy exp/upsamplers/train_manyup.py with down_reg 0, no
 projector, window 1.0, transform depth 0 (the setup of the checkpoints in use).
 
@@ -54,16 +55,15 @@ def flat(x):
     return x.flatten(0, 1).permute(0, 3, 1, 2).float()
 
 
-def manyup_losses(up, batch, task):
+def manyup_losses(up, batch):
     lr, tgt = batch.feats["lr"], batch.feats["target"]
     out = up(lr, batch.guidance, out_geometry(batch)).tokens               # (B, T', 16, 16, D)
-    if pooled(task):
+    if up.time_matching == "pooled":
         want = time_mean(tgt.tokens.float(), tgt.frame_valid)[:, None]
+        src = time_mean(lr.tokens.float(), lr.frame_valid)[:, None]
     else:
-        want = tgt.tokens
-    bil = F.interpolate(flat(lr.tokens if not pooled(task) else
-                             time_mean(lr.tokens.float(), lr.frame_valid)[:, None]),
-                        size=want.shape[2:4], mode="bilinear", align_corners=False)
+        want, src = tgt.tokens, lr.tokens
+    bil = F.interpolate(flat(src), size=want.shape[2:4], mode="bilinear", align_corners=False)
     loss = cos_mse(flat(out), flat(want))["total"]
     with torch.no_grad():
         c_bil = cos_mse(bil, flat(want))["total"]
@@ -112,11 +112,12 @@ def timanyup_losses(up, batch, a):
 
 
 def build(a, task, D, T):
-    if a.method == "manyup":
-        spec = GuidanceSpec(task.guidance, "mean" if pooled(task) else None)
+    if a.method in ("manyup", "manyup_t"):
+        per_t = a.method == "manyup_t" or not pooled(task)
+        spec = GuidanceSpec(task.guidance, None if per_t else "mean")
         model = mAnyUp(input_dim=spec.channels, qk_dim=a.qk_dim, feat_dim=D,
                        transform_depth=0, window_ratio=a.window_ratio)
-        return MAnyUp(model, spec, output_space="input", name="manyup"), spec
+        return MAnyUp(model, spec, output_space="input", name=a.method), spec
     spec = GuidanceSpec(task.guidance, None)
     model = TimModel(input_dim=spec.channels, qk_dim=a.qk_dim, feat_dim=D, num_frames=T,
                      transform_depth=0, window_ratio=a.window_ratio, query_input=a.query_input)
@@ -130,7 +131,7 @@ def checkpoint(a, up, spec, D, T, epoch, val):
           spec.channels, "feat_dim": D, "qk_dim": a.qk_dim, "window_ratio": a.window_ratio,
           "transform_depth": 0, "epoch": epoch, "val": val,
           "args": {**vars(a), "k": getattr(up, "k", None)}}
-    if a.method == "manyup":
+    if a.method != "timanyup":
         ck.update(arch="manyup", proj_head=None)
     else:
         ck.update(num_frames=T, query_input=a.query_input, k=up.k)
@@ -156,7 +157,7 @@ def evaluate(up, dl, losses, limit):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--task", required=True, choices=list(TASKS))
-    ap.add_argument("--method", required=True, choices=("manyup", "timanyup"))
+    ap.add_argument("--method", required=True, choices=("manyup", "manyup_t", "timanyup"))
     ap.add_argument("--epochs", type=int, required=True)
     ap.add_argument("--model_size", default="tiny")
     ap.add_argument("--batch_size", type=int, default=16)
@@ -194,8 +195,8 @@ def main():
     dl = {s: DataLoader(d, batch_size=a.batch_size, shuffle=s == "train", drop_last=s == "train",
                         num_workers=a.num_workers, collate_fn=d.collate, pin_memory=True,
                         persistent_workers=a.num_workers > 0) for s, d in sets.items()}
-    if a.method == "manyup":
-        losses = lambda b: manyup_losses(up, b, task)                     # noqa: E731
+    if a.method != "timanyup":
+        losses = lambda b: manyup_losses(up, b)                           # noqa: E731
     else:
         losses = lambda b: timanyup_losses(up, b, a)                      # noqa: E731
     steps = a.epochs * (a.limit_batches or len(dl["train"]))

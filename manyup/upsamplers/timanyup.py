@@ -38,7 +38,7 @@ class TimAnyUp(FeatureUpsampler):
         if guidance.channels != model.upsampler.image_encoder[0].in_channels:
             raise ValueError(f"model takes {model.upsampler.image_encoder[0].in_channels} "
                              f"guidance channels, {guidance.key} has {guidance.channels}")
-        self._declare(f"{name}[{guidance.key}]", guidance, time_matching, "target")
+        self._declare(f"{name}[{guidance.key}]k{k}", guidance, time_matching, "target")
         self.model, self.k = model, k
 
     @classmethod

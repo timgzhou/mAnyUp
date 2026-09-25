@@ -34,6 +34,7 @@ olmo_bootstrap.apply()
 import argparse  # noqa: E402
 import copy  # noqa: E402
 import csv  # noqa: E402
+import fcntl  # noqa: E402
 import math  # noqa: E402
 import time  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -103,7 +104,7 @@ class FromCache(torch.nn.Module):
 def run_name(a) -> str:
     src = f"_cache{a.from_cache}" if a.from_cache else ""
     return (f"oe_{a.task}_{a.model_size}_{a.temporal_mode}_ps{a.patch_size}ts{a.tile_size}"
-            f"_{a.mode}{src}_ep{a.epochs}")
+            f"_{a.mode}{src}{'_bn' if a.head_norm else ''}_ep{a.epochs}")
 
 
 class Arm:
@@ -156,6 +157,8 @@ def main():
                          "gradients over the batch (same update, less memory)")
     ap.add_argument("--from_cache", default=None, choices=STORES,
                     help="lp: read features from this exp.olmoearth.extract cache")
+    ap.add_argument("--head_norm", action="store_true",
+                    help="standardize features before the linear head (Pa2PxHead norm)")
     ap.add_argument("--features_root", default=str(FEATURES))
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
@@ -208,7 +211,8 @@ def main():
 
     arms = []
     for lr in lrs:
-        head = Pa2PxHead(reduction, embed_dim, task.num_outputs, a.patch_size).cuda()
+        head = Pa2PxHead(reduction, embed_dim, task.num_outputs, a.patch_size,
+                         norm=a.head_norm).cuda()
         # fft: the encoder is in the (single) optimizer from the start; it has no gradients,
         # so AdamW leaves it alone, until it is unfrozen
         params = list(head.parameters()) + (list(encoder.parameters()) if a.mode == "fft" else [])
@@ -310,7 +314,7 @@ def main():
         row = {"job": os.environ.get("SLURM_JOB_ID", ""), "run": name, "task": a.task,
                "model_size": a.model_size, "temporal_mode": a.temporal_mode,
                "patch_size": a.patch_size, "tile_size": a.tile_size, "mode": a.mode,
-               "lr": arm.lr, "epochs": a.epochs, "batch_size": bs,
+               "lr": arm.lr, "epochs": a.epochs, "batch_size": bs, "head_norm": a.head_norm,
                "best_epoch": arm.best_epoch, "hours": round(elapsed / 3600, 2),
                **{f"val_{k}": round(x, 5) for k, x in arm.best_val.items()},
                **{f"test_{k}": round(x, 5) for k, x in test.items()}}
@@ -359,13 +363,28 @@ def _brief(metrics: dict) -> str:
 
 
 def _append(path: Path, row: dict) -> None:
+    """Append a row; a row with columns the file lacks widens its header (older rows get
+    empty cells), so a new field never misaligns the CSV. Locked: jobs append concurrently."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    new = not path.exists()
-    with open(path, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(row))
-        if new:
+    with open(path.with_suffix(".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        rows, fields = [], []
+        if path.exists():
+            with open(path, newline="") as f:
+                r = csv.DictReader(f)
+                fields, rows = list(r.fieldnames or []), list(r)
+        extra = [k for k in row if k not in fields]
+        if not extra:
+            with open(path, "a", newline="") as f:
+                csv.DictWriter(f, fieldnames=fields).writerow(row)
+            return
+        fields += extra
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
             w.writeheader()
-        w.writerow(row)
+            w.writerows(rows + [row])
+        tmp.replace(path)
 
 
 if __name__ == "__main__":

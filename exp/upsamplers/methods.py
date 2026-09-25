@@ -3,7 +3,8 @@
 Time: a task whose head averages over time (PASTIS, BioMassters) gets time-pooled features
 and guidance, the setting the image upsamplers were designed for; a change-detection task
 (GEOID, head post - pre) upsamples every timestep with its OWN date's image, so the
-difference compares like with like. timAnyUp always works per timestep.
+difference compares like with like. timAnyUp always works per timestep, and so does
+manyup_t: mAnyUp trained per timestep on every task (timAnyUp without the high-res lookup).
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from exp.common.tasks import Task
 from manyup.upsamplers import JBU, AnyUp, Bicubic, Bilinear, FeatureUpsampler, MAnyUp, TimAnyUp
 
 TRAINING_FREE = ("bilinear", "bicubic", "anyup", "upa", "upma")
-TRAINED = ("manyup", "timanyup")
+TRAINED = ("manyup", "manyup_t", "timanyup")
 METHODS = TRAINING_FREE + TRAINED
 SHARED_PROBE = ("upa", "upma")      # per-image optimization: test set only, bilinear's probe
 
@@ -20,7 +21,9 @@ def pooled(task: Task) -> bool:
     return task.reduction == "time_mean"
 
 
-def build(name: str, task: Task, ckpt: str | None = None, fit_steps: int = 50) -> FeatureUpsampler:
+def build(name: str, task: Task, ckpt: str | None = None, fit_steps: int = 50,
+          k: int | None = None) -> FeatureUpsampler:
+    """k: timAnyUp's lookup budget (default: the trained one; 0 = no lookups)."""
     tp = "mean" if pooled(task) else None
     if name in TRAINED and not ckpt:
         raise ValueError(f"{name} needs a checkpoint (exp.upsamplers.train)")
@@ -34,10 +37,10 @@ def build(name: str, task: Task, ckpt: str | None = None, fit_steps: int = 50) -
         return JBU.upa(tp, rgb=task.rgb, fit_steps=fit_steps)
     if name == "upma":
         return JBU.upma(tp, bands=task.guidance, fit_steps=fit_steps)
-    if name == "manyup":
+    if name in ("manyup", "manyup_t"):         # the checkpoint fixes pooled / per timestep
         return MAnyUp.from_checkpoint(ckpt)
     if name == "timanyup":
-        return TimAnyUp.from_checkpoint(ckpt)
+        return TimAnyUp.from_checkpoint(ckpt, k=k)
     raise ValueError(f"unknown upsampler {name!r}; one of {METHODS}")
 
 

@@ -39,7 +39,9 @@ from exp.upsamplers.task_data import OUT_GRID, UpsamplerData, out_geometry
 
 def run_name(a) -> str:
     ck = f"_{Path(a.ckpt).stem}" if a.ckpt else ""
-    return f"up_{a.task}_{a.model_size}_{a.upsampler}{ck}_lp_ep{a.epochs}"
+    k = f"_k{a.k}" if a.k is not None else ""
+    bn = "_bn" if a.head_norm else ""
+    return f"up_{a.task}_{a.model_size}_{a.upsampler}{ck}{k}_lp{bn}_ep{a.epochs}"
 
 
 @torch.no_grad()
@@ -78,6 +80,10 @@ def main():
     ap.add_argument("--shard", default=None, help="i/n: --shared_probe on part i of n")
     ap.add_argument("--merge", type=int, default=0, help="--shared_probe: merge n shards")
     ap.add_argument("--fit_steps", type=int, default=50, help="UPA / UPMA per-image fit")
+    ap.add_argument("--k", type=int, default=None,
+                    help="timAnyUp lookup budget (default: trained; 0 = no lookups)")
+    ap.add_argument("--head_norm", action="store_true",
+                    help="standardize features before the linear head (Pa2PxHead norm)")
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit_batches", type=int, default=0)
@@ -94,7 +100,9 @@ def main():
     csv_path = Path(f"results/{a.task}/upsampler_lp{'_shared' if a.shared_probe else ''}"
                     f"{smoke}.csv")
     torch.manual_seed(a.seed)
-    up = build(a.upsampler, task, a.ckpt, a.fit_steps).cuda().eval()
+    if a.k is not None and a.upsampler != "timanyup":
+        raise SystemExit("--k is timAnyUp's lookup budget")
+    up = build(a.upsampler, task, a.ckpt, a.fit_steps, a.k).cuda().eval()
     print(f"Run: {name} | {up.key} | {up.time_matching} | lrs {lrs} | batch {bs}")
     splits = ("test",) if a.shared_probe else ("train", "val", "test")
     sets = {s: UpsamplerData(task, s, a.model_size, roles(a.upsampler),
@@ -115,7 +123,7 @@ def main():
     better = task.meter().higher_is_better
     arms = []
     for lr in ([] if a.shared_probe else lrs):
-        head = Pa2PxHead(task.reduction, D, task.num_outputs, p).cuda()
+        head = Pa2PxHead(task.reduction, D, task.num_outputs, p, norm=a.head_norm).cuda()
         arms.append(Arm(lr, head, list(head.parameters()), task, better))
     t_start = time.time()
 
@@ -130,7 +138,8 @@ def main():
             for lr in lrs:
                 ck = torch.load(f"checkpoints/{a.shared_probe}_lr{lr:g}.pt",
                                 map_location="cpu", weights_only=False)
-                heads.append(Pa2PxHead(task.reduction, D, task.num_outputs, p).cuda())
+                heads.append(Pa2PxHead(task.reduction, D, task.num_outputs, p,
+                                       norm=a.head_norm).cuda())
                 heads[-1].load_state_dict(ck["head"])
             meters = evaluate(up, heads, task, dl["test"], a.limit_batches, raw=True)
             if a.shard:
@@ -195,6 +204,7 @@ def main():
             "model_size": a.model_size, "upsampler": a.upsampler, "key": up.key,
             "time_matching": up.time_matching, "space": up.output_space,
             "ckpt": a.ckpt or "", "probe": a.shared_probe or "trained", "lr": lr,
+            "head_norm": a.head_norm,
             "epochs": a.epochs, "batch_size": bs, "best_epoch": best_epoch or "",
             "hours": hours,
             **{f"val_{k}": round(x, 5) for k, x in (best_val or {}).items()},

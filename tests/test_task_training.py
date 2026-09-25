@@ -67,3 +67,31 @@ def test_utae_input_custom_norm_and_per_sample_reference():
     x, d = UTAEInput(["M"], "train", norm={"M": ((1.0,), (2.0,))}, reference_day=None)(batch)
     assert torch.all(x["M"][valid] == 1.0) and torch.all(x["M"][~valid] == 0)
     assert d["M"].tolist() == [[0, 12], [0, 0]]
+
+
+def test_normalized_head_standardizes_channels_then_stays_linear():
+    head = Pa2PxHead("time_mean", embed_dim=3, num_outputs=2, patch_size=1, norm=True)
+    torch.manual_seed(0)        # scales >> sqrt(BatchNorm eps) = 3e-3, like real features
+    tok = torch.randn(8, 1, 4, 4, 3) * torch.tensor([100.0, 0.1, 1.0]) + 5
+    fv = torch.ones(8, 1, dtype=torch.bool)
+    head.train()
+    head(tok, fv)
+    x = head.norm(tok[:, 0].flatten(0, 2))                  # train mode: batch statistics
+    assert torch.allclose(x.mean(0), torch.zeros(3), atol=1e-4)     # float32 at offset 5
+    assert torch.allclose(x.std(0, unbiased=False), torch.ones(3), atol=1e-3)
+    head.eval()                                             # eval: fixed affine map
+    a, b = head(tok[:1], fv[:1]), head(2 * tok[:1], fv[:1])
+    zero = head(torch.zeros_like(tok[:1]), fv[:1])
+    assert torch.allclose(b - zero, 2 * (a - zero), atol=1e-4)
+
+
+def test_csv_append_widens_the_header(tmp_path):
+    import csv
+    from exp.olmoearth.train import _append
+    p = tmp_path / "r.csv"
+    _append(p, {"a": 1, "b": 2})
+    _append(p, {"a": 3, "c": 4})
+    _append(p, {"b": 5})
+    rows = list(csv.DictReader(open(p)))
+    assert list(rows[0]) == ["a", "b", "c"]
+    assert [tuple(r.values()) for r in rows] == [("1", "2", ""), ("3", "", "4"), ("", "5", "")]
