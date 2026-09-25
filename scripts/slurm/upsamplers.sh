@@ -1,7 +1,8 @@
 #!/bin/bash
 # Submit the feature-upsampler comparison for one task (exp/upsamplers), from the repo root:
 #
-#   [MODEL=tiny] [DRY=1] [ONLY=<regex>] bash scripts/slurm/upsamplers.sh <pastis|biomassters|geoidflood>
+#   [MODEL=tiny] [DRY=1] [ONLY=<regex>] [SKIP=<regex>] bash scripts/slurm/upsamplers.sh <task>
+#       task: pastis | biomassters | geoidflood; ONLY / SKIP filter the job names
 #
 #   LP (exp.upsamplers.lp), 5 learning rates per job, features standardized (--head_norm):
 #     bilinear, bicubic, anyup                 after the ps16ts64 cache exists
@@ -39,6 +40,7 @@ CPUS=9
 submit() {   # submit <job name> <hours> <module> [args...] -> job id; $AFTER = dependency
   local name=$1 h=$2; shift 2
   if [[ -n "${ONLY:-}" && ! "$name" =~ $ONLY ]]; then echo ""; return; fi
+  if [[ -n "${SKIP:-}" && "$name" =~ $SKIP ]]; then echo ""; return; fi
   local cmd=(sbatch --parsable -J "$name" --time="$h:00:00" --cpus-per-task="$CPUS" $EXCLUDE
              ${AFTER:+--dependency=$AFTER} scripts/slurm/run.sh "$@")
   if [ -n "${DRY:-}" ]; then echo "${cmd[*]}" >&2; echo "DRY_${name}"; else "${cmd[@]}"; fi
@@ -77,8 +79,12 @@ for u in bilinear bicubic anyup; do
 done
 
 # trained upsamplers, then their LP
+# where the task's head needs every timestep (GEOID), mAnyUp is already per timestep: it is
+# manyup_t there, and it is the frozen upsampler of the two-stage timAnyUp
+if [ "$TASK" = geoidflood ]; then PER_T=manyup; PER_T_EP=$MU_EP; METHODS=(manyup timanyup)
+else PER_T=manyup_t; PER_T_EP=$TA_EP; METHODS=(manyup manyup_t timanyup); fi
 declare -A TR
-for m in manyup manyup_t timanyup; do
+for m in "${METHODS[@]}"; do
   ep=$([ $m = manyup ] && echo $MU_EP || echo $TA_EP)
   need=$(deps "$LR_CACHE" "$TG_CACHE" $([ $m = timanyup ] && echo "$HR_CACHE"))
   tr=$(AFTER=$need submit "up_${T}_${m}_train" "$TR_H" exp.upsamplers.train "${common[@]}" \
@@ -95,10 +101,10 @@ done
 
 # two-stage timAnyUp: the trained manyup_t, frozen, as its upsampler; the query head reads
 # that upsampler's output. Its k=0 LP must reproduce manyup_t's (a check of the setup).
-need=$(deps "${TR[manyup_t]:+afterok:${TR[manyup_t]}}" "$LR_CACHE" "$TG_CACHE" "$HR_CACHE")
+need=$(deps "${TR[$PER_T]:+afterok:${TR[$PER_T]}}" "$LR_CACHE" "$TG_CACHE" "$HR_CACHE")
 tr=$(AFTER=$need submit "up_${T}_timanyup_2stage_train" "$TR_H" exp.upsamplers.train \
      "${common[@]}" --method timanyup --epochs "$TA_EP" --query_input upsampled \
-     --upsampler_ckpt "checkpoints/upsamplers/manyup_t_${TASK}_${MODEL}_ep${TA_EP}.pt")
+     --upsampler_ckpt "checkpoints/upsamplers/${PER_T}_${TASK}_${MODEL}_ep${PER_T_EP}.pt")
 ck="checkpoints/upsamplers/timanyup_2stage_${TASK}_${MODEL}_ep${TA_EP}.pt"
 for k in "" 0; do
   AFTER=${tr:+afterok:$tr} submit "up_${T}_timanyup_2stage${k:+_k$k}_lp" "$LP_H" "${lp[@]}" \
