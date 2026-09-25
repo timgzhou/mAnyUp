@@ -18,6 +18,9 @@ timAnyUp is always per timestep, with the three losses of legacy train_timanyup.
 (both auxiliary targets detached). The lookup budget k is a fraction of the T x 16 x 16
 locations (legacy: 512 of 3072 = 1/6), so it means the same for T = 12 and T = 2.
 
+--upsampler_ckpt trains timAnyUp in two stages: the upsampler is a trained manyup_t, frozen,
+and only the query head, transform head and projector (from the identity) train.
+
 AdamW with linear warmup + cosine decay per step, bf16 autocast. The checkpoint with the best
 validation reconstruction loss is kept (checkpoints/upsamplers/<run>.pt, loadable with
 MAnyUp / TimAnyUp.from_checkpoint); resumable per epoch, --max_hours stops cleanly.
@@ -122,7 +125,28 @@ def build(a, task, D, T):
     model = TimModel(input_dim=spec.channels, qk_dim=a.qk_dim, feat_dim=D, num_frames=T,
                      transform_depth=0, window_ratio=a.window_ratio, query_input=a.query_input)
     k = max(1, round(a.k_frac * T * 16 * 16))
+    if a.upsampler_ckpt:
+        freeze_upsampler(model, spec, a.upsampler_ckpt)
     return TimAnyUp(model, spec, k), spec
+
+
+def freeze_upsampler(model, spec, path):
+    """Two-stage timAnyUp: the upsampler is a trained, FROZEN per-timestep mAnyUp (manyup_t),
+    so it is trained on the plain reconstruction loss first and the query head learns where
+    THAT upsampler fails. The projector starts as the identity, so with k=0 the output
+    is exactly the manyup_t upsample."""
+    ck = torch.load(path, map_location="cpu", weights_only=False)
+    trained = MAnyUp.from_checkpoint(path)
+    if trained.guidance != spec or trained.time_matching == "pooled":
+        raise SystemExit(f"{path}: need a per-timestep mAnyUp trained on {spec.key}, got "
+                         f"{trained.key} ({trained.time_matching})")
+    if (ck["qk_dim"], ck["window_ratio"]) != (model.upsampler.qk_dim, model.upsampler.window_ratio):
+        raise SystemExit(f"{path}: qk_dim / window_ratio differ from this timAnyUp")
+    model.upsampler.load_state_dict(trained.model.state_dict())
+    model.upsampler.requires_grad_(False)
+    with torch.no_grad():
+        model.projector.weight.copy_(torch.eye(model.feat_dim)[:, :, None, None])
+        model.projector.bias.zero_()
 
 
 def checkpoint(a, up, spec, D, T, epoch, val):
@@ -169,6 +193,8 @@ def main():
     ap.add_argument("--k_frac", type=float, default=1 / 6, help="timAnyUp lookup budget")
     ap.add_argument("--transform_frac", type=float, default=0.25)
     ap.add_argument("--query_input", default="bilinear", choices=("bilinear", "upsampled"))
+    ap.add_argument("--upsampler_ckpt", default=None,
+                    help="timanyup: freeze this trained manyup_t as the upsampler (two-stage)")
     ap.add_argument("--lambda_query", type=float, default=1.0)
     ap.add_argument("--lambda_transform", type=float, default=1.0)
     ap.add_argument("--val_batches", type=int, default=200, help="per epoch; 0 = all")
@@ -186,7 +212,10 @@ def main():
     up, spec = build(a, task, D, T)
     up = up.cuda().train()
     up.check(sets["train"].ds)
-    name = f"{a.method}_{a.task}_{a.model_size}_ep{a.epochs}"
+    if a.upsampler_ckpt and a.method != "timanyup":
+        raise SystemExit("--upsampler_ckpt is for timanyup")
+    stage = "_2stage" if a.upsampler_ckpt else ""
+    name = f"{a.method}{stage}_{a.task}_{a.model_size}_ep{a.epochs}"
     smoke = "_smoke" if a.limit_batches else ""
     out = Path(f"checkpoints/upsamplers/{name}{smoke}.pt")
     state_path = out.with_name(out.stem + "_state.pt")
@@ -200,7 +229,7 @@ def main():
     else:
         losses = lambda b: timanyup_losses(up, b, a)                      # noqa: E731
     steps = a.epochs * (a.limit_batches or len(dl["train"]))
-    opt = torch.optim.AdamW(up.parameters(), lr=a.lr)
+    opt = torch.optim.AdamW([q for q in up.parameters() if q.requires_grad], lr=a.lr)
     sched = warmup_cosine(opt, steps, a.warmup_frac, a.lr, a.lr_min)
     start, best, epoch_s = 0, math.inf, None
     if state_path.exists():

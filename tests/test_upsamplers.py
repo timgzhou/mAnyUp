@@ -266,3 +266,27 @@ def test_timanyup_k0_is_upsample_plus_projection():
     ref = m.project(m.upsample(lr.tokens.permute(0, 1, 4, 2, 3).contiguous(),
                                up.build_guidance(g, lr), (16, 16)))
     assert torch.allclose(out, ref, atol=1e-6) and up.key.endswith("k0")
+
+
+@torch.no_grad()
+def test_two_stage_timanyup_starts_as_the_frozen_manyup_t(tmp_path):
+    import argparse
+    from exp.upsamplers.train import build, checkpoint
+    from manyup.mAnyUp import mAnyUp
+    torch.manual_seed(0)
+    spec = GuidanceSpec({"S2": ("B04", "B03")}, None)
+    mt = MAnyUp(mAnyUp(input_dim=2, qk_dim=16, feat_dim=8, transform_depth=0, window_ratio=1.0,
+                       num_heads=4), spec, output_space="input", name="manyup_t")
+    a = argparse.Namespace(method="manyup_t", qk_dim=16, window_ratio=1.0)
+    torch.save(checkpoint(a, mt, spec, 8, 12, 1, {}), tmp_path / "mt.pt")
+    a = argparse.Namespace(method="timanyup", qk_dim=16, window_ratio=1.0, k_frac=1 / 6,
+                           query_input="upsampled", upsampler_ckpt=str(tmp_path / "mt.pt"))
+    tim, _ = build(a, type("T", (), {"guidance": spec.bands})(), 8, 12)
+    assert not any(q.requires_grad for q in tim.model.upsampler.parameters())
+    lr = _series(torch.randn(1, 12, 4, 4, 8), [list(range(12))])
+    hr = _series(torch.randn(1, 12, 16, 16, 8), [list(range(12))])
+    g = _batch({"S2": _mb(torch.rand(1, 12, 10, 16, 16), [list(range(12))])})
+    tim.k = 0
+    x = tim.eval()(lr, g, [Geometry.unknown((16, 16))], hr=hr).tokens
+    y = MAnyUp.from_checkpoint(tmp_path / "mt.pt")(lr, g, [Geometry.unknown((16, 16))]).tokens
+    assert torch.allclose(x, y, atol=1e-5)

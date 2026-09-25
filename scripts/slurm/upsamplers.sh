@@ -10,6 +10,7 @@
 #                                              timanyup, ps4ts4 per_timestep) caches; a trained
 #                                              run exits at once, so rerunning is cheap
 #     timanyup k=0                             the same timAnyUp without lookups (control)
+#     timanyup_2stage (+ k=0)                  timAnyUp on the trained manyup_t, frozen
 #     upa, upma                                test set only with the bilinear run's heads
 #                                              (--shared_probe), split over SHARDS jobs, then
 #                                              merged
@@ -76,11 +77,13 @@ for u in bilinear bicubic anyup; do
 done
 
 # trained upsamplers, then their LP
+declare -A TR
 for m in manyup manyup_t timanyup; do
   ep=$([ $m = manyup ] && echo $MU_EP || echo $TA_EP)
   need=$(deps "$LR_CACHE" "$TG_CACHE" $([ $m = timanyup ] && echo "$HR_CACHE"))
   tr=$(AFTER=$need submit "up_${T}_${m}_train" "$TR_H" exp.upsamplers.train "${common[@]}" \
        --method "$m" --epochs "$ep")
+  TR[$m]=$tr
   ck="checkpoints/upsamplers/${m}_${TASK}_${MODEL}_ep${ep}.pt"
   AFTER=${tr:+afterok:$tr} submit "up_${T}_${m}_lp" "$LP_H" "${lp[@]}" --upsampler "$m" \
       --ckpt "$ck" >/dev/null
@@ -88,6 +91,18 @@ for m in manyup manyup_t timanyup; do
     AFTER=${tr:+afterok:$tr} submit "up_${T}_${m}_k0_lp" "$LP_H" "${lp[@]}" --upsampler "$m" \
         --ckpt "$ck" --k 0 >/dev/null
   fi
+done
+
+# two-stage timAnyUp: the trained manyup_t, frozen, as its upsampler; the query head reads
+# that upsampler's output. Its k=0 LP must reproduce manyup_t's (a check of the setup).
+need=$(deps "${TR[manyup_t]:+afterok:${TR[manyup_t]}}" "$LR_CACHE" "$TG_CACHE" "$HR_CACHE")
+tr=$(AFTER=$need submit "up_${T}_timanyup_2stage_train" "$TR_H" exp.upsamplers.train \
+     "${common[@]}" --method timanyup --epochs "$TA_EP" --query_input upsampled \
+     --upsampler_ckpt "checkpoints/upsamplers/manyup_t_${TASK}_${MODEL}_ep${TA_EP}.pt")
+ck="checkpoints/upsamplers/timanyup_2stage_${TASK}_${MODEL}_ep${TA_EP}.pt"
+for k in "" 0; do
+  AFTER=${tr:+afterok:$tr} submit "up_${T}_timanyup_2stage${k:+_k$k}_lp" "$LP_H" "${lp[@]}" \
+      --upsampler timanyup --ckpt "$ck" ${k:+--k $k} >/dev/null
 done
 
 # UPA / UPMA: bilinear's heads on the test set, sharded, then merged
