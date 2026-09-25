@@ -1,4 +1,4 @@
-"""TileStore: a dataset's samples, pre-cut to fixed-size tiles, as memory-mappable arrays.
+"""TileStore: a dataset's samples, pre-cut to fixed-size tiles, as .npy arrays read by offset.
 
 Raw datasets are slow to read per tile: a BioMassters chip is 24 GeoTIFFs (read again for
 each of its 16 tiles when tiles are shuffled), a PASTIS patch is re-pooled for each of its 4
@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -210,7 +211,7 @@ def build_tile_store(source: MTMMDataset, root: str | Path, storage: dict[str, s
 
 # ---- read -----------------------------------------------------------------------------------
 class TileStore:
-    """Random access to one split of a store; arrays are memory-mapped on first use."""
+    """Random access to one split of a store (headers cached, rows read by offset)."""
 
     def __init__(self, directory: str | Path, split: str):
         self.dir = Path(directory)
@@ -225,12 +226,35 @@ class TileStore:
     def __len__(self):
         return len(self.ids)
 
-    def _arr(self, k: int, name: str) -> np.ndarray:
+    def _read(self, k: int, name: str, a: int, b: int) -> np.ndarray:
+        """Rows a:b (first axis) of a shard's array, by positioned read.
+
+        Not memory-mapped on purpose: pages touched through a mapping are charged to the
+        reading process until unmapped, so loader workers streaming a 250 GB store through
+        long-lived maps grow until the job is OOM-killed. A pread leaves only page cache,
+        which the kernel reclaims freely."""
         key = (k, name)
-        if key not in self._arrays:
-            self._arrays[key] = np.load(self.split_dir / f"shard_{k:05d}" / f"{name}.npy",
-                                        mmap_mode="r")
-        return self._arrays[key]
+        if key not in self._arrays:                     # header: data offset, shape, dtype
+            path = self.split_dir / f"shard_{k:05d}" / f"{name}.npy"
+            with open(path, "rb") as f:
+                version = np.lib.format.read_magic(f)
+                read_header = {(1, 0): np.lib.format.read_array_header_1_0,
+                               (2, 0): np.lib.format.read_array_header_2_0}[version]
+                shape, fortran, dtype = read_header(f)
+                if fortran:
+                    raise ValueError(f"{path}: Fortran order not supported")
+                self._arrays[key] = (path, f.tell(), shape, dtype)
+        path, off, shape, dtype = self._arrays[key]
+        row = dtype.itemsize * int(np.prod(shape[1:], dtype=np.int64))
+        out = np.empty((b - a, *shape[1:]), dtype=dtype)
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            n = os.preadv(fd, [memoryview(out).cast("B")], off + a * row)
+        finally:
+            os.close(fd)
+        if n != out.nbytes:
+            raise OSError(f"{path}: short read ({n} of {out.nbytes} bytes)")
+        return out
 
     def _row(self, k: int, j: int) -> dict:
         if k not in self._rows:
@@ -243,28 +267,27 @@ class TileStore:
     def modality(self, i: int, m: str, bands: tuple[str, ...]) -> ModalityData:
         k, j = self._where[i]
         mf, row = self.meta["modalities"][m], self._row(k, j)
-        a, b = self._arr(k, f"{m}.offsets")[j:j + 2]
-        sl = slice(int(a), int(b))
-        data = torch.from_numpy(np.array(self._arr(k, f"{m}.data")[sl]).astype(mf["dtype"]))
+        a, b = (int(x) for x in self._read(k, f"{m}.offsets", j, j + 2))
+        rd = lambda name: self._read(k, f"{m}.{name}", a, b)                 # noqa: E731
+        data = torch.from_numpy(rd("data").astype(mf["dtype"], copy=False))
         time = None
         if mf["timed"]:
             precision, sources = row["time"][m]
-            time = TimeAxis(torch.from_numpy(np.array(self._arr(k, f"{m}.t_start")[sl])),
-                            torch.from_numpy(np.array(self._arr(k, f"{m}.t_end")[sl])),
+            time = TimeAxis(torch.from_numpy(rd("t_start")), torch.from_numpy(rd("t_end")),
                             precision, sources)
-        pv = (torch.from_numpy(np.array(self._arr(k, f"{m}.pixel_valid")[sl]))
+        pv = (torch.from_numpy(rd("pixel_valid"))
               if mf["pixel_valid"] else None)
-        aux = {n: torch.from_numpy(np.array(self._arr(k, f"{m}.aux.{n}")[sl]).astype(out))
+        aux = {n: torch.from_numpy(rd(f"aux.{n}").astype(out, copy=False))
                for n, (_, out) in mf["aux"].items()}
         return ModalityData(data, bands, time,
-                            torch.from_numpy(np.array(self._arr(k, f"{m}.frame_valid")[sl])),
+                            torch.from_numpy(rd("frame_valid")),
                             _ungeo(row["geometry"][m]), pixel_valid=pv, aux=aux)
 
     def target(self, i: int) -> torch.Tensor | None:
         if self.meta["target"] is None:
             return None
         k, j = self._where[i]
-        return torch.from_numpy(np.array(self._arr(k, "target")[j])
+        return torch.from_numpy(self._read(k, "target", j, j + 1)[0]
                                 .astype(self.meta["target"][1]))
 
     def row(self, i: int) -> dict:
