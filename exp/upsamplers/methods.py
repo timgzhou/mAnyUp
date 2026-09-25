@@ -8,13 +8,22 @@ manyup_t: mAnyUp trained per timestep on every task (timAnyUp without the high-r
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+from exp.common.paths import FEATURES
 from exp.common.tasks import Task
 from manyup.upsamplers import JBU, AnyUp, Bicubic, Bilinear, FeatureUpsampler, MAnyUp, TimAnyUp
+from manyup.upsamplers.jbu import KernelCache
 
 TRAINING_FREE = ("bilinear", "bicubic", "anyup", "upa", "upma")
 TRAINED = ("manyup", "manyup_t", "timanyup")
 METHODS = TRAINING_FREE + TRAINED
-SHARED_PROBE = ("upa", "upma")      # per-image optimization: test set only, bilinear's probe
+SHARED_PROBE = ("upa", "upma")      # per-image optimization: fitted kernels are cached
+                                    # (exp/upsamplers/fit_jbu.py); without them, test only
+
+
+def kernel_dir(task: Task, method: str) -> Path:
+    return FEATURES / "jbu_kernels" / f"{task.name}_{method}"
 
 
 def pooled(task: Task) -> bool:
@@ -33,10 +42,12 @@ def build(name: str, task: Task, ckpt: str | None = None, fit_steps: int = 50,
         return Bicubic(pooled=pooled(task))
     if name == "anyup":
         return AnyUp(tp, rgb=task.rgb)
-    if name == "upa":
-        return JBU.upa(tp, rgb=task.rgb, fit_steps=fit_steps)
-    if name == "upma":
-        return JBU.upma(tp, bands=task.guidance, fit_steps=fit_steps)
+    if name in ("upa", "upma"):
+        d = kernel_dir(task, name)
+        kernels = KernelCache(d) if KernelCache.exists(d) else None
+        if name == "upa":
+            return JBU.upa(tp, rgb=task.rgb, fit_steps=fit_steps, kernels=kernels)
+        return JBU.upma(tp, bands=task.guidance, fit_steps=fit_steps, kernels=kernels)
     if name in ("manyup", "manyup_t"):         # the checkpoint fixes pooled / per timestep
         return MAnyUp.from_checkpoint(ckpt)
     if name == "timanyup":

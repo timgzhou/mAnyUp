@@ -9,6 +9,8 @@ per learning rate on a shared forward pass, AdamW + ReduceLROnPlateau, best vali
 tested; one CSV row per learning rate in results/<task>/upsampler_lp.csv
 (upsampler_lp_shared.csv for --shared_probe).
 
+UPA / UPMA optimize a kernel field per image. With their kernels cached for every split
+(exp/upsamplers/fit_jbu.py) they train like the others. Otherwise:
 --shared_probe RUN (UPA / UPMA): no training. Each learning rate's best head from the
 bilinear LP run RUN is applied to this upsampler's features on the test set only -- valid
 because these upsamplers output convex combinations of the input features (the same space
@@ -33,8 +35,9 @@ from torch.utils.data import DataLoader
 from exp.common.heads import Pa2PxHead
 from exp.common.tasks import TASKS
 from exp.olmoearth.train import Arm, _append, _brief
-from exp.upsamplers.methods import METHODS, SHARED_PROBE, build, roles
+from exp.upsamplers.methods import METHODS, SHARED_PROBE, build, kernel_dir, roles
 from exp.upsamplers.task_data import OUT_GRID, UpsamplerData, out_geometry
+from manyup.upsamplers.jbu import KernelCache
 
 
 def run_name(a) -> str:
@@ -92,7 +95,10 @@ def main():
     task = TASKS[a.task]
     lrs = [float(x) for x in a.lrs.split(",")]
     if a.upsampler in SHARED_PROBE and not a.shared_probe:
-        raise SystemExit(f"{a.upsampler} optimizes per image: pass --shared_probe <bilinear run>")
+        kd = kernel_dir(task, a.upsampler)
+        if not KernelCache.exists(kd):
+            raise SystemExit(f"{a.upsampler} optimizes per image: cache its kernels "
+                             f"(exp.upsamplers.fit_jbu, {kd}) or pass --shared_probe")
     bs = a.batch_size or task.batch_size[16]
     name = run_name(a) + ("_shared" if a.shared_probe else "")
     smoke = "_smoke" if a.limit_batches else ""
@@ -110,6 +116,11 @@ def main():
     for s in sets.values():
         if s.ds is not None:
             up.check(s.ds)
+    if a.upsampler in SHARED_PROBE and not a.shared_probe:        # trained on cached kernels
+        missing = {s: sum(i not in up.kernels._rows for i in d.ids) for s, d in sets.items()}
+        if any(missing.values()):
+            raise SystemExit(f"{up.kernels.dir} lacks kernels for {missing} samples; "
+                             "run exp.upsamplers.fit_jbu for every split first")
     D = sets["test"].embed_dim
     part = dict(sets)
     if a.shard:

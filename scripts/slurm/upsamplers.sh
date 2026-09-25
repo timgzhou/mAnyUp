@@ -12,9 +12,8 @@
 #                                              run exits at once, so rerunning is cheap
 #     timanyup k=0                             the same timAnyUp without lookups (control)
 #     timanyup_2stage (+ k=0)                  timAnyUp on the trained manyup_t, frozen
-#     upa, upma                                test set only with the bilinear run's heads
-#                                              (--shared_probe), split over SHARDS jobs, then
-#                                              merged
+#     upa, upma                                after their kernel fields are fitted and cached
+#                                              for every split (exp.upsamplers.fit_jbu)
 #     OlmoEarth LP ps16ts64 / ps4ts64          floor / ceiling, same head (exp.olmoearth.train)
 # Dependencies on extraction jobs are found by name (ext_<model>_<tsk>_<mode>_ps<p>ts<t>, as
 # scripts/slurm/sweep.sh names them) among your queued jobs.
@@ -27,14 +26,18 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LRS="1e-1,3e-2,1e-2,5e-3,1e-3"     # standardized features; 1e-2 was best on the old grid
 EXCLUDE="--exclude=kn117,kn104"
 # per task: LP epochs (as the OlmoEarth LP), upsampler training epochs (mAnyUp, timAnyUp and
-# manyup_t; ~ the legacy PASTIS sample budget), UPA/UPMA test shards (~0.8 s per fitted
-# image), hours
+# manyup_t; ~ the legacy PASTIS sample budget), hours, UPA/UPMA kernel-fit shards
+declare -A FIT_SHARDS          # UPA/UPMA kernel-fit jobs per split (~30k fitted images each)
 case "$TASK" in
-  pastis)      LP_EP=50; MU_EP=32; TA_EP=20; SHARDS=1;  LP_H=6;  TR_H=4; SH_H=2 ;;
-  biomassters) LP_EP=10; MU_EP=4;  TA_EP=3;  SHARDS=8;  LP_H=12; TR_H=8; SH_H=3 ;;
-  geoidflood)  LP_EP=10; MU_EP=2;  TA_EP=2;  SHARDS=16; LP_H=12; TR_H=8; SH_H=3 ;;
+  pastis)      LP_EP=50; MU_EP=32; TA_EP=20; LP_H=6;  TR_H=4
+               FIT_SHARDS=([train]=1 [val]=1 [test]=1) ;;
+  biomassters) LP_EP=10; MU_EP=4;  TA_EP=3;  LP_H=12; TR_H=8
+               FIT_SHARDS=([train]=3 [val]=1 [test]=2) ;;
+  geoidflood)  LP_EP=10; MU_EP=2;  TA_EP=2;  LP_H=12; TR_H=8
+               FIT_SHARDS=([train]=15 [val]=3 [test]=4) ;;
   *) echo "unknown task $TASK" >&2; exit 1 ;;
 esac
+FIT_H=3
 CPUS=9
 
 submit() {   # submit <job name> <hours> <module> [args...] -> job id; $AFTER = dependency
@@ -111,14 +114,20 @@ for k in "" 0; do
       --upsampler timanyup --ckpt "$ck" ${k:+--k $k} >/dev/null
 done
 
-# UPA / UPMA: bilinear's heads on the test set, sharded, then merged
-probe="up_${TASK}_${MODEL}_bilinear_lp_bn_ep${LP_EP}"      # exp.upsamplers.lp run_name
+# UPA / UPMA: fit every sample's kernel field once (exp.upsamplers.fit_jbu, ~0.2 s per image
+# at batch 128), sharded so a job stays under ~2 h, then train an LP on them like the others.
+# The cache is reused by every later LP; a finished shard exits at once.
 for u in upa upma; do
-  shards=()
-  for (( i = 0; i < SHARDS; i++ )); do
-    shards+=($(AFTER=${LP[bilinear]:+afterok:${LP[bilinear]}} submit "up_${T}_${u}_s$i" "$SH_H" \
-               "${lp[@]}" --upsampler "$u" --shared_probe "$probe" --shard "$i/$SHARDS"))
+  fits=()
+  for s in train val test; do
+    for (( i = 0; i < ${FIT_SHARDS[$s]}; i++ )); do
+      fits+=($(AFTER=$LR_CACHE submit "up_${T}_${u}_fit_${s:0:2}$i" "$FIT_H" \
+               exp.upsamplers.fit_jbu --task "$TASK" --model_size "$MODEL" \
+               --num_workers $((CPUS - 1)) --method "$u" --split "$s" \
+               --shard "$i/${FIT_SHARDS[$s]}"))
+    done
   done
-  AFTER=afterok:$(IFS=:; echo "${shards[*]}") submit "up_${T}_${u}_merge" 1 "${lp[@]}" \
-      --upsampler "$u" --shared_probe "$probe" --merge "$SHARDS" >/dev/null
+  fits=(${fits[@]})                                             # drop filtered-out (empty)
+  AFTER=${fits[0]:+afterok:$(IFS=:; echo "${fits[*]}")} submit "up_${T}_${u}_lp" "$LP_H" \
+      "${lp[@]}" --upsampler "$u" >/dev/null
 done

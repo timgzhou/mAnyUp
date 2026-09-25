@@ -290,3 +290,33 @@ def test_two_stage_timanyup_starts_as_the_frozen_manyup_t(tmp_path):
     x = tim.eval()(lr, g, [Geometry.unknown((16, 16))], hr=hr).tokens
     y = MAnyUp.from_checkpoint(tmp_path / "mt.pt")(lr, g, [Geometry.unknown((16, 16))]).tokens
     assert torch.allclose(x, y, atol=1e-5)
+
+
+@cuda
+def test_batched_fit_fits_each_image_on_its_own():
+    from manyup.upsamplers.jbu import fit_kernels
+    torch.manual_seed(0)
+    g = torch.rand(3, 4, 64, 64, device="cuda")
+    together = fit_kernels(g, (4, 4), 10)
+    alone = torch.cat([fit_kernels(g[i:i + 1], (4, 4), 10) for i in range(3)])
+    assert torch.allclose(together, alone, atol=1e-4)
+
+
+@cuda
+@torch.no_grad()
+def test_jbu_uses_its_kernel_cache(tmp_path):
+    import json
+    from manyup.upsamplers.jbu import KernelCache
+    torch.manual_seed(0)
+    lr = _series(torch.randn(2, 1, 4, 4, 8, device="cuda"), [[0], [0]])
+    g = _batch({"S2": _mb(torch.rand(2, 1, 10, 64, 64) * 1e4, [[0], [0]])})
+    up = JBU.upma(bands={"S2": ("B02", "B03", "B04")}, fit_steps=5)
+    target = [Geometry.unknown((16, 16))] * 2
+    fitted = up(lr, g, target).tokens
+    raw = up.fit(up.build_guidance(g, lr).cuda(), (4, 4))
+    (tmp_path / "meta.json").write_text(json.dumps(up.cache_meta((4, 4))))
+    (tmp_path / "val").mkdir()
+    torch.save({"ids": lr.ids, "raw": raw.cpu()[:, None]}, tmp_path / "val" / "shard_0of1.pt")
+    up.kernels = KernelCache(tmp_path)
+    up.fit = None                                  # a cache hit must not fit
+    assert torch.equal(up(lr, g, target).tokens, fitted)

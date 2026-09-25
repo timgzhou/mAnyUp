@@ -15,7 +15,9 @@ Needs CUDA (the kernel runs under fp16 autocast).
 """
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -23,7 +25,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
 
-from manyup.data.guidance import LEGACY_S2_13, S2_RGB, GuidanceSpec
+from manyup.data.guidance import LEGACY_S2_13, S2_RGB, GuidanceSpec, spec_to_dict
 from manyup.upsamplers.base import FrameUpsampler
 
 USE_AMP = True
@@ -72,15 +74,62 @@ def fit_jbu(hr: torch.Tensor, lr_modality: torch.Tensor, fit_steps: int) -> torc
         return model(lr_modality, hr)
 
 
+class KernelCache:
+    """Fitted kernel fields by sample id: <dir>/meta.json + <dir>/<split>/shard_<i>of<n>.pt,
+    each {"ids": [...], "raw": (n, T, 4, Hl, Wl) float32} (T = kernel fields per sample:
+    1 when pooled, else one per feature step). A fit sees only the guidance, never the
+    features, so one cache serves every encoder, feature cache and probe on this grid."""
+
+    def __init__(self, directory: str | Path):
+        self.dir = Path(directory)
+        self.meta = json.loads((self.dir / "meta.json").read_text())
+        self._rows: dict[str, torch.Tensor] = {}
+        for f in sorted(self.dir.glob("*/shard_*.pt")):
+            part = torch.load(f, weights_only=True)
+            self._rows.update(zip(part["ids"], part["raw"]))
+
+    @staticmethod
+    def exists(directory) -> bool:
+        return (Path(directory) / "meta.json").exists()
+
+    def covers(self, ids) -> bool:
+        return all(i in self._rows for i in ids)
+
+    def get(self, ids) -> torch.Tensor:
+        return torch.stack([self._rows[i] for i in ids])              # (B, T, 4, Hl, Wl)
+
+
 class JBU(FrameUpsampler):
     def __init__(self, guidance: GuidanceSpec, fit_steps: int = 50, name: str = "jbu",
-                 time_matching: str | None = None):
+                 time_matching: str | None = None, fit_batch: int = 128,
+                 kernels: KernelCache | None = None):
         """guidance: any spec; UPA/UPMA use norm="percentile". time_matching defaults to
-        pooled for a pooled spec, else nearest."""
+        pooled for a pooled spec, else nearest. kernels: fitted kernel fields to use instead
+        of fitting (samples the cache lacks are fitted, fit_batch images at a time)."""
         super().__init__()
         tm = "pooled" if guidance.time_pool else (time_matching or "nearest")
         self._declare(f"{name}[{guidance.key}]", guidance, tm, "input")
-        self.fit_steps = fit_steps
+        self.fit_steps, self.fit_batch, self.kernels = fit_steps, fit_batch, kernels
+        self._ids = None
+
+    def cache_meta(self, grid: tuple[int, int]) -> dict:
+        """What a kernel cache for this upsampler must record (and match on reuse)."""
+        return {"key": self.key, "guidance": spec_to_dict(self.guidance),
+                "time_matching": self.time_matching, "fit_steps": self.fit_steps,
+                "grid": list(grid)}
+
+    def forward(self, lr, guidance, target, **side):
+        self._ids = list(lr.ids)                  # upsample_frames looks kernels up by id
+        try:
+            return super().forward(lr, guidance, target, **side)
+        finally:
+            self._ids = None
+
+    def fit(self, guide: torch.Tensor, grid: tuple[int, int]) -> torch.Tensor:
+        """Kernel fields (N, 4, Hl, Wl) for guidance frames (N, Cg, H, W)."""
+        return torch.cat([fit_kernels(guide[i:i + self.fit_batch].float(), grid,
+                                      self.fit_steps)
+                          for i in range(0, len(guide), self.fit_batch)])
 
     @classmethod
     def upa(cls, time_pool: str | None = "mean", rgb: dict | None = None, **kw) -> "JBU":
@@ -98,12 +147,20 @@ class JBU(FrameUpsampler):
         if H % size[0] or W % size[1]:
             raise ValueError(f"{self.key}: output {tuple(size)} must divide the guidance "
                              f"resolution {(H, W)}")
-        # one fit per image: batching would fit one kernel field to a batch-mean guide
-        out = torch.cat([fit_jbu(guide[n:n + 1].float(), feats[n:n + 1], self.fit_steps)
-                         for n in range(len(feats))]).float()
-        # the kernels live at guidance resolution; a coarser output grid is its area mean,
-        # still a convex combination of the input features
-        return out if (H, W) == tuple(size) else F.adaptive_avg_pool2d(out, size)
+        grid = tuple(feats.shape[-2:])
+        if self.kernels is not None and self._ids is not None and self.kernels.covers(self._ids):
+            if self.kernels.meta != self.cache_meta(grid):
+                raise ValueError(f"{self.key}: kernel cache {self.kernels.dir} was fitted "
+                                 f"for {self.kernels.meta}")
+            raw = self.kernels.get(self._ids).flatten(0, 1).to(feats.device)
+            if len(raw) != len(feats):
+                raise ValueError(f"{self.key}: cached kernels are for another time setup")
+        else:
+            raw = self.fit(guide, grid)            # every image its own kernel field
+        A = torch.cat([kernel_operator(raw[i:i + 64], guide[i:i + 64], size)
+                       for i in range(0, len(raw), 64)])                     # (N, h*w, P)
+        out = torch.einsum("nkp,ndk->ndp", A, feats.float().flatten(2))
+        return out.view(*out.shape[:2], *size)
 
 
 # ---------------------------------------------------------------------------------------
@@ -348,3 +405,170 @@ class LearnablePixelwiseAnisoJBU_NoParent(nn.Module):
             center_mode=self.center_mode,
             use_autocast=self.use_autocast,
         )
+
+
+# ---------------------------------------------------------------------------------------
+# batched: many images fitted and applied at once. Every image has its own kernel field,
+# its own loss term and (Adam being elementwise) its own update, so a batch of N fits is N
+# independent fits; tests/test_upsamplers.py checks it against the per-image code above.
+# ---------------------------------------------------------------------------------------
+PARAMS = ("sx_raw", "sy_raw", "th_raw", "sr_raw")      # raw kernel parameters, in this order
+
+
+def jbu_batched(feat_lr, guide_hr, scale, sigma_x, sigma_y, theta, sigma_r, R_max=4,
+                alpha_dyn=2.0, C_chunk=512, Nn_chunk=81, center_mode="nearest",
+                use_autocast=True):
+    """gs_jbu_aniso_noparent for a batch: feat_lr (B, C, Hl, Wl), guide_hr (B, Cg, Hh, Wh),
+    parameter maps (B, 1, Hl, Wl) -> (B, C, Hh, Wh). Same arithmetic, out-of-place."""
+    B, C, Hl, Wl = feat_lr.shape
+    _, Cg, Hh, Wh = guide_hr.shape
+    dev, dtype_feat = feat_lr.device, feat_lr.dtype
+    y = torch.arange(Hh, device=dev, dtype=torch.float32)
+    x = torch.arange(Wh, device=dev, dtype=torch.float32)
+    Y, X = torch.meshgrid(y, x, indexing="ij")
+    u, v = (Y + 0.5) / scale - 0.5, (X + 0.5) / scale - 0.5
+    rnd = torch.round if center_mode == "nearest" else torch.floor
+    uc = rnd(u).clamp(0, Hl - 1).to(torch.long)
+    vc = rnd(v).clamp(0, Wl - 1).to(torch.long)
+
+    sigma_eff_hr = F.interpolate(torch.maximum(sigma_x, sigma_y), (Hh, Wh), mode="bilinear",
+                                 align_corners=False)
+    R_map = torch.ceil(alpha_dyn * sigma_eff_hr).clamp(min=1, max=R_max).to(torch.int64)[:, 0]
+    dY_all, dX_all = _build_offsets(R_max, dev)
+    K = dY_all.numel()
+
+    num_s = torch.zeros(B, C, Hh, Wh, device=dev)
+    den_s = torch.zeros(B, Hh, Wh, device=dev)
+    m = torch.full((B, Hh, Wh), float("-inf"), device=dev)
+    guide32 = guide_hr.float()
+    maps = [p.float().reshape(B, Hl * Wl) for p in (sigma_x, sigma_y, theta, sigma_r)]
+    feat_flat = feat_lr.permute(0, 2, 3, 1).reshape(B, Hl * Wl, C)
+    guide_lr = F.interpolate(guide32, size=(Hl, Wl), mode="bilinear",
+                             align_corners=False).reshape(B, Cg, Hl * Wl)
+
+    with torch.autocast("cuda", enabled=use_autocast, dtype=torch.float16):
+        for n0 in range(0, K, Nn_chunk):
+            n1 = min(n0 + Nn_chunk, K)
+            dY, dX = dY_all[n0:n1].view(-1, 1, 1), dX_all[n0:n1].view(-1, 1, 1)
+            Bn = dY.shape[0]
+            Ui = torch.clamp(uc.unsqueeze(0) + dY, 0, Hl - 1)
+            Vi = torch.clamp(vc.unsqueeze(0) + dX, 0, Wl - 1)
+            idx = (Ui * Wl + Vi).reshape(-1)
+            gather = lambda t: t[:, idx].view(B, Bn, Hh, Wh)            # noqa: E731
+            mask = (dY ** 2 + dX ** 2).unsqueeze(0) <= (R_map ** 2).unsqueeze(1)
+            dx = X.unsqueeze(0) - ((Vi.to(torch.float32) + 0.5) * scale - 0.5)
+            dy = Y.unsqueeze(0) - ((Ui.to(torch.float32) + 0.5) * scale - 0.5)
+            sx, sy, th, sr = (gather(t) for t in maps)
+            sx, sy, sr = sx.clamp_min(1e-6), sy.clamp_min(1e-6), sr.clamp_min(1e-6)
+            cos_t, sin_t = torch.cos(th), torch.sin(th)
+            x_p = dx * cos_t + dy * sin_t
+            y_p = -dx * sin_t + dy * cos_t
+            log_ws = -(x_p ** 2) / (2 * sx ** 2 + 1e-8) - (y_p ** 2) / (2 * sy ** 2 + 1e-8)
+            diff2 = torch.zeros_like(log_ws)
+            for cg in range(Cg):
+                diff2 = diff2 + (guide32[:, cg].unsqueeze(1) - gather(guide_lr[:, cg])) ** 2
+            log_w = log_ws - (diff2 / Cg) / (2.0 * sr * sr + 1e-8)
+            log_w = torch.where(mask, log_w, torch.full_like(log_w, float("-inf")))
+
+            m_chunk = log_w.max(dim=1).values
+            valid = torch.isfinite(m_chunk)
+            if not valid.any():
+                continue
+            m_new = torch.where(valid, torch.maximum(m, m_chunk), m)
+            scale_old = torch.where(valid, torch.exp((m - m_new).clamp_max(0)),
+                                    torch.ones_like(den_s))
+            den_s = den_s * scale_old
+            num_s = num_s * scale_old.unsqueeze(1)
+            shift = torch.where(valid.unsqueeze(1), log_w - m_new.unsqueeze(1),
+                                torch.full_like(log_w, float("-inf")))
+            s = torch.exp(shift)                                          # (B, Bn, Hh, Wh)
+            den_s = den_s + s.sum(1)
+            parts = []
+            for c0 in range(0, C, C_chunk):
+                c1 = min(c0 + C_chunk, C)
+                sel = feat_flat[:, idx, c0:c1].view(B, Bn, Hh, Wh, c1 - c0)
+                parts.append((sel * s.unsqueeze(-1)).sum(1).permute(0, 3, 1, 2))
+            num_s = num_s + torch.cat(parts, 1)
+            m = m_new
+
+    out = (num_s / den_s.clamp_min(1e-8).unsqueeze(1)).to(dtype_feat)
+    fallback = F.interpolate(feat_lr, size=(Hh, Wh), mode="bilinear", align_corners=False)
+    return torch.where((den_s < 1e-6).unsqueeze(1), fallback, out)
+
+
+class BatchedJBU(nn.Module):
+    """B independent pixelwise JBUs (LearnablePixelwiseAnisoJBU_NoParent, same defaults)."""
+
+    def __init__(self, B, Hl, Wl, scale, init_sigma=16.0, init_sigma_r=0.12, R_max=8,
+                 alpha_dyn=2.0, eval_C_chunk=128, eval_Nn_chunk=49, raw=None):
+        super().__init__()
+        self.scale, self.R_max, self.alpha_dyn = int(scale), int(R_max), float(alpha_dyn)
+        self.eval_C_chunk, self.eval_Nn_chunk = eval_C_chunk, eval_Nn_chunk
+        init = (math.log(init_sigma), math.log(init_sigma), 0.0, math.log(init_sigma_r))
+        for k, (name, v) in enumerate(zip(PARAMS, init)):
+            t = torch.full((B, 1, Hl, Wl), v) if raw is None else raw[:, k:k + 1].float()
+            setattr(self, name, nn.Parameter(t.clone()))
+
+    def raw(self) -> torch.Tensor:
+        """(B, 4, Hl, Wl): the fitted kernel field, what a kernel cache stores."""
+        return torch.cat([getattr(self, n).detach() for n in PARAMS], 1)
+
+    def forward(self, feat_lr, guide_hr):
+        C = feat_lr.shape[1]
+        K = (2 * self.R_max + 1) ** 2
+        cc, nn_ = (C, K) if self.training else (min(self.eval_C_chunk, C),
+                                                  min(self.eval_Nn_chunk, K))
+        return jbu_batched(feat_lr, guide_hr, self.scale, torch.exp(self.sx_raw),
+                           torch.exp(self.sy_raw), _tanh_bound_pi(self.th_raw),
+                           torch.exp(self.sr_raw), R_max=self.R_max, alpha_dyn=self.alpha_dyn,
+                           C_chunk=cc, Nn_chunk=nn_)
+
+
+def fit_kernels(hr: torch.Tensor, grid: tuple[int, int], fit_steps: int) -> torch.Tensor:
+    """Batched fit_jbu without the apply: hr (B, Cg, H, W) in [0, 1] -> raw kernel fields
+    (B, 4, Hl, Wl). The loss is the SUM of per-image mean L1s, so each image's gradient is
+    what its own fit would get."""
+    H, W = hr.shape[-2:]
+    Hl, Wl = grid
+    scale = int(H / Hl)
+    lr = F.interpolate(hr, scale_factor=1 / scale, mode="bicubic", align_corners=False)
+    model = BatchedJBU(len(hr), Hl, Wl, scale).to(hr.device).train()
+    opt = torch.optim.Adam(model.parameters(), lr=1e-1)
+    gamma = (1e-9 / 1e-1) ** (1.0 / 5100)
+    sched = LambdaLR(opt, lr_lambda=lambda step: gamma ** step)
+    scaler = torch.amp.GradScaler("cuda", enabled=USE_AMP)
+    with torch.enable_grad():
+        for step in range(fit_steps + 1):
+            opt.zero_grad(set_to_none=True)
+            with torch.autocast("cuda", enabled=USE_AMP, dtype=AMP_DTYPE):
+                pred = model(lr, hr)
+                loss = (pred.float() - hr).abs().mean(dim=(1, 2, 3)).sum()
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
+            sched.step()
+    return model.raw()
+
+
+def kernel_operator(raw: torch.Tensor, guide: torch.Tensor,
+                    size: tuple[int, int]) -> torch.Tensor:
+    """The upsampling as a matrix: with the kernel field fixed, the JBU output is a linear map
+    of the features (weights depend only on guidance and kernels), so applying it once to the
+    identity basis gives (N, Hl*Wl, P) with out = A^T feats. Area-pooled to `size` (P pixels);
+    each output pixel's weights are non-negative and sum to 1. Much cheaper than applying the
+    kernels to D-dim features: the expensive pass runs on Hl*Wl channels instead of D."""
+    n, _, hl, wl = raw.shape
+    eye = torch.eye(hl * wl, device=raw.device).view(1, hl * wl, hl, wl).expand(n, -1, -1, -1)
+    out = apply_kernels(eye.contiguous(), guide, raw).float()
+    if tuple(out.shape[-2:]) != tuple(size):
+        out = F.adaptive_avg_pool2d(out, size)           # still a convex combination
+    return out.flatten(2)
+
+
+def apply_kernels(feats: torch.Tensor, guide: torch.Tensor, raw: torch.Tensor) -> torch.Tensor:
+    """Fitted kernel fields (B, 4, Hl, Wl) applied to feats (B, C, Hl, Wl), guided by guide
+    (B, Cg, H, W) -> (B, C, H, W)."""
+    model = BatchedJBU(len(raw), *raw.shape[-2:], guide.shape[-2] // raw.shape[-2],
+                       raw=raw).to(feats.device).eval()
+    with torch.no_grad(), torch.autocast("cuda", enabled=USE_AMP, dtype=AMP_DTYPE):
+        return model(feats, guide.float())                  # as fit_jbu's apply
