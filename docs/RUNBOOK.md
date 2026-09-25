@@ -166,6 +166,22 @@ any cloud. So this fixes a small subpopulation here. `s2l2a`/`cloudmask` come fr
 
 ---
 
+## Tile stores: the three task datasets as 64 px tiles
+
+Every task (`exp/common/tasks.py`) reads its samples from a tile store when one is built
+(`~/projects/aip-gpleiss/timz/tilestore/<store_name>`, `$MANYUP_TILESTORE`), else from the raw
+data. Same samples, ids, order and dataset key (so feature caches stay valid); ~18x faster to
+read for BioMassters. Built once, CPU only, resumable; each split is spot-checked against the
+raw dataset at the end (`tests/test_tile_store.py` checks small stores field by field).
+
+```shell
+for t in pastis:9:4 biomassters:17:8 geoidflood:9:4; do IFS=: read task cpus h <<< "$t"
+  sbatch -J store_$task --gres=none --cpus-per-task=$cpus --mem=64G --time=$h:00:00 \
+      --export=ALL,GDAL_CACHEMAX=256 --exclude=kn117,kn104 \
+      scripts/slurm/run.sh exp.common.build_tile_store --task $task --num_workers $((cpus - 1))
+done
+```
+
 ## Task sweep: OlmoEarth LP / FFT and UTAE on PASTIS, BioMassters, GEOID-Flood
 
 Code: `exp/common/tasks.py` (what each task trains on, its head, loss and metrics),

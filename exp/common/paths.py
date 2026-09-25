@@ -11,3 +11,6 @@ REPO = Path(__file__).resolve().parents[2]
 DATA = REPO / "data"
 FEATURES = Path(os.environ.get("MANYUP_FEATURES", "~/projects/aip-gpleiss/timz/features")).expanduser()
 ANYUP_REPO = REPO / "third_party" / "anyup"
+# 64 px tile stores of the raw datasets (manyup/data/tile_store.py); $MANYUP_TILESTORE overrides
+TILESTORE = Path(os.environ.get("MANYUP_TILESTORE",
+                                "~/projects/aip-gpleiss/timz/tilestore")).expanduser()

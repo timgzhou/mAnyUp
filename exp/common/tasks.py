@@ -15,9 +15,12 @@ predicts (target, loss, metrics) and, per model family, how its inputs are packe
 Tiling to 64 px changes nothing an OlmoEarth model sees at tile_size <= 64 (windows are
 encoded independently either way); it bounds the tokens per sample, so fine-tuning fits.
 
-UTAE sees each dataset as its authors / the benchmark intended: PASTIS every acquisition on
-its own date (whole 128 px patches, the published UTAE setup), BioMassters the 12 month slots
-on whole 256 px chips, GEOID the same pre/post chips as OlmoEarth.
+UTAE sees the same 64 px samples, with every raw frame: PASTIS every acquisition on its own
+date, BioMassters the 12 month slots, GEOID the pre/post pair.
+
+Data is read from the task's tile store (TILESTORE/<store_name>, built once by
+exp/common/build_tile_store.py) when it exists, else from the raw dataset: the samples are
+identical (tests/test_tile_store.py), the store is just much faster to read.
 """
 from __future__ import annotations
 
@@ -28,10 +31,12 @@ import torch
 from torch import nn
 
 from exp.common.metrics import RegMeter, SegMeter
-from manyup.data import All, MTMMBatch, MTMMDataset, Pool, Tiling
+from exp.common.paths import TILESTORE
+from manyup.data import All, MTMMBatch, MTMMDataset, Pool, TemporalPolicy, Tiling
 from manyup.data.datasets.biomassters import PLACEHOLDER_YEAR, BiomasstersDataset
 from manyup.data.datasets.geoidflood import ChipSelection, GeoidFloodDataset
 from manyup.data.datasets.pastis import AGRI_YEAR, CLASS_NAMES, PastisDataset
+from manyup.data.tile_store import open_store
 from manyup.data.time import to_days
 
 IGNORE = -1                     # ignored target pixels, for every classification task
@@ -60,13 +65,33 @@ class Task:
     olmoearth: OlmoEarthSetup
     utae: UTAESetup
     batch_size: dict[int, int]    # OlmoEarth patch size -> batch size (LP and FFT alike)
+    stored_modalities: tuple[str, ...]     # what the tile store keeps
+    store_name: str               # tile store of source()
+    store_dtypes: dict[str, str] = {}      # compact storage dtypes (build_tile_store)
+    store_shard: int = 16                  # native samples per store shard
+
+    def policies(self) -> dict[str, TemporalPolicy]:
+        """The time setup OlmoEarth sees, per modality."""
+        raise NotImplementedError
+
+    def raw(self, split: str, policies: dict[str, TemporalPolicy]) -> MTMMDataset:
+        """The raw dataset, cut into this task's samples, read with these policies."""
+        raise NotImplementedError
+
+    def source(self, split: str) -> MTMMDataset:
+        """What the tile store holds: every stored modality, every raw frame."""
+        return self.raw(split, {m: All() for m in self.stored_modalities})
+
+    def open(self, split: str, policies: dict[str, TemporalPolicy]) -> MTMMDataset:
+        ds = open_store(TILESTORE / self.store_name, split, policies)
+        return ds if ds is not None else self.raw(split, policies)
 
     def dataset(self, split: str) -> MTMMDataset:
         """The data OlmoEarth trains on."""
-        raise NotImplementedError
+        return self.open(split, self.policies())
 
     def utae_dataset(self, split: str) -> MTMMDataset:
-        raise NotImplementedError
+        return self.open(split, {m: All() for m in self.utae.modalities})
 
     def target(self, batch: MTMMBatch) -> torch.Tensor:
         raise NotImplementedError
@@ -88,17 +113,18 @@ class Pastis(Task):
     name, kind, num_outputs, reduction = "pastis", "classification", 19, "time_mean"
     olmoearth = OlmoEarthSetup({"S2": "sentinel2_l2a", "S1A": "sentinel1"}, {"S2": S2_IMPUTE})
     # dates in days since 2018-09-01, normalization from the split's folds (UTAEInput)
-    utae = UTAESetup(("S2", "S1A"), to_days(dt.date(2018, 9, 1)), None, batch_size=4)
+    utae = UTAESetup(("S2", "S1A"), to_days(dt.date(2018, 9, 1)), None, batch_size=16)
     batch_size = {4: 8, 16: 32}
     VOID = PastisDataset.SPEC.target.ignore_index
+    stored_modalities = ("S2", "S1A")
+    store_name, store_dtypes = "pastis_tile64", {"target": "int16"}
 
-    def dataset(self, split):
+    def policies(self):
         month_mean = Pool("month", "mean", window=AGRI_YEAR)
-        return PastisDataset(split, {"S2": month_mean, "S1A": month_mean},
-                             Tiling(64, "col-major"))
+        return {"S2": month_mean, "S1A": month_mean}
 
-    def utae_dataset(self, split):
-        return PastisDataset(split, {"S2": All(), "S1A": All()}, tiling=None)
+    def raw(self, split, policies):
+        return PastisDataset(split, policies, Tiling(64, "col-major"))
 
     def target(self, batch):
         t = batch.target.clone()
@@ -132,14 +158,17 @@ class Biomassters(Task):
     olmoearth = OlmoEarthSetup({"S1": "sentinel1", "S2": "sentinel2_l2a"},
                                {"S1": {"vv": "VV_asc", "vh": "VH_asc"}, "S2": S2_IMPUTE})
     utae = UTAESetup(("S1", "S2"), to_days(dt.date(PLACEHOLDER_YEAR, 9, 1)), BIO_NORM,
-                     batch_size=4)
+                     batch_size=64)
     batch_size = {4: 8, 16: 32}
+    stored_modalities = ("S1", "S2")
+    store_name = "biomassters_tile64"
+    store_dtypes = {"S2": "uint16", "S2.cloud_prob": "uint8"}
 
-    def dataset(self, split):
-        return BiomasstersDataset(split, {"S1": All(), "S2": All()}, Tiling(64, "row-major"))
+    def policies(self):
+        return {"S1": All(), "S2": All()}
 
-    def utae_dataset(self, split):
-        return BiomasstersDataset(split, {"S1": All(), "S2": All()})
+    def raw(self, split, policies):
+        return BiomasstersDataset(split, policies, Tiling(64, "row-major"))
 
     def target(self, batch):
         return (batch.target.float() - AGBM_MEAN) / AGBM_STD
@@ -172,12 +201,15 @@ class GeoidFlood(Task):
     utae = UTAESetup(("S1GRD",), None, GEOID_NORM, batch_size=64)
     batch_size = {4: 64, 16: 128}
     CHIPS = ChipSelection(64)
+    stored_modalities = ("S1GRD",)
+    store_name, store_dtypes, store_shard = ("geoidflood_c64_mapped0.5_class2",
+                                             {"target": "uint8"}, 4096)
 
-    def dataset(self, split):
-        return GeoidFloodDataset(split, {"S1GRD": All()}, self.CHIPS)
+    def policies(self):
+        return {"S1GRD": All()}
 
-    def utae_dataset(self, split):
-        return self.dataset(split)
+    def raw(self, split, policies):
+        return GeoidFloodDataset(split, policies, self.CHIPS)
 
     def target(self, batch):
         t = batch.target.clone()

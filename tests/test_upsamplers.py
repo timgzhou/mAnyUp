@@ -14,7 +14,7 @@ from manyup.data.guidance import (LEGACY_S2_13, GuidanceSpec, build_guidance,
                                   build_guidance_batch, match_frames, percentile_per_image)
 from manyup.data.sample import ModalityBatch, ModalityData, MTMMBatch
 from manyup.data.time import TimeAxis
-from manyup.upsamplers import JBU, Bilinear, MAnyUp, TimAnyUp
+from manyup.upsamplers import JBU, Bicubic, Bilinear, MAnyUp, TimAnyUp
 
 REPO = Path(__file__).resolve().parents[1]
 S2_BANDS = ("B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B11", "B12")
@@ -107,6 +107,15 @@ def test_bilinear_keeps_dates_or_pools_them():
     pooled = Bilinear(pooled=True)(lr, None, target)
     assert pooled.tokens.shape == (2, 1, 16, 16, 5)
     assert pooled.t_start.tolist() == [[10]] * 2 and pooled.t_end.tolist() == [[20]] * 2
+
+
+def test_bicubic_is_its_own_method():
+    lr = _series(torch.randn(1, 1, 4, 4, 3), [[0]])
+    out = Bicubic()(lr, None, [Geometry.unknown((16, 16))])
+    ref = F.interpolate(lr.tokens[:, 0].permute(0, 3, 1, 2), (16, 16), mode="bicubic",
+                        align_corners=True)
+    assert torch.allclose(out.tokens[:, 0].permute(0, 3, 1, 2), ref)
+    assert out.provenance["upsampler"] == "bicubic"
 
 
 def test_declarations_and_inputs_are_checked():
