@@ -67,6 +67,17 @@ class GuidanceSpec:
                 + ("" if self.norm == "minmax" else f"-{self.norm}"))
 
 
+def spec_to_dict(spec: GuidanceSpec) -> dict:
+    """JSON-able form (checkpoints, CSV provenance)."""
+    return {"bands": {m: list(b) for m, b in spec.bands.items()}, "time_pool": spec.time_pool,
+            "norm": spec.norm}
+
+
+def spec_from_dict(d: dict) -> GuidanceSpec:
+    return GuidanceSpec({m: tuple(b) for m, b in d["bands"].items()}, d["time_pool"],
+                        d.get("norm", "minmax"))
+
+
 def _source(entry: str) -> str:
     return entry.split("<-")[1] if "<-" in entry else entry
 

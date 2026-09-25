@@ -76,6 +76,11 @@ class SegMeter:
         c = _build_confusion_matrix(logits.argmax(1), target, self.n, self.ignore)
         self.conf = c if self.conf is None else self.conf + c
 
+    def merge(self, other: "SegMeter") -> "SegMeter":
+        """Add another meter's counts (e.g. from a shard of the same split)."""
+        self.conf = other.conf if self.conf is None else self.conf + other.conf.to(self.conf)
+        return self
+
     def compute(self) -> dict[str, float]:
         conf = self.conf.double()
         tp = conf.diagonal()
@@ -115,6 +120,11 @@ class RegMeter:
         self.sy += target.sum().item()
         self.syy += (target * target).sum().item()
         self.n += target.numel()
+
+    def merge(self, other: "RegMeter") -> "RegMeter":
+        for k in ("sse", "sae", "sy", "syy", "n"):
+            setattr(self, k, getattr(self, k) + getattr(other, k))
+        return self
 
     def compute(self) -> dict[str, float]:
         var = self.syy / self.n - (self.sy / self.n) ** 2

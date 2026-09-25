@@ -36,6 +36,7 @@ from manyup.data import All, MTMMBatch, MTMMDataset, Pool, TemporalPolicy, Tilin
 from manyup.data.datasets.biomassters import PLACEHOLDER_YEAR, BiomasstersDataset
 from manyup.data.datasets.geoidflood import ChipSelection, GeoidFloodDataset
 from manyup.data.datasets.pastis import AGRI_YEAR, CLASS_NAMES, PastisDataset
+from manyup.data.guidance import S2_RGB
 from manyup.data.tile_store import open_store
 from manyup.data.time import to_days
 
@@ -69,6 +70,10 @@ class Task:
     store_name: str               # tile store of source()
     store_dtypes: dict[str, str] = {}      # compact storage dtypes (build_tile_store)
     store_shard: int = 16                  # native samples per store shard
+    # feature upsamplers (exp/upsamplers): the full guidance stack (UPMA, mAnyUp, timAnyUp)
+    # and the 3 channels standing in for RGB (AnyUp, UPA), as {modality: bands}
+    guidance: dict[str, tuple[str, ...]]
+    rgb: dict[str, tuple[str, ...]]
 
     def policies(self) -> dict[str, TemporalPolicy]:
         """The time setup OlmoEarth sees, per modality."""
@@ -117,6 +122,8 @@ class Pastis(Task):
     batch_size = {4: 8, 16: 32}
     VOID = PastisDataset.SPEC.target.ignore_index
     stored_modalities = ("S2", "S1A")
+    guidance = {"S2": PastisDataset.SPEC.modalities["S2"].bands, "S1A": ("VV", "VH")}
+    rgb = {"S2": S2_RGB}
     store_name, store_dtypes = "pastis_tile64", {"target": "int16"}
 
     def policies(self):
@@ -161,6 +168,9 @@ class Biomassters(Task):
                      batch_size=64)
     batch_size = {4: 8, 16: 32}
     stored_modalities = ("S1", "S2")
+    guidance = {"S2": BiomasstersDataset.SPEC.modalities["S2"].bands,
+                "S1": BiomasstersDataset.SPEC.modalities["S1"].bands}
+    rgb = {"S2": S2_RGB}
     store_name = "biomassters_tile64"
     store_dtypes = {"S2": "uint16", "S2.cloud_prob": "uint8"}
 
@@ -202,6 +212,8 @@ class GeoidFlood(Task):
     batch_size = {4: 64, 16: 128}
     CHIPS = ChipSelection(64)
     stored_modalities = ("S1GRD",)
+    guidance = {"S1GRD": ("VV", "VH")}
+    rgb = {"S1GRD": ("VV", "VH", "VV")}      # no optical data: a SAR false-colour stand-in
     store_name, store_dtypes, store_shard = ("geoidflood_c64_mapped0.5_class2",
                                              {"target": "uint8"}, 4096)
 

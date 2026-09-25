@@ -61,10 +61,10 @@ def _import_timanyup(repo: str):
     sys.path.insert(0, repo)
     from manyup.loss import Cosine_MSE, cosmse_map                      # noqa: E402
     from manyup.timAnyUp import (TimAnyUp, topk_mask, random_mask,      # noqa: E402
-                                blend, rank_normalize)
+                                blend, rank_normalize, vectors_at)
     return dict(TimAnyUp=TimAnyUp, Cosine_MSE=Cosine_MSE, cosmse_map=cosmse_map,
                 topk_mask=topk_mask, random_mask=random_mask, blend=blend,
-                rank_normalize=rank_normalize)
+                rank_normalize=rank_normalize, vectors_at=vectors_at)
 
 
 def _flat_bt(x):
@@ -129,11 +129,13 @@ def _forward_losses(model, A, args, lrhc, hrlc, hrhc, guide, out_size, device):
     n_fit = max(1, int(flat_err.shape[1] * args.transform_frac))
     fit_idx = flat_err.argsort(dim=1)[:, :n_fit]             # lowest-error locations
     fit = torch.zeros_like(flat_err, dtype=torch.bool).scatter_(1, fit_idx, True)
-    fit = fit.reshape(err.shape).unsqueeze(2).expand_as(hrlc_t)
-    C = hrlc_t.shape[2]
+    # Location vectors via vectors_at: the original masked-then-reshaped selection mixed
+    # channels of different locations (fixed 2026-09-25; checkpoints before that date were
+    # trained with the scrambled transform target).
+    fit = fit.reshape(err.shape)
     l_transform = A["Cosine_MSE"]()(
-        hrlc_t[fit].reshape(-1, C, 1, 1),
-        lrhc_up.detach()[fit].reshape(-1, C, 1, 1))["total"]
+        A["vectors_at"](hrlc_t, fit)[..., None, None],
+        A["vectors_at"](lrhc_up.detach(), fit)[..., None, None])["total"]
 
     out = {"recon": l_recon, "query": l_query, "transform": l_transform}
 

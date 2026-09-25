@@ -23,14 +23,17 @@ def imagenet_norm(rgb01: torch.Tensor) -> torch.Tensor:
 
 
 class AnyUp(FrameUpsampler):
-    def __init__(self, time_pool: str | None = "mean", modality: str = "S2",
-                 rgb: tuple[str, str, str] = S2_RGB, time_matching: str | None = None):
+    def __init__(self, time_pool: str | None = "mean", rgb: dict | None = None,
+                 time_matching: str | None = None):
         """time_pool "mean"/"median": one pooled RGB composite and time-pooled features (the
         legacy `anyup` head); None: every feature step with its own date-matched RGB frame
-        (`anyup_t1`), matched by `time_matching` (default nearest)."""
+        (`anyup_t1`), matched by `time_matching` (default nearest). rgb: {modality: 3 bands},
+        default S2 B04/B03/B02."""
         super().__init__()
         from anyup.model import AnyUp as _AnyUp            # third_party/anyup (manyup/__init__)
-        spec = GuidanceSpec({modality: tuple(rgb)}, time_pool)
+        spec = GuidanceSpec(rgb or {"S2": S2_RGB}, time_pool)
+        if spec.channels != 3:
+            raise ValueError(f"AnyUp's pretrained weights take 3 channels, got {spec.key}")
         tm = "pooled" if time_pool else (time_matching or "nearest")
         self._declare(f"anyup[{spec.key}]", spec, tm, "input")
         self.model = _AnyUp()

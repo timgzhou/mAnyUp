@@ -2,9 +2,9 @@
 
 The guidance encoder is a conv over channels, so the checkpoint fixes only the channel COUNT
 (its input_dim); which bands and modalities fill them is the GuidanceSpec. from_checkpoint
-rebuilds the spec the checkpoint was trained with (train_manyup's guidance_mod and
-time_pool); pass `guidance` to feed other modality names (e.g. "S1" instead of PASTIS's
-"S1A") with the same channel count.
+rebuilds the spec the checkpoint was trained with (its "guidance" entry, or legacy
+train_manyup's guidance_mod and time_pool); pass `guidance` to feed other modality names
+(e.g. "S1" instead of PASTIS's "S1A") with the same channel count.
 
 Output space: "input" for a transform_depth=0 checkpoint without projector (a pure
 attention-weighted sum of the input features), else "target" (the feature space of the
@@ -17,7 +17,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from manyup.data.guidance import LEGACY_GUIDANCE, GuidanceSpec
+from manyup.data.guidance import LEGACY_GUIDANCE, GuidanceSpec, spec_from_dict
 from manyup.upsamplers.base import FrameUpsampler
 
 
@@ -41,8 +41,9 @@ class MAnyUp(FrameUpsampler):
         ck = torch.load(path, map_location="cpu", weights_only=False)
         args = ck.get("args", {})
         in_dim = ck["input_dim"]
-        trained = GuidanceSpec(LEGACY_GUIDANCE[args.get("guidance_mod", "s2")],
-                               args.get("time_pool", "mean"))
+        trained = (spec_from_dict(ck["guidance"]) if "guidance" in ck else   # exp.upsamplers.train
+                   GuidanceSpec(LEGACY_GUIDANCE[args.get("guidance_mod", "s2")],
+                                args.get("time_pool", "mean")))
         guidance = guidance or trained
         if guidance.channels != in_dim:
             raise ValueError(f"{Path(path).name} takes {in_dim} guidance channels, "

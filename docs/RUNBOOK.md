@@ -182,6 +182,17 @@ for t in pastis:9:4 biomassters:17:8 geoidflood:9:4; do IFS=: read task cpus h <
 done
 ```
 
+## Upsampler comparison on the three tasks (tiny)
+
+`bash scripts/slurm/upsamplers.sh <task>` queues, per task, LP on ps16ts64 features upsampled
+to the ps4 grid (same pa2px head as the OlmoEarth LP; 5 learning rates per job) for bilinear,
+bicubic, AnyUp; training then LP for mAnyUp and timAnyUp (`exp.upsamplers.train`, checkpoints in
+`checkpoints/upsamplers/`); UPA/UPMA on the test set only with the bilinear run's heads, sharded
+and merged. Waits on the task's extraction jobs by name. Results: `results/<task>/
+upsampler_lp.csv`, `upsampler_lp_shared.csv` (UPA/UPMA), `upsampler_train.csv`.
+Needs the per_timestep caches ps16ts64, ps4ts64 (series) and ps4ts4 (per_timestep):
+`MODEL=tiny STORE=per_timestep ONLY='...' bash scripts/slurm/sweep.sh <task> extract`.
+
 ## Task sweep: OlmoEarth LP / FFT and UTAE on PASTIS, BioMassters, GEOID-Flood
 
 Code: `exp/common/tasks.py` (what each task trains on, its head, loss and metrics),

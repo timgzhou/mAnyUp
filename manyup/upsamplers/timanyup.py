@@ -20,7 +20,7 @@ import torch
 
 from manyup.data.features import FeatureSeries
 from manyup.data.geometry import Geometry
-from manyup.data.guidance import LEGACY_GUIDANCE, GuidanceSpec
+from manyup.data.guidance import LEGACY_GUIDANCE, GuidanceSpec, spec_from_dict
 from manyup.data.sample import MTMMBatch
 from manyup.timAnyUp import TimAnyUp as _TimAnyUp
 from manyup.timAnyUp import blend, topk_mask
@@ -53,7 +53,9 @@ class TimAnyUp(FeatureUpsampler):
                           window_ratio=a.get("window_ratio", 1.0),
                           query_input=a.get("query_input", "bilinear"))
         model.load_state_dict(ck["model"])
-        guidance = guidance or GuidanceSpec(LEGACY_GUIDANCE[a.get("guidance_mod", "s2")], None)
+        trained = (spec_from_dict(ck["guidance"]) if "guidance" in ck else
+                   GuidanceSpec(LEGACY_GUIDANCE[a.get("guidance_mod", "s2")], None))
+        guidance = guidance or trained
         up = cls(model, guidance, k if k is not None else a.get("k", 512),
                  name=f"timanyup:{Path(path).stem}")
         if frozen:

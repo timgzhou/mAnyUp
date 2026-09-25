@@ -83,8 +83,8 @@ class JBU(FrameUpsampler):
         self.fit_steps = fit_steps
 
     @classmethod
-    def upa(cls, time_pool: str | None = "mean", modality: str = "S2", **kw) -> "JBU":
-        return cls(GuidanceSpec({modality: S2_RGB}, time_pool, norm="percentile"),
+    def upa(cls, time_pool: str | None = "mean", rgb: dict | None = None, **kw) -> "JBU":
+        return cls(GuidanceSpec(rgb or {"S2": S2_RGB}, time_pool, norm="percentile"),
                    name="upa", **kw)
 
     @classmethod
@@ -94,12 +94,16 @@ class JBU(FrameUpsampler):
 
     def upsample_frames(self, feats: torch.Tensor, guide: torch.Tensor,
                         size: tuple[int, int]) -> torch.Tensor:
-        if tuple(guide.shape[-2:]) != tuple(size):
-            raise ValueError(f"{self.key} outputs at the guidance resolution "
-                             f"{tuple(guide.shape[-2:])}, not {tuple(size)}")
+        H, W = guide.shape[-2:]
+        if H % size[0] or W % size[1]:
+            raise ValueError(f"{self.key}: output {tuple(size)} must divide the guidance "
+                             f"resolution {(H, W)}")
         # one fit per image: batching would fit one kernel field to a batch-mean guide
-        return torch.cat([fit_jbu(guide[n:n + 1].float(), feats[n:n + 1], self.fit_steps)
-                          for n in range(len(feats))]).float()
+        out = torch.cat([fit_jbu(guide[n:n + 1].float(), feats[n:n + 1], self.fit_steps)
+                         for n in range(len(feats))]).float()
+        # the kernels live at guidance resolution; a coarser output grid is its area mean,
+        # still a convex combination of the input features
+        return out if (H, W) == tuple(size) else F.adaptive_avg_pool2d(out, size)
 
 
 # ---------------------------------------------------------------------------------------

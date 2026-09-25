@@ -228,3 +228,27 @@ def test_upma_matches_legacy_function():
     assert np.allclose(guide, ours[0].numpy(), atol=1e-5)
     ref = UPMA(guide, lr.tokens.mean(1).permute(0, 3, 1, 2), fit_steps=5)
     assert torch.allclose(out.tokens[:, 0].permute(0, 3, 1, 2), ref.float(), atol=2e-2)
+
+
+def test_vectors_at_keeps_each_location_vector_whole():
+    from manyup.timAnyUp import vectors_at
+    x = torch.randn(2, 3, 5, 4, 4)
+    loc = torch.rand(2, 3, 4, 4) > 0.7
+    got = vectors_at(x, loc)
+    want = torch.stack([x[b, t, :, h, w] for b, t, h, w in loc.nonzero().tolist()])
+    assert torch.equal(got, want)
+
+
+def test_meters_merge_like_one_pass():
+    from exp.common.metrics import RegMeter, SegMeter
+    torch.manual_seed(0)
+    for make, logits, target in (
+            (lambda: SegMeter(3, ("a", "b", "c")), torch.randn(4, 3, 8, 8),
+             torch.randint(-1, 3, (4, 8, 8))),
+            (lambda: RegMeter(2.0), torch.randn(4, 1, 8, 8), torch.randn(4, 8, 8))):
+        one, a, b = make(), make(), make()
+        one.update(logits, target)
+        a.update(logits[:1], target[:1])
+        b.update(logits[1:], target[1:])
+        x, y = one.compute(), a.merge(b).compute()
+        assert all(np.isclose(x[k], y[k], rtol=1e-6, equal_nan=True) for k in x)

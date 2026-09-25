@@ -194,6 +194,16 @@ def blend(lrhc_up, hrlc_t, mask):
     return lrhc_up * (1 - m) + 0.5 * (lrhc_up + hrlc_t) * m
 
 
+def vectors_at(x, loc):
+    """Feature vectors of (B,T,C,H,W) `x` at the True locations of (B,T,H,W) `loc` -> (N, C).
+
+    Channels must be moved last BEFORE masking: masking (B,T,C,H,W) with a location mask
+    broadcast over C enumerates channel-major (all selected locations of channel 0, then
+    channel 1, ...), so a reshape to (-1, C) would build each "vector" from one channel at C
+    different locations."""
+    return x.permute(0, 1, 3, 4, 2)[loc]
+
+
 def rank_normalize(err):
     """Per-sample rank transform of a (B,T,H,W) error map -> [0,1], worst location = 1.
 
