@@ -6,6 +6,7 @@
 #       what: extract | olmoearth | utae
 #   DRY=1 ...                                        # print the sbatch lines only
 #   ONLY=<regex> ...                                 # submit only jobs whose name matches
+#   LRS="1e-2 5e-3" ...                             # learning rates (default 1e-3 1e-4 3e-5)
 #
 # extract: frozen-feature caches, series encoding for the 3 (patch, tile) configs plus
 #   per_timestep for ps4ts4. PASTIS keeps every timestep (upsamplers train on it);
@@ -23,7 +24,7 @@ MODEL="${MODEL:-base}"
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 [ -f env_setup/env_olmo.sh ] || { echo "not the repo root: $PWD" >&2; exit 1; }
 
-LRS=(1e-3 1e-4 3e-5)
+read -ra LRS <<< "${LRS:-1e-3 1e-4 3e-5}"   # override: LRS="1e-2 5e-3"
 CONFIGS=("4 4" "4 64" "16 64")
 MODES=(series per_timestep)
 EXCLUDE="--exclude=kn117,kn104"      # nodes with GPU ECC errors
