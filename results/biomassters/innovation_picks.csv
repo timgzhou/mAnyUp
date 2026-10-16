@@ -1,0 +1,15 @@
+job,run,predictor,k_frac,split,pick,test_rmse,test_mae,test_r2,test_primary
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,random0,35.08419,19.48358,0.77096,35.08419
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,random1,35.08568,19.48331,0.77094,35.08568
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,random2,35.08359,19.48621,0.77097,35.08359
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,pred,36.61143,22.04419,0.75059,36.61143
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,pred_spread,35.29724,19.76079,0.76817,35.29724
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,pred_soft0.5,35.1235,20.10317,0.77045,35.1235
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,pred_soft1,35.10805,19.82947,0.77065,35.10805
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,innovation,36.52612,22.0212,0.75175,36.52612
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,innovation_spread,35.16439,19.71257,0.76991,35.16439
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,gain,35.47413,21.40561,0.76584,35.47413
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,gain_spread,33.8389,18.83011,0.78693,33.8389
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,pred_within,35.64589,20.0253,0.76357,35.64589
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,innovation_within,35.54551,20.00455,0.7649,35.54551
+5806649,inject_fft_biomassters_tiny_random_L0_k0.167_native_set_lr0.001_ep10,checkpoints/innov_pred_biomassters_k0.167.pt,0.16666666666666666,test,gain_within,34.35908,19.1672,0.78033,34.35908

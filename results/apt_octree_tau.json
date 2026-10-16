@@ -1,0 +1,73 @@
+{
+  "pastis": {
+    "0.16667": {
+      "tau": 10.869255065917969,
+      "mean_tokens": 511.890625,
+      "target_tokens": 512,
+      "T": 12,
+      "reachable": true
+    },
+    "0.33333": {
+      "tau": -5.0,
+      "mean_tokens": 721.6875,
+      "target_tokens": 1024,
+      "T": 12,
+      "reachable": false
+    },
+    "0.16667_sonly": {
+      "tau": 12.705879211425781,
+      "mean_tokens": 512.0625,
+      "target_tokens": 512,
+      "T": 12,
+      "reachable": true
+    }
+  },
+  "biomassters": {
+    "0.16667": {
+      "tau": 8.652915954589844,
+      "mean_tokens": 511.96875,
+      "target_tokens": 512,
+      "T": 12,
+      "reachable": true
+    },
+    "0.33333": {
+      "tau": -5.0,
+      "mean_tokens": 658.1875,
+      "target_tokens": 1024,
+      "T": 12,
+      "reachable": false
+    }
+  },
+  "geoidflood": {
+    "0.16667": {
+      "tau": 1.5595626831054688,
+      "mean_tokens": 84.921875,
+      "target_tokens": 85,
+      "T": 2,
+      "reachable": true
+    },
+    "0.33333": {
+      "tau": -5.0,
+      "mean_tokens": 86.140625,
+      "target_tokens": 171,
+      "T": 2,
+      "reachable": false
+    }
+  },
+  "yieldsat_raw": {
+    "0.16667": {
+      "tau": -5.0,
+      "mean_tokens": 339.8125,
+      "target_tokens": 1024,
+      "T": 24,
+      "reachable": false
+    },
+    "0.33333": {
+      "tau": -5.0,
+      "mean_tokens": 339.8125,
+      "target_tokens": 2048,
+      "T": 24,
+      "reachable": false
+    }
+  }
+}

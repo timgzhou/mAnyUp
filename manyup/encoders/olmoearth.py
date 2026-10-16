@@ -47,10 +47,16 @@ MAX_FOLDED_ITEMS = 16384   # cap on batch width when folding tiles/time into the
 
 class OlmoEarthInput:
     """Packs an MTMMBatch into OlmoEarth's MaskedOlmoEarthSample. No model: fine-tuning code
-    that needs gradients through OlmoEarth uses this directly; OlmoEarthEncoder wraps it."""
+    that needs gradients through OlmoEarth uses this directly; OlmoEarthEncoder wraps it.
+
+    timestamp: the date OlmoEarth sees for a step -- its "start" (every cache so far), or the
+    "mid"dle of [start, end], for steps that span a season (GroupSteps)."""
 
     def __init__(self, modality_map: dict[str, str],
-                 impute: dict[str, dict[str, str]] | None = None):
+                 impute: dict[str, dict[str, str]] | None = None, timestamp: str = "start"):
+        if timestamp not in ("start", "mid"):
+            raise ValueError(f"timestamp {timestamp!r} not in ('start', 'mid')")
+        self.timestamp = timestamp
         self.modality_map = dict(modality_map)
         self.olmo = {m: Modality.get(o) for m, o in self.modality_map.items()}
         self.impute = {m: dict((impute or {}).get(m, {})) for m in self.modality_map}
@@ -93,7 +99,9 @@ class OlmoEarthInput:
             if not torch.equal(mb.t_start, ref.t_start):
                 raise ValueError(f"{m}: time axis differs from {list(self.modality_map)[0]}; "
                                  "OlmoEarth needs aligned modalities (e.g. one Pool window)")
-        d = {"timestamps": _timestamps(ref.t_start)}
+        day = ref.t_start if self.timestamp == "start" else torch.where(
+            ref.t_start >= 0, (ref.t_start + ref.t_end) // 2, ref.t_start)   # keep padding -1
+        d = {"timestamps": _timestamps(day)}
         for m, mb in zip(self.modality_map, mods):
             name = self.olmo[m].name
             x = mb.data.float()[:, :, self._band_index(m, mb.bands)]          # (B,T,C,H,W)
@@ -126,12 +134,15 @@ class OlmoEarthEncoder(Encoder):
     KEEPS_TIME = True
 
     def __init__(self, model_id: str, inputs: OlmoEarthInput, patch_size: int, tile_size: int,
-                 name: str | None = None, amp: bool = True, attention: str = "flash"):
+                 name: str | None = None, amp: bool = True, attention: str = "flash",
+                 pretrained: bool = True):
+        """pretrained=False: the same architecture at its random initialization (the
+        train-from-scratch reference; no OlmoEarth weights are loaded)."""
         super().__init__()
         self.model_id, self.inputs = model_id, inputs
         self.patch_size, self.tile_size, self.amp = patch_size, tile_size, amp
         self.key = name or model_id.lower()
-        model = load_model_from_id(getattr(ModelID, model_id), load_weights=True)
+        model = load_model_from_id(getattr(ModelID, model_id), load_weights=pretrained)
         self.encoder = model.encoder if hasattr(model, "encoder") else model
         if attention == "flash" and not amp:
             raise ValueError("FlashAttention runs in bf16 only; attention='flash' needs amp=True")
@@ -218,8 +229,23 @@ class OlmoEarthEncoder(Encoder):
         T = sample.timestamps.shape[1]
         if temporal_mode == "per_timestep":
             folded = _cat([_slice_time(sample, t) for t in range(T)])
-            tam = self._run(folded)
-            per_t = list(pool_timestep(tam, 0).chunk(T, dim=0))
+            # a step with no data in ANY modality (a YieldSAT month without an acquisition)
+            # has no tokens, which OlmoEarth refuses: encode the others, zeros for it (every
+            # head reads frame_valid and skips it)
+            keep = _encoded_items(folded)
+            if keep.all():
+                pooled = pool_timestep(self._run(folded), 0)
+            else:
+                pooled = None
+                if keep.any():
+                    part = pool_timestep(self._run(_map(folded, lambda k, v: v[keep])), 0)
+                    pooled = part.new_zeros((len(keep), *part.shape[1:]))
+                    pooled[keep] = part
+                else:
+                    g = _spatial_size(folded) // self.patch_size
+                    pooled = torch.zeros(len(keep), g, g, self.encoder.embedding_size,
+                                         device=keep.device)
+            per_t = list(pooled.chunk(T, dim=0))
         else:
             tam = self._run(sample)
             per_t = [pool_timestep(tam, t) for t in range(T)]
@@ -284,6 +310,17 @@ def _has_missing(sample: MaskedOlmoEarthSample) -> bool:
     return False
 
 
+def _encoded_items(sample: MaskedOlmoEarthSample) -> torch.Tensor:
+    """(B,) bool: items with at least one token OlmoEarth will encode (any mask value that
+    is not MISSING, in any modality)."""
+    keep = None
+    for name, v in sample.as_dict().items():
+        if name.endswith("_mask") and v is not None:
+            k = (v != MaskValue.MISSING.value).flatten(1).any(1)
+            keep = k if keep is None else keep | k
+    return keep
+
+
 def _spatial_size(sample: MaskedOlmoEarthSample) -> int:
     for name, v in sample.as_dict().items():
         if name != "timestamps" and not name.endswith("_mask") and v is not None:
@@ -307,6 +344,27 @@ def _slice_space(sample, h0, h1, w0, w1):
 
 def _slice_time(sample, t):
     return _map(sample, lambda k, v: v[:, t:t + 1] if k == "timestamps" else v[:, :, :, t:t + 1])
+
+
+def crop_patches(sample: MaskedOlmoEarthSample, b: torch.Tensor, t: torch.Tensor,
+                 y: torch.Tensor, x: torch.Tensor, size: int,
+                 pixels: bool = False) -> MaskedOlmoEarthSample:
+    """N single-frame crops of a packed batch: crop n is the `size` x `size` pixel block at
+    block-grid position (y[n], x[n]) of frame t[n] of sample b[n] -> a batch of N samples of
+    size x size pixels and T = 1 (a high-res lookup at one location and date).
+    pixels: (y, x) is the block's top-left PIXEL instead (a crop off the block grid)."""
+    step = 1 if pixels else size
+    r = y[:, None] * step + torch.arange(size, device=y.device)                 # (N, size)
+    c = x[:, None] * step + torch.arange(size, device=x.device)
+
+    def crop(k, v):
+        if k == "timestamps":                                                   # (B, T, 3)
+            return v[b, t][:, None]
+        if v.ndim != 5:
+            raise ValueError(f"crop_patches: {k} is not (B, H, W, T, C)")
+        return v[b[:, None, None], r[:, :, None], c[:, None, :], t[:, None, None]][:, :, :, None]
+
+    return _map(sample, crop)
 
 
 def _cat(samples):

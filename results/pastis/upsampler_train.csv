@@ -1,0 +1,6 @@
+job,run,task,model_size,method,key,time_matching,epochs,best_epoch,k,val_recon,val_query,val_transform,val_c_upsample,val_c_random,val_c_bilinear,ckpt
+5665217,manyup_pastis_tiny_ep32,pastis,tiny,manyup,manyup[S210+S1A2-mean],pooled,32,31,,0.18269,,,,,0.20911,checkpoints/upsamplers/manyup_pastis_tiny_ep32.pt
+5665219,timanyup_pastis_tiny_ep20,pastis,tiny,timanyup,timanyup[S210+S1A2-per_t],nearest,20,20,512,0.11891,0.60901,0.07398,0.12493,0.12379,0.23699,checkpoints/upsamplers/timanyup_pastis_tiny_ep20.pt
+5679382,manyup_t_pastis_tiny_ep20,pastis,tiny,manyup_t,manyup_t[S210+S1A2-per_t],nearest,20,20,,0.20129,,,,,0.23699,checkpoints/upsamplers/manyup_t_pastis_tiny_ep20.pt
+5684188,timanyup_2stage_pastis_tiny_ep20,pastis,tiny,timanyup,timanyup[S210+S1A2-per_t]k512,nearest,20,20,512,0.12719,0.59143,0.08975,0.1327,0.13112,0.23699,checkpoints/upsamplers/timanyup_2stage_pastis_tiny_ep20.pt
+5700945,manyup_t_pastis_tiny_ep20,pastis,tiny,manyup_t,manyup_t[S210+S1A2-per_t],nearest,20,20,,0.19867,,,,,0.23421,checkpoints/upsamplers/manyup_t_pastis_tiny_ep20.pt

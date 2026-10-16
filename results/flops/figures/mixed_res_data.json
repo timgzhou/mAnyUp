@@ -1,0 +1,92 @@
+{
+  "pastis": [
+    {
+      "bucket": "random",
+      "k": 0.167,
+      "test_metric": 0.55068,
+      "gmacs": 31.96,
+      "lr_ps": 16,
+      "lr_ts": 64,
+      "hr_ps": 4,
+      "inject_layer": "3",
+      "select_unit": "slot",
+      "run": "inject_fft_pastis_tiny_random_L3_k0.167_native_set_poscenter_haoneway_lr0.001_ep50",
+      "flops_run": "inject_fft_pastis_tiny_random_L3_k0.167_native_set_poscenter_haoneway_lr0.001_ep50",
+      "hours": 1.09
+    },
+    {
+      "bucket": "value_predictor",
+      "k": 0.167,
+      "test_metric": 0.58075,
+      "gmacs": 34.449,
+      "lr_ps": 16,
+      "lr_ts": 64,
+      "hr_ps": 4,
+      "inject_layer": "3",
+      "select_unit": "slot",
+      "run": "inject_fft_pastis_tiny_random_L3_k0.167_native_set_joint1-0.3a0.5_jfL_jtdrop_gfix_poscenter_haoneway_warm_lr0.001_ep20",
+      "flops_run": "inject_fft_pastis_tiny_random_L3_k0.167_native_set_joint1-0.3a0.5_jfL_jtdrop_gfix_poscenter_haoneway_warm_lr0.001_ep20",
+      "hours": 0.59
+    }
+  ],
+  "biomassters": [
+    {
+      "bucket": "random",
+      "k": 0.167,
+      "test_metric": 34.73732,
+      "gmacs": 31.32,
+      "lr_ps": 16,
+      "lr_ts": 64,
+      "hr_ps": 4,
+      "inject_layer": "3",
+      "select_unit": "slot",
+      "run": "inject_fft_biomassters_tiny_random_L3_k0.167_native_set_poscenter_haoneway_warm_lr0.001_ep5",
+      "flops_run": "inject_fft_biomassters_tiny_random_L3_k0.167_native_set_poscenter_haoneway_warm_lr0.001_ep5",
+      "hours": 1.11
+    },
+    {
+      "bucket": "value_predictor",
+      "k": 0.167,
+      "test_metric": 33.29566,
+      "gmacs": 33.808,
+      "lr_ps": 16,
+      "lr_ts": 64,
+      "hr_ps": 4,
+      "inject_layer": "3",
+      "select_unit": "slot",
+      "run": "inject_fft_biomassters_tiny_random_L3_k0.167_native_set_joint1-0.3a0.5_jfL_jtdrop_gfix_poscenter_haoneway_warm_lr0.001_ep5_seed1",
+      "flops_run": "inject_fft_biomassters_tiny_random_L3_k0.167_native_set_joint1-0.3a0.5_jfL_jtdrop_gfix_poscenter_haoneway_warm_lr0.001_ep5",
+      "hours": 1.47
+    }
+  ],
+  "yieldsat_ml24": [
+    {
+      "bucket": "random",
+      "k": 0.167,
+      "test_metric": 1.33335,
+      "gmacs": 53.619,
+      "lr_ps": 16,
+      "lr_ts": 64,
+      "hr_ps": 4,
+      "inject_layer": "3",
+      "select_unit": "slot",
+      "run": "inject_fft_yieldsat_raw_tiny_random_L3_k0.167_native_set_poscenter_haoneway_warm_lr0.001_ep20_seed1",
+      "flops_run": "inject_fft_yieldsat_raw_tiny_random_L3_k0.167_native_set_poscenter_haoneway_lr0.001_ep20",
+      "hours": 0.84
+    },
+    {
+      "bucket": "value_predictor",
+      "k": 0.167,
+      "test_metric": 1.3093,
+      "gmacs": 59.824,
+      "lr_ps": 16,
+      "lr_ts": 64,
+      "hr_ps": 4,
+      "inject_layer": "3",
+      "select_unit": "slot",
+      "run": "inject_fft_yieldsat_raw_tiny_random_L3_k0.167_native_set_joint1-0.3a0.5_jfL_jtdrop_gfix_poscenter_haoneway_warm_lr0.001_ep20_seed1",
+      "flops_run": "inject_fft_yieldsat_raw_tiny_random_L3_k0.167_native_set_joint1-0.3a0.5_jfL_jtdrop_gfix_poscenter_haoneway_warm_lr0.001_ep20",
+      "hours": 1.03
+    }
+  ]
+}

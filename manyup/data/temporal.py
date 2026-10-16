@@ -197,6 +197,70 @@ class Pool(TemporalPolicy):
             aux={k: torch.stack(v) for k, v in aux.items()})
 
 
+class PoolYears(Pool):
+    """Pool onto the calendar months of the `years` years that END with the year of the
+    sample's last frame: a fixed 12 * years grid per sample, anchored per sample (YieldSAT: a
+    field's frames run seeding -> harvest, so 2 years ending with the harvest year hold the
+    whole season in the same 24 slots the ML-ready release uses). Months without a valid
+    frame stay as invalid slots, as with Pool's window."""
+
+    def __init__(self, years: int, reducer: str | None = None):
+        super().__init__("month", reducer)
+        self.years = years
+        self._win = f"@last{years}y"
+        self.key = f"month-{reducer or 'specreducer'}{self._win}"
+
+    def _months(self, md):
+        last = md.time.dates()[-1][0].year
+        return [month_bounds(y, m) for y in range(last - self.years + 1, last + 1)
+                for m in range(1, 13)]
+
+
+class GroupSteps(TemporalPolicy):
+    """Reduce every `size` consecutive steps of the current axis into one (e.g. months into
+    seasons, after a fixed-window Pool; GEOID's pre/post pair into one step).
+
+    The axis must split evenly, so every sample of a fixed grid gets the same groups. A group
+    covers [first start, last end]; its sources are all members' sources. Invalid frames and
+    pixels never enter a reduction, and a group without any valid frame is invalid."""
+
+    def __init__(self, size: int, reducer: str = "mean"):
+        if size < 1:
+            raise ValueError("GroupSteps needs size >= 1")
+        if reducer not in REDUCERS:
+            raise ValueError(f"reducer {reducer!r} not in {REDUCERS}")
+        self.size, self.reducer = size, reducer
+        self.key = f"group{size}-{reducer}"
+
+    def _apply(self, md, spec):
+        if md.time is None:
+            raise ValueError(f"{spec.name}: GroupSteps needs a time axis")
+        T, C, H, W = md.data.shape
+        if T % self.size:
+            raise ValueError(f"{spec.name}: {T} steps do not split into groups of {self.size}")
+        valid = md.frame_valid.view(T, 1, 1).expand(T, H, W)
+        if md.pixel_valid is not None:
+            valid = valid & md.pixel_valid
+        data, pv, aux = [], [], {k: [] for k in md.aux}
+        groups = [list(range(g, g + self.size)) for g in range(0, T, self.size)]
+        for g in groups:
+            v = valid[g]
+            data.append(_reduce(md.data[g].float(), v, self.reducer))
+            for k in aux:
+                aux[k].append(_reduce(md.aux[k][g].float().unsqueeze(1), v, self.reducer)[0])
+            pv.append(v.any(0))
+        src = (None if md.time.sources is None else
+               [[d for i in g for d in md.time.sources[i]] for g in groups])
+        return replace(
+            md, data=torch.stack(data),
+            time=TimeAxis(torch.stack([md.time.start[g[0]] for g in groups]),
+                          torch.stack([md.time.end[g[-1]] for g in groups]),
+                          md.time.precision, src),
+            frame_valid=torch.stack([md.frame_valid[g].any() for g in groups]),
+            pixel_valid=None if md.pixel_valid is None else torch.stack(pv),
+            aux={k: torch.stack(v) for k, v in aux.items()})
+
+
 def _reduce(x: torch.Tensor, valid: torch.Tensor, reducer: str) -> torch.Tensor:
     """Reduce (n, C, H, W) over n using only entries valid in (n, H, W); 0 where none are."""
     n, C, H, W = x.shape

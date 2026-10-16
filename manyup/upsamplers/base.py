@@ -12,7 +12,10 @@ declared, not implied by its class:
                  pooled by spec.time_pool -> one output step (T = 1).
                  "nearest" | "within_range": every feature step is upsampled with guidance
                  picked BY DATE for that step (manyup.data.guidance.MATCHINGS); T is kept.
-                 Pooled iff the spec has a time_pool.
+                 Pooled iff the spec has a time_pool. A step that some guidance modality
+                 has no frame for (guidance_present) is NOT upsampled: its output tokens are
+                 zero and its frame_valid False, so heads and losses skip it rather than
+                 read a step guided by another date's image.
   side_features  extra FeatureSeries the upsampler reads, by role name (timAnyUp's
                  high-res low-context arm "hr"); passed to forward as keyword arguments.
   output_space   "input": outputs are (convex) combinations of the input features, so a
@@ -33,7 +36,8 @@ from torch import nn
 from manyup.data.dataset import MTMMDataset
 from manyup.data.features import FeatureSeries, time_mean
 from manyup.data.geometry import Geometry
-from manyup.data.guidance import MATCHINGS, GuidanceSpec, build_guidance_batch
+from manyup.data.guidance import (MATCHINGS, GuidanceSpec, build_guidance_batch,
+                                  guidance_present)
 from manyup.data.sample import MTMMBatch
 
 TIME_MATCHING = ("pooled",) + MATCHINGS
@@ -112,15 +116,28 @@ class FeatureUpsampler(nn.Module, ABC):
         return build_guidance_batch(guidance, self.guidance, match=self.time_matching,
                                     f_start=lr.t_start, f_end=lr.t_end)
 
-    def output(self, lr: FeatureSeries, tokens: torch.Tensor,
-               target: list[Geometry]) -> FeatureSeries:
-        """Wrap (B, T, H, W, D) outputs; T = 1 means the steps of lr were pooled."""
+    def guidance_present(self, guidance: MTMMBatch | None, lr: FeatureSeries) -> torch.Tensor:
+        """(B, T') bool: the output steps that have guidance of their own dates (T' = 1 when
+        pooled: pooled guidance is a reduction over whatever frames have data)."""
+        B, T = lr.tokens.shape[:2]
+        if self.time_matching == "pooled":
+            return torch.ones(B, 1, dtype=torch.bool)
+        if guidance is None:
+            return torch.ones(B, T, dtype=torch.bool)
+        return guidance_present(guidance, self.guidance, lr.t_start, lr.t_end)
+
+    def output(self, lr: FeatureSeries, tokens: torch.Tensor, target: list[Geometry],
+               present: torch.Tensor | None = None) -> FeatureSeries:
+        """Wrap (B, T, H, W, D) outputs; T = 1 means the steps of lr were pooled. `present`
+        (B, T) marks the steps that were upsampled; the rest become invalid."""
         t_start, t_end, valid = lr.t_start, lr.t_end, lr.frame_valid
         if tokens.shape[1] == 1 and lr.tokens.shape[1] != 1:
             big = torch.iinfo(t_start.dtype).max
             t_start = t_start.masked_fill(~valid, big).amin(1, keepdim=True)
             t_end = t_end.masked_fill(~valid, -1).amax(1, keepdim=True)
             valid = valid.any(1, keepdim=True)
+        if present is not None:
+            valid = valid & present.to(valid.device)
         prov = {**lr.provenance, "upsampler": self.key, "space": self.output_space,
                 "time_matching": self.time_matching}
         return FeatureSeries(ids=list(lr.ids), tokens=tokens, t_start=t_start, t_end=t_end,
@@ -130,7 +147,13 @@ class FeatureUpsampler(nn.Module, ABC):
 
 class FrameUpsampler(FeatureUpsampler):
     """Upsamples every (feature map, guidance image) pair on its own; time is folded into
-    the batch. Subclasses implement upsample_frames."""
+    the batch. Subclasses implement upsample_frames.
+
+    Only the steps with guidance of their own dates reach upsample_frames; during that call
+    `_frames` is the (B * T,) bool selection, for subclasses that keep per-frame state in
+    batch order (JBU's kernel cache)."""
+
+    _frames: torch.Tensor | None = None
 
     @abstractmethod
     def upsample_frames(self, feats: torch.Tensor, guide: torch.Tensor | None,
@@ -144,12 +167,26 @@ class FrameUpsampler(FeatureUpsampler):
         if self.time_matching == "pooled":
             tok = time_mean(tok.float(), lr.frame_valid.to(tok.device))[:, None]
         B, T, h, w, D = tok.shape
+        present = self.guidance_present(guidance, lr)                  # (B, T)
+        sel = present.flatten().to(tok.device)
         g = None
         if guidance is not None:
             g = self.build_guidance(guidance, lr).to(tok.device)
-            g = g.reshape(B * T, *g.shape[-3:])          # pooled (B,C,H,W) has T == 1
+            g = g.reshape(B * T, *g.shape[-3:])[sel]     # pooled (B,C,H,W) has T == 1
         # contiguous: a channels-last view sends convs down another kernel (rounding differs)
         feats = tok.permute(0, 1, 4, 2, 3).reshape(B * T, D, h, w).contiguous()
-        out = self.upsample_frames(feats, g, size)                    # (B*T, D', H, W)
+        if bool(sel.all()):
+            out = self._upsample_selected(feats, g, size, None)       # (B*T, D', H, W)
+        else:
+            part = self._upsample_selected(feats[sel], g, size, sel)
+            out = part.new_zeros(B * T, *part.shape[1:])
+            out[sel] = part
         out = out.reshape(B, T, *out.shape[1:]).permute(0, 1, 3, 4, 2)
-        return self.output(lr, out, target)
+        return self.output(lr, out, target, present)
+
+    def _upsample_selected(self, feats, g, size, sel):
+        self._frames = sel
+        try:
+            return self.upsample_frames(feats, g, size)
+        finally:
+            self._frames = None

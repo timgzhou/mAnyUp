@@ -6,6 +6,8 @@ Roles (cache configs, all tiny/base alike):
     lr      series ps16 tile64        the input every upsampler refines
     hr      per_timestep ps4 tile4    timAnyUp's high-res, low-context side feature
     target  series ps4 tile64         what mAnyUp / timAnyUp are trained to predict
+    lr_season  series ps16 tile64, steps grouped into seasons (task.season, GroupSteps):
+            seasonal timAnyUp's input (manyup/seasonal.py)
 Every cache of a task holds the same samples in the same order as task.dataset (checked).
 """
 from __future__ import annotations
@@ -24,13 +26,15 @@ from manyup.data.features import FeatureSeries
 from manyup.data.geometry import Geometry
 from manyup.data.sample import MTMMBatch
 
-ROLES = {"lr": ("series", 16, 64), "hr": ("per_timestep", 4, 4), "target": ("series", 4, 64)}
+ROLES = {"lr": ("series", 16, 64), "hr": ("per_timestep", 4, 4), "target": ("series", 4, 64),
+         "lr_season": ("series", 16, 64)}
 OUT_GRID = 16          # upsamplers output the ps4 token grid of a 64 px sample
 
 
 def role_cache(task: Task, model_size: str, role: str) -> str:
     mode, ps, ts = ROLES[role]
-    return cache_name(task.name, model_size, mode, ps, ts, "per_timestep")
+    return cache_name(task.name, model_size, mode, ps, ts, "per_timestep",
+                      task.season if role == "lr_season" else 0)
 
 
 @dataclass

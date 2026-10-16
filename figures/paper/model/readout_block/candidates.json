@@ -1,0 +1,77 @@
+[
+ {
+  "tile": "40091@r0c0",
+  "block": [
+   3,
+   3
+  ],
+  "file": "cand01_40091_r0c0_b33.png",
+  "score": 2.847,
+  "classes": 3,
+  "cells_without_crops": 4,
+  "crops": 33,
+  "acc_season": 0.609375,
+  "acc_all": 0.921875,
+  "acc_cells_without_crops": 1.0
+ },
+ {
+  "tile": "40091@r64c0",
+  "block": [
+   0,
+   3
+  ],
+  "file": "cand02_40091_r64c0_b03.png",
+  "score": 1.982,
+  "classes": 2,
+  "cells_without_crops": 9,
+  "crops": 23,
+  "acc_season": 0.921875,
+  "acc_all": 0.9609375,
+  "acc_cells_without_crops": 0.9861111044883728
+ },
+ {
+  "tile": "40091@r0c64",
+  "block": [
+   1,
+   1
+  ],
+  "file": "cand03_40091_r0c64_b11.png",
+  "score": 1.888,
+  "classes": 2,
+  "cells_without_crops": 2,
+  "crops": 38,
+  "acc_season": 0.9765625,
+  "acc_all": 0.98046875,
+  "acc_cells_without_crops": 1.0
+ },
+ {
+  "tile": "40091@r0c64",
+  "block": [
+   3,
+   0
+  ],
+  "file": "cand04_40091_r0c64_b30.png",
+  "score": 1.841,
+  "classes": 2,
+  "cells_without_crops": 2,
+  "crops": 71,
+  "acc_season": 0.8828125,
+  "acc_all": 0.90234375,
+  "acc_cells_without_crops": 1.0
+ },
+ {
+  "tile": "40091@r64c64",
+  "block": [
+   1,
+   2
+  ],
+  "file": "cand05_40091_r64c64_b12.png",
+  "score": 1.731,
+  "classes": 3,
+  "cells_without_crops": 5,
+  "crops": 34,
+  "acc_season": 0.64453125,
+  "acc_all": 0.6171875,
+  "acc_cells_without_crops": 0.637499988079071
+ }
+]

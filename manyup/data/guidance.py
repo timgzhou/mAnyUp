@@ -17,6 +17,11 @@ tests/test_guidance.py against the legacy prep).
 build_guidance works on one sample. build_guidance_batch works on an MTMMBatch and, for
 per-timestep guidance, picks each modality's frames for given feature steps BY DATE
 (MATCHINGS): modalities keep their own time axes, so S2 and S1 frames need not line up.
+
+A feature step is only guided by frames of its OWN dates: guidance_present says, per step,
+whether every guidance modality has a valid frame overlapping it. Upsamplers do not upsample
+a step where it is False (a month with S1 but no S2, say): the matchings below would fill it
+from a neighbouring date, i.e. guide one month with another month's image.
 """
 from __future__ import annotations
 
@@ -41,6 +46,8 @@ NORMS = ("minmax", "percentile")
 # How a feature step [t_start, t_end] picks a modality's guidance frame(s):
 #   nearest       the valid frame whose midpoint is closest (ties: the earlier frame)
 #   within_range  the mean of the valid frames overlapping the step; nearest if there is none
+# Both fall back to OTHER dates when a step has no frame of its own; guidance_present marks
+# those steps, and the upsamplers skip them.
 MATCHINGS = ("nearest", "within_range")
 
 
@@ -165,6 +172,26 @@ def match_frames(mb: ModalityBatch, f_start: torch.Tensor, f_end: torch.Tensor,
         n = overlap.sum(-1, keepdim=True)
         w = torch.where(n > 0, overlap / n.clamp(min=1), w)
     return w
+
+
+def guidance_present(batch: MTMMBatch, spec: GuidanceSpec, f_start: torch.Tensor,
+                     f_end: torch.Tensor) -> torch.Tensor:
+    """(B, Tf) bool: every guidance modality has a valid frame overlapping the feature step
+    [f_start, f_end] (days). A static modality (no time axis) is always present."""
+    ok = torch.ones(f_start.shape, dtype=torch.bool)
+    f_start, f_end = f_start.cpu(), f_end.cpu()
+    for mod in spec.bands:
+        if mod not in batch.modalities:
+            raise ValueError(f"guidance needs modality {mod!r}; batch has "
+                             f"{sorted(batch.modalities)}")
+        mb = batch.modalities[mod]
+        if mb.t_start is None:
+            continue
+        overlap = ((mb.t_start[:, None, :] <= f_end[:, :, None])
+                   & (mb.t_end[:, None, :] >= f_start[:, :, None])
+                   & mb.frame_valid[:, None, :])
+        ok &= overlap.any(-1)
+    return ok
 
 
 def build_guidance_batch(batch: MTMMBatch, spec: GuidanceSpec, *, match: str | None = None,

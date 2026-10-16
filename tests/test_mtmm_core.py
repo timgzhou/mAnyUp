@@ -5,9 +5,9 @@ import datetime as dt
 import pytest
 import torch
 
-from manyup.data import (All, DatasetSpec, Every, Geometry, Indices, MaxFrames, ModalityData,
-                         ModalitySpec, MTMMDataset, MTMMSample, Pool, TargetSpec, Tiling,
-                         TimeAxis, mtmm_collate)
+from manyup.data import (All, DatasetSpec, Every, Geometry, GroupSteps, Indices, MaxFrames,
+                         ModalityData, ModalitySpec, MTMMDataset, MTMMSample, Pool, TargetSpec,
+                         Tiling, TimeAxis, mtmm_collate)
 from manyup.data.time import to_days
 from tests.mtmm_conformance import check_dataset
 
@@ -120,6 +120,21 @@ def test_pool_ignores_invalid_frames_and_pixels():
     assert torch.allclose(out.data[0, :, 1:, 1:], md.data[0, :, 1:, 1:])
     assert (out.data[0, :, 0, 0] == 0).all() and not out.pixel_valid[0, 0, 0]
     assert out.time.sources[0] == _days("2020-01-03")
+
+
+def test_group_steps_pools_months_into_seasons():
+    months = Pool("month", "mean", window=WINDOW)
+    ds = ToyDataset("train", {"S2": months + GroupSteps(2)}, None)
+    s2 = ds[0].modalities["S2"]           # months Jan (2 frames), Feb (none), Mar, Apr (none)
+    m = ToyDataset("train", {"S2": months}, None)[0].modalities["S2"]
+    assert s2.num_frames == 2 and s2.frame_valid.tolist() == [True, True]
+    assert s2.time.start.tolist() == [m.time.start[0], m.time.start[2]]
+    assert s2.time.end.tolist() == [m.time.end[1], m.time.end[3]]
+    assert torch.allclose(s2.data[0], m.data[0])  # the empty month never enters the mean
+    assert s2.time.sources[0] == m.time.sources[0] + m.time.sources[1]
+    assert s2.history[-1] == "group2-mean"
+    with pytest.raises(ValueError, match="do not split"):
+        ToyDataset("train", {"S2": months + GroupSteps(3)}, None)[0]
 
 
 def test_median_is_an_observed_value():

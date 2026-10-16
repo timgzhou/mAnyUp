@@ -1,0 +1,4 @@
+job,run,task,px,inject_layer,seed,n_max,n_test,test_crops_per_sample,gmacs,tokens_per_block,test_primary,pick,grid_mode,coverage,coverage_space
+6164934,inject_fft_yieldsat_raw_tiny_grid_L0_k0.167_native_set_cpx8_free_n384_vary_shift16_poscenter_lrall_lrps8_lr0.001_ep50,yieldsat_raw,8,0,0,384,384,110.1,22.779,1680.0,1.37267,grid,stagger,0.25,0.25
+6164975,inject_fft_yieldsat_raw_tiny_grid_L0_k0.167_native_set_free_n384_vary_shift16_poscenter_lrall_lrps4_lr0.001_ep50,yieldsat_raw,4,0,0,384,384,110.1,188.034,5712.0,1.34315,grid,stagger,0.0625,0.0625
+6164991,inject_fft_yieldsat_raw_tiny_grid_L0_k0.167_native_set_free_n1536_vary_shift8_poscenter_lrall_lrps4_lr0.001_ep50,yieldsat_raw,4,0,0,1536,1536,440.4,253.553,6720.0,1.36686,grid,stagger,0.25,0.25

@@ -1,0 +1,21 @@
+{
+ "tiles": [
+  "40091@r0c0",
+  "40091@r64c0",
+  "40091@r0c64",
+  "40091@r64c64"
+ ],
+ "cells": 1024,
+ "without_crops": {
+  "cells": 28,
+  "mean_weight_on_season_tokens": 1.0,
+  "px_acc_season_only": 0.9040178656578064,
+  "px_acc_all_tokens": 0.9040178656578064
+ },
+ "with_crops": {
+  "cells": 996,
+  "mean_weight_on_season_tokens": 0.02669554203748703,
+  "px_acc_season_only": 0.6754058003425598,
+  "px_acc_all_tokens": 0.7988861203193665
+ }
+}

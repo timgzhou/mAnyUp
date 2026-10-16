@@ -1,0 +1,92 @@
+{
+ "pastis": {
+  "patches": 2433,
+  "steps": {
+   "S2": [
+    38,
+    46,
+    61
+   ],
+   "S1A": [
+    65,
+    71,
+    71
+   ],
+   "S1D": [
+    69,
+    70,
+    70
+   ]
+  },
+  "tiles": {
+   "train": 5820,
+   "val": 1928,
+   "test": 1984
+  }
+ },
+ "biomassters": {
+  "chips": {
+   "train": 4002,
+   "val": 1738,
+   "test": 2773
+  },
+  "steps": {
+   "S1": [
+    12,
+    12,
+    12
+   ],
+   "S2": [
+    5,
+    11,
+    12
+   ]
+  },
+  "chips_counted": 853,
+  "tiles": {
+   "train": 64032,
+   "val": 27808,
+   "test": 44368
+  }
+ },
+ "geoid": {
+  "chips": {
+   "train": 211725,
+   "val": 32259,
+   "test": 46048
+  },
+  "tiles_counted": 2134,
+  "steps": {
+   "S1_year": [
+    20,
+    58,
+    124
+   ],
+   "S1_window": [
+    7,
+    29,
+    64
+   ]
+  }
+ },
+ "yieldsat": {
+  "fields": 2173,
+  "steps": {
+   "S2_raw": [
+    11,
+    41,
+    153
+   ],
+   "S2_ml24_filled": [
+    3,
+    7,
+    13
+   ]
+  },
+  "tiles": {
+   "train": 8703,
+   "val": 1088,
+   "test": 1081
+  }
+ }
+}

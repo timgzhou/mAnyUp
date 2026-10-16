@@ -1,0 +1,11 @@
+job,run,task,model_size,upsampler,key,time_matching,space,ckpt,probe,lr,head_norm,epochs,batch_size,best_epoch,hours,test_rmse,test_mae,test_r2,test_primary
+5679411,up_biomassters_tiny_upa_lp_bn_ep10_shared,biomassters,tiny,upa,upa[S23-mean-percentile],pooled,input,,up_biomassters_tiny_bilinear_lp_bn_ep10,0.1,True,10,32,,0.0,53.12549,36.00034,0.47484,53.12549
+5679411,up_biomassters_tiny_upa_lp_bn_ep10_shared,biomassters,tiny,upa,upa[S23-mean-percentile],pooled,input,,up_biomassters_tiny_bilinear_lp_bn_ep10,0.03,True,10,32,,0.0,52.37949,34.89801,0.48948,52.37949
+5679411,up_biomassters_tiny_upa_lp_bn_ep10_shared,biomassters,tiny,upa,upa[S23-mean-percentile],pooled,input,,up_biomassters_tiny_bilinear_lp_bn_ep10,0.01,True,10,32,,0.0,52.13154,34.26894,0.4943,52.13154
+5679411,up_biomassters_tiny_upa_lp_bn_ep10_shared,biomassters,tiny,upa,upa[S23-mean-percentile],pooled,input,,up_biomassters_tiny_bilinear_lp_bn_ep10,0.005,True,10,32,,0.0,52.14855,34.11827,0.49397,52.14855
+5679411,up_biomassters_tiny_upa_lp_bn_ep10_shared,biomassters,tiny,upa,upa[S23-mean-percentile],pooled,input,,up_biomassters_tiny_bilinear_lp_bn_ep10,0.001,True,10,32,,0.0,52.04829,34.14548,0.49592,52.04829
+5679420,up_biomassters_tiny_upma_lp_bn_ep10_shared,biomassters,tiny,upma,upma[S210+S14-mean-percentile],pooled,input,,up_biomassters_tiny_bilinear_lp_bn_ep10,0.1,True,10,32,,0.0,52.84094,35.96911,0.48045,52.84094
+5679420,up_biomassters_tiny_upma_lp_bn_ep10_shared,biomassters,tiny,upma,upma[S210+S14-mean-percentile],pooled,input,,up_biomassters_tiny_bilinear_lp_bn_ep10,0.03,True,10,32,,0.0,51.97257,34.75005,0.49738,51.97257
+5679420,up_biomassters_tiny_upma_lp_bn_ep10_shared,biomassters,tiny,upma,upma[S210+S14-mean-percentile],pooled,input,,up_biomassters_tiny_bilinear_lp_bn_ep10,0.01,True,10,32,,0.0,51.65845,33.86167,0.50344,51.65845
+5679420,up_biomassters_tiny_upma_lp_bn_ep10_shared,biomassters,tiny,upma,upma[S210+S14-mean-percentile],pooled,input,,up_biomassters_tiny_bilinear_lp_bn_ep10,0.005,True,10,32,,0.0,51.62317,33.72476,0.50412,51.62317
+5679420,up_biomassters_tiny_upma_lp_bn_ep10_shared,biomassters,tiny,upma,upma[S210+S14-mean-percentile],pooled,input,,up_biomassters_tiny_bilinear_lp_bn_ep10,0.001,True,10,32,,0.0,51.54375,33.75951,0.50564,51.54375

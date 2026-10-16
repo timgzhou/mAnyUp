@@ -38,3 +38,7 @@ wandb
 *.mp4
 /dataset_visualization/
 !results/**/*.csv
+cache
+.vscode
+*.pdf
+*.png

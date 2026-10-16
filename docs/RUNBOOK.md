@@ -225,6 +225,47 @@ python -u -m exp.olmoearth.train ... --mode lp --from_cache per_timestep
 
 ---
 
+## YieldSAT: crop yield, ML-ready 24 steps and the full time series
+
+Code: `manyup/data/datasets/yieldsat.py` (both views), `exp/yieldsat/prepare.py` (store),
+`exp/common/tasks.py` (`yieldsat_ml24`, `yieldsat_raw`), `YieldMeter` in `exp/common/metrics.py` ·
+Launchers: `scripts/slurm/yieldsat/{prepare,inject}.sh`, `scripts/slurm/sweep.sh` · Tests:
+`tests/test_yieldsat.py` · Results: `results/yieldsat_ml24/olmoearth.csv`,
+`results/yieldsat_raw/inject_fft.csv`
+
+YieldSAT (Miranda et al., CVPR 2026, <https://yieldsat.github.io>): 2,173 field-seasons, 4
+countries x 4 crops, 10 m harvester yield (t/ha) + every Sentinel-2 L2A acquisition around the
+season. One pooled model for all of them; metrics per country x crop at pixel and field level
+(a field = the mean over its labelled pixels, as in the paper) plus pooled; primary = pooled
+pixel RMSE. Split: the paper's field-grouped 10-fold CV made fixed (md5 order within each
+country x crop): test fold 0 (221 fields / 1,081 tiles), val fold 1 (220 / 1,088), train the
+rest (1,732 / 8,703). Samples: 64 px tiles of the field boxes.
+
+| task | what OlmoEarth sees | runs |
+|---|---|---|
+| yieldsat_ml24 | the ML-ready release's 24 month slots AS-IS: a value only at labelled clear pixels | fixed psN-tileM baselines (sweep.sh) |
+| yieldsat_raw | every acquisition (pixel_valid = SCL 4/5); months = 24 clear-pixel monthly means | mixed resolution (season -> month -> date) |
+
+The ml24 view reads its values from the packed raw acquisitions; `prepare verify` checks it
+equals the NetCDF at every labelled pixel (92.1M pixel-steps, 0 mismatches, 2026-09-30).
+
+```shell
+# data: Both.zip (23.6 GB; link needs a DFKI login -> download in the browser, or "Copy as
+# cURL" the download request and fetch with parallel -r ranges), then
+cd data/YieldSAT && unzip Both.zip && unzip Preprocessed.zip -d preprocessed-24-ts \
+    && unzip Raw.zip -d original-preprocessed && cd -
+# store: index (40 s) -> pack (2.5 min, 34.5 GB) -> verify (3 min); CPU only, resumable
+sbatch scripts/slurm/yieldsat/prepare.sh
+python -m pytest -q tests/test_yieldsat.py
+# fixed baselines on the ML-ready 24 steps (base; 3 configs x 2 temporal modes x LP/FFT)
+MAX_JOB_H=3 bash scripts/slurm/sweep.sh yieldsat_ml24 extract
+MAX_JOB_H=3 bash scripts/slurm/sweep.sh yieldsat_ml24 olmoearth
+# mixed resolution on the full series (tiny): references + season/month/date arms
+bash scripts/slurm/yieldsat/inject.sh             # DRY=1 prints the 40 sbatch lines
+```
+
+---
+
 ## UTAE baseline (PASTIS)
 
 Code: `exp/utae/` (runner, early/late fusion) · Upstream model: `third_party/utae/` ·

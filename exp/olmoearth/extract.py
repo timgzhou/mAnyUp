@@ -11,7 +11,11 @@
                       steps, or post - pre), 1/T the size. The pa2px head is linear AFTER the
                       reduction, so an LP on it equals the LP on per-timestep features.
 
-name = oe_<task>_<model>_<temporal_mode>_ps<p>ts<t>[_reduced]
+--group N             GroupSteps(N) after the task's policies (months -> seasons of N; GEOID's
+                      pre/post pair with N=2), each step timestamped at its middle date.
+                      Cache suffix _g<N>.
+
+name = oe_<task>_<model>_<temporal_mode>_ps<p>ts<t>[_g<N>][_reduced]
 
     python -u -m exp.olmoearth.extract --task pastis --temporal_mode series --patch_size 4 \
         --tile_size 64 --store per_timestep
@@ -30,16 +34,23 @@ from exp.common.config import MODEL_SIZE_TO_ID  # noqa: E402
 from exp.common.heads import time_mean  # noqa: E402
 from exp.common.paths import FEATURES  # noqa: E402
 from exp.common.tasks import SPLITS, TASKS, Task  # noqa: E402
-from manyup.data import mtmm_collate  # noqa: E402
+from manyup.data import GroupSteps, mtmm_collate  # noqa: E402
 from manyup.encoders.olmoearth import OlmoEarthEncoder, OlmoEarthInput  # noqa: E402
 
 STORES = ("per_timestep", "reduced")
 
 
 def cache_name(task: str, model_size: str, temporal_mode: str, ps: int, ts: int,
-               store: str) -> str:
+               store: str, group: int = 0) -> str:
     return (f"oe_{task}_{model_size}_{temporal_mode}_ps{ps}ts{ts}"
-            + ("_reduced" if store == "reduced" else ""))
+            + (f"_g{group}" if group else "") + ("_reduced" if store == "reduced" else ""))
+
+
+def dataset(task: Task, split: str, group: int = 0):
+    """The data a cache is extracted from: the task's own, or its steps grouped."""
+    if not group:
+        return task.dataset(split)
+    return task.open(split, {m: p + GroupSteps(group) for m, p in task.policies().items()})
 
 
 def reduce(tokens: torch.Tensor, frame_valid: torch.Tensor, reduction: str) -> torch.Tensor:
@@ -54,7 +65,7 @@ def target_dtype(task: Task):
 
 
 def extract_split(encoder, task, split, out: Path, a) -> None:
-    ds = task.dataset(split)
+    ds = dataset(task, split, a.group)
     d = out / split
     d.mkdir(parents=True, exist_ok=True)
     n = min(a.limit, len(ds)) if a.limit else len(ds)
@@ -109,16 +120,20 @@ def main():
     ap.add_argument("--batch_size", type=int, default=16)
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--limit", type=int, default=0, help=">0: first N samples per split")
+    ap.add_argument("--group", type=int, default=0,
+                    help=">0: encode every N consecutive steps pooled into one (seasons)")
     ap.add_argument("--out_root", default=str(FEATURES))
     a = ap.parse_args()
 
     task = TASKS[a.task]
-    name = cache_name(a.task, a.model_size, a.temporal_mode, a.patch_size, a.tile_size, a.store)
+    name = cache_name(a.task, a.model_size, a.temporal_mode, a.patch_size, a.tile_size, a.store,
+                      a.group)
     out = Path(a.out_root) / name
-    inputs = OlmoEarthInput(task.olmoearth.modalities, task.olmoearth.impute)
+    inputs = OlmoEarthInput(task.olmoearth.modalities, task.olmoearth.impute,
+                            timestamp="mid" if a.group else "start")
     encoder = OlmoEarthEncoder(MODEL_SIZE_TO_ID[a.model_size], inputs, a.patch_size,
                                a.tile_size, name=a.model_size).cuda().eval()
-    ds = task.dataset("train")
+    ds = dataset(task, "train", a.group)
     encoder.check(ds, a.temporal_mode)
     meta = {"task": a.task, "dataset_key": ds.key, "model_size": a.model_size,
             "model_id": MODEL_SIZE_TO_ID[a.model_size], "patch_size": a.patch_size,
@@ -127,6 +142,8 @@ def main():
             "modalities": task.olmoearth.modalities, "impute": task.olmoearth.impute,
             "attention": encoder.attention, "embed_dim": encoder.encoder.embedding_size,
             "target": task.kind, "dtype": "float16"}
+    if a.group:                     # only then, so existing caches' meta still matches
+        meta.update(group=a.group, timestamp="mid")
     out.mkdir(parents=True, exist_ok=True)
     if (out / "meta.json").exists():
         have = json.loads((out / "meta.json").read_text())

@@ -120,3 +120,13 @@ def test_sdpa_refuses_batched_missing_tokens_and_matches_flash_otherwise(E):
     a = sdpa.encode(complete, "series").tokens.float()
     b = _enc(E, {"S2": "sentinel2_l2a", "S1A": "sentinel1"}).encode(complete, "series").tokens.float()
     assert ((a - b).norm() / a.norm()) < 0.01          # kernel numerics only (~0.3%)
+
+
+def test_mid_timestamp_is_the_middle_of_each_step(E):
+    b = mtmm_collate([PastisDataset("val", monthly())[0]])
+    m = {"S2": "sentinel2_l2a", "S1A": "sentinel1"}
+    start, _ = E.OlmoEarthInput(m, {"S2": E.LEGACY_S2_IMPUTE}).to_olmoearth(b)
+    mid, _ = E.OlmoEarthInput(m, {"S2": E.LEGACY_S2_IMPUTE}, timestamp="mid").to_olmoearth(b)
+    assert (start.timestamps[..., 0] == 1).all()                       # months start on the 1st
+    assert ((mid.timestamps[..., 0] >= 14) & (mid.timestamps[..., 0] <= 16)).all()
+    assert torch.equal(mid.timestamps[..., 1:], start.timestamps[..., 1:])   # same month, year

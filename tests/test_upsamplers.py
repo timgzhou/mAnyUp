@@ -11,7 +11,8 @@ import torch.nn.functional as F
 from manyup.data.features import FeatureSeries
 from manyup.data.geometry import Geometry
 from manyup.data.guidance import (LEGACY_S2_13, GuidanceSpec, build_guidance,
-                                  build_guidance_batch, match_frames, percentile_per_image)
+                                  build_guidance_batch, guidance_present, match_frames,
+                                  percentile_per_image)
 from manyup.data.sample import ModalityBatch, ModalityData, MTMMBatch
 from manyup.data.time import TimeAxis
 from manyup.upsamplers import JBU, Bicubic, Bilinear, MAnyUp, TimAnyUp
@@ -63,6 +64,28 @@ def test_within_range_averages_overlapping_frames_else_nearest():
     w = match_frames(mb, f0, f1, "within_range")
     assert torch.allclose(w[0, 0], torch.tensor([0.5, 0.5, 0], dtype=w.dtype))
     assert w[0, 1].tolist() == [0, 0, 1]                           # none inside: nearest
+
+
+def _s2_s1(T=3, missing_s2=1, B=1, size=16):
+    """Aligned monthly S2 + S1 where S2 has no frame at step `missing_s2` (S1 still does)."""
+    days = [[30 * t for t in range(T)]] * B
+    ends = [[30 * t + 29 for t in range(T)]] * B
+    s2_valid = [[t != missing_s2 for t in range(T)]] * B
+    return _batch({"S2": _mb(torch.rand(B, T, 10, size, size) * 1e4, days, s2_valid,
+                             t_end=ends),
+                   "S1": _mb(torch.rand(B, T, 2, size, size), days, bands=("VV", "VH"),
+                             t_end=ends)}), days, ends
+
+
+def test_guidance_present_needs_every_modality_on_the_steps_own_dates():
+    g, days, ends = _s2_s1()
+    both = GuidanceSpec({"S2": ("B04",), "S1": ("VV",)}, None)
+    f0, f1 = torch.tensor(days), torch.tensor(ends)
+    assert guidance_present(g, both, f0, f1).tolist() == [[True, False, True]]
+    assert guidance_present(g, GuidanceSpec({"S1": ("VV",)}, None), f0, f1).all()
+    # the matchings would fill the step from a neighbour -- exactly what presence rules out
+    w = match_frames(g.modalities["S2"], f0, f1, "nearest")
+    assert w[0, 1].argmax() != 1
 
 
 def test_batched_guidance_equals_per_sample_guidance():
@@ -292,6 +315,46 @@ def test_two_stage_timanyup_starts_as_the_frozen_manyup_t(tmp_path):
     assert torch.allclose(x, y, atol=1e-5)
 
 
+@torch.no_grad()
+def test_steps_without_own_guidance_are_not_upsampled():
+    from manyup.mAnyUp import mAnyUp
+    torch.manual_seed(0)
+    g, days, ends = _s2_s1()
+    spec = GuidanceSpec({"S2": ("B04", "B03"), "S1": ("VV",)}, None)
+    up = MAnyUp(mAnyUp(input_dim=3, qk_dim=16, feat_dim=8, transform_depth=0,
+                       window_ratio=1.0, num_heads=4), spec, output_space="input").eval()
+    lr = _series(torch.randn(1, 3, 4, 4, 8), days)
+    lr.t_end = torch.tensor(ends)
+    out = up(lr, g, [Geometry.unknown((16, 16))])
+    assert out.frame_valid.tolist() == [[True, False, True]]
+    assert not out.tokens[:, 1].any()
+    # the other steps are what upsampling them on their own gives
+    guide = up.build_guidance(g, lr)
+    for t in (0, 2):
+        ref = up.model(guide[:, t], lr.tokens[:, t].permute(0, 3, 1, 2), (16, 16))
+        assert torch.allclose(out.tokens[:, t].permute(0, 3, 1, 2), ref, atol=1e-5)
+
+
+@torch.no_grad()
+def test_timanyup_skips_and_never_selects_steps_without_own_guidance():
+    torch.manual_seed(0)
+    g, days, ends = _s2_s1(T=12, missing_s2=4)
+    lr = _series(torch.randn(1, 12, 4, 4, 8), days)
+    hr = _series(torch.randn(1, 12, 16, 16, 8), days)
+    lr.t_end = hr.t_end = torch.tensor(ends)
+    up = TimAnyUp(_tiny_timanyup(8), GuidanceSpec({"S2": ("B04",)}, None), k=3000).eval()
+    out = up(lr, g, [Geometry.unknown((16, 16))], hr=hr)
+    assert out.frame_valid[0].tolist() == [t != 4 for t in range(12)]
+    assert not out.tokens[:, 4].any()
+
+
+def test_rank_normalize_ranks_among_valid_locations_only():
+    from manyup.timAnyUp import rank_normalize
+    err = torch.tensor([[[[5.0, 1.0, 3.0, 9.0]]]])
+    valid = torch.tensor([[[[True, True, True, False]]]])
+    assert rank_normalize(err, valid).flatten().tolist() == [1.0, 0.0, 0.5, 0.0]
+
+
 @cuda
 def test_batched_fit_fits_each_image_on_its_own():
     from manyup.upsamplers.jbu import fit_kernels
@@ -320,3 +383,25 @@ def test_jbu_uses_its_kernel_cache(tmp_path):
     up.kernels = KernelCache(tmp_path)
     up.fit = None                                  # a cache hit must not fit
     assert torch.equal(up(lr, g, target).tokens, fitted)
+
+
+@cuda
+@torch.no_grad()
+def test_jbu_kernel_cache_follows_the_skipped_steps(tmp_path):
+    import json
+    from manyup.upsamplers.jbu import KernelCache
+    torch.manual_seed(0)
+    g, days, ends = _s2_s1(B=2, size=64)
+    lr = _series(torch.randn(2, 3, 4, 4, 8, device="cuda"), days)
+    lr.t_end = torch.tensor(ends)
+    up = JBU.upma(time_pool=None, bands={"S2": ("B02", "B03", "B04")}, fit_steps=5)
+    target = [Geometry.unknown((16, 16))] * 2
+    fitted = up(lr, g, target).tokens
+    raw = up.fit(up.build_guidance(g, lr).flatten(0, 1).cuda(), (4, 4))    # every step
+    (tmp_path / "meta.json").write_text(json.dumps(up.cache_meta((4, 4))))
+    (tmp_path / "val").mkdir()
+    torch.save({"ids": lr.ids, "raw": raw.cpu().reshape(2, 3, *raw.shape[1:])},
+               tmp_path / "val" / "shard_0of1.pt")
+    up.kernels = KernelCache(tmp_path)
+    up.fit = None
+    assert torch.allclose(up(lr, g, target).tokens, fitted, atol=1e-5)

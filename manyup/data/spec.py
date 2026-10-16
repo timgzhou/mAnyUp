@@ -37,7 +37,7 @@ class ModalitySpec:
 @dataclass(frozen=True)
 class TargetSpec:
     task: str                               # one of TASKS
-    units: str                              # "class" or e.g. "t/ha"
+    units: str                              # "class" or e.g. "t/ha" (tonnes per hectare)
     class_names: tuple[str, ...] | None = None
     ignore_index: int | None = None         # label value excluded from loss/metrics
 

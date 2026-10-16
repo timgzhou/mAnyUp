@@ -106,15 +106,21 @@ class TimAnyUp(nn.Module):
         self.projector = nn.Conv2d(feat_dim, feat_dim, kernel_size=1)
 
     # -- the three stages, exposed separately so the trainer can build its losses ----------
-    def upsample(self, lrhc, guide, out_size):
+    def upsample(self, lrhc, guide, out_size, present=None):
         """F_lrhc (B,T,C,h,w) + guidance (B,T,G,gh,gw) -> F_lrhc_up (B,T,C,H,W).
 
         T is folded into the BATCH dim: the timesteps are upsampled independently, each guided
-        by its own frame, in a single encoder call."""
+        by its own frame, in a single encoder call. `present` (B,T) bool: only those steps are
+        upsampled (the rest have no guidance of their own dates) and the others are zero."""
         B, T, C, h, w = lrhc.shape
         feats = lrhc.reshape(B * T, C, h, w)
         img = guide.reshape(B * T, *guide.shape[2:])
-        out = self.upsampler(img, feats, out_size)
+        if present is None or bool(present.all()):
+            return self.upsampler(img, feats, out_size).reshape(B, T, C, *out_size)
+        sel = present.reshape(B * T).to(feats.device)
+        part = self.upsampler(img[sel], feats[sel], out_size)
+        out = part.new_zeros(B * T, *part.shape[1:])
+        out[sel] = part
         return out.reshape(B, T, C, *out_size)
 
     def query(self, lrhc, out_size, lrhc_up=None):
@@ -167,8 +173,9 @@ def topk_mask(scores, k):
     return mask.reshape(B, T, H, W)
 
 
-def random_mask(scores, k, generator=None):
+def random_mask(scores, k, generator=None, valid=None):
     """Control for topk_mask: k locations chosen uniformly at random, same shape/count.
+    `valid` (B,T,H,W) bool: draw only from these (they are ranked first).
 
     This is the control that matters. At k=512 of 3072 locations, injecting real HR features
     at 17% of positions helps even if chosen blindly, so beating bilinear proves nothing about
@@ -177,6 +184,8 @@ def random_mask(scores, k, generator=None):
     n = T * H * W
     k = min(k, n)
     noise = torch.rand(B, n, device=scores.device, generator=generator)
+    if valid is not None:
+        noise = noise.masked_fill(~valid.reshape(B, n), -1.0)
     idx = noise.topk(k, dim=1).indices
     mask = torch.zeros(B, n, dtype=torch.bool, device=scores.device)
     mask.scatter_(1, idx, True)
@@ -204,8 +213,9 @@ def vectors_at(x, loc):
     return x.permute(0, 1, 3, 4, 2)[loc]
 
 
-def rank_normalize(err):
+def rank_normalize(err, valid=None):
     """Per-sample rank transform of a (B,T,H,W) error map -> [0,1], worst location = 1.
+    `valid` (B,T,H,W) bool: rank among these only (the others come out 0).
 
     The query head is supervised on RELATIVE ordering, not error magnitude: top-k only needs
     to know which locations are worst, and regressing raw cosmse would make the loss chase
@@ -214,8 +224,17 @@ def rank_normalize(err):
     B = err.shape[0]
     flat = err.reshape(B, -1).float()
     n = flat.shape[1]
-    order = flat.argsort(dim=1)
+    if valid is None:
+        order = flat.argsort(dim=1)
+        ranks = torch.empty_like(flat)
+        ar = torch.arange(n, device=err.device, dtype=flat.dtype).expand(B, n)
+        ranks.scatter_(1, order, ar)
+        return (ranks / max(n - 1, 1)).reshape(err.shape)
+    v = valid.reshape(B, n)
+    order = flat.masked_fill(~v, float("-inf")).argsort(dim=1)      # invalid ranked first
     ranks = torch.empty_like(flat)
     ar = torch.arange(n, device=err.device, dtype=flat.dtype).expand(B, n)
     ranks.scatter_(1, order, ar)
-    return (ranks / max(n - 1, 1)).reshape(err.shape)
+    n_bad = (~v).sum(1, keepdim=True).to(flat.dtype)
+    ranks = (ranks - n_bad) / (v.sum(1, keepdim=True).to(flat.dtype) - 1).clamp(min=1)
+    return ranks.clamp(min=0).masked_fill(~v, 0).reshape(err.shape)

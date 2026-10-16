@@ -1,0 +1,4 @@
+job,run,task,px,inject_layer,seed,n_max,n_test,test_crops_per_sample,gmacs,tokens_per_block,test_primary,pick,grid_mode,coverage,coverage_space
+6164807,inject_fft_biomassters_tiny_grid_L0_k0.167_native_set_cpx8_free_n192_vary_shift16_poscenter_lrall_lrps8_lr0.001_ep10,biomassters,8,0,0,192,192,173.5,59.996,3072.0,33.5587,grid,stagger,0.25,0.25
+6164850,inject_fft_biomassters_tiny_grid_L0_k0.167_native_set_free_n192_vary_shift16_poscenter_lrall_lrps4_lr0.001_ep10,biomassters,4,0,0,192,192,173.5,570.624,10560.0,31.96412,grid,stagger,0.0625,0.0625
+6164866,inject_fft_biomassters_tiny_grid_L0_k0.167_native_set_free_n768_vary_shift8_poscenter_lrall_lrps4_lr0.001_ep10,biomassters,4,0,0,768,768,694.1,761.822,12288.0,32.02855,grid,stagger,0.25,0.25

@@ -1,0 +1,15 @@
+{
+ "learned": {
+  "months evenness": 1.0,
+  "months covered": 1.0,
+  "distinct cells / picks": 0.5,
+  "nearest pick (cells)": 1.145411288596335,
+  "mean gate sigmoid(score)": 0.6874314830416725
+ },
+ "random": {
+  "months evenness": 1.0,
+  "months covered": 1.0,
+  "distinct cells / picks": 0.5,
+  "nearest pick (cells)": 1.4685596021158354
+ }
+}

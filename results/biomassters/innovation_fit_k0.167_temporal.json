@@ -1,0 +1,18 @@
+{
+ "pred@0.1": 0.40041426004096864,
+ "pred@0.2": 0.5801954147219658,
+ "pred@0.3": 0.7016815562099218,
+ "oracle@0.1": 0.46742984249442815,
+ "oracle@0.2": 0.6528643937408924,
+ "oracle@0.3": 0.7683647557199001,
+ "month_hit": 0.3512421875,
+ "month_chance": 0.09339394164085388,
+ "random@0.1": 0.1,
+ "random@0.2": 0.2,
+ "random@0.3": 0.3,
+ "fit": "cache/innov/biomassters_k0.167_val",
+ "test": "cache/innov/biomassters_k0.167_test",
+ "temporal": true,
+ "n_fit": 12000,
+ "n_test": 2000
+}

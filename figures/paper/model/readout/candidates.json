@@ -1,0 +1,1078 @@
+[
+ {
+  "tile": "40091@r64c64",
+  "cell": [
+   4,
+   14
+  ],
+  "file": "cand01_40091_r64c64_y4x14.png",
+  "weighted_sum_matches_model_output": true,
+  "score": 6.147,
+  "cell_classes": 2,
+  "block_classes": 3,
+  "cell_acc_season": 0.0,
+  "cell_acc_all": 0.9375,
+  "block_acc_season": 0.4609053432941437,
+  "block_acc_all": 0.8888888955116272,
+  "month_crops": 1,
+  "date_crops": 5,
+  "weights": {
+   "season": 0.0397,
+   "month": 0.1694,
+   "date": 0.7909
+  },
+  "tokens": [
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 0,
+    "t0": 0.0,
+    "t1": 3.0,
+    "name": "season 1",
+    "w": 0.004445921164005995,
+    "class": "Meadow"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 1,
+    "t0": 3.0,
+    "t1": 6.0,
+    "name": "season 2",
+    "w": 0.012363321147859097,
+    "class": "Sunflower"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 2,
+    "t0": 6.0,
+    "t1": 9.0,
+    "name": "season 3",
+    "w": 0.01567588746547699,
+    "class": "Sunflower"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 3,
+    "t0": 9.0,
+    "t1": 12.0,
+    "name": "season 4",
+    "w": 0.007192612625658512,
+    "class": "Sunflower"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 4,
+    "t0": 7.0,
+    "t1": 8.0,
+    "name": "May",
+    "w": 0.16938671469688416,
+    "gate": 1.0,
+    "month": 7,
+    "class": "Meadow"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 5,
+    "t0": 6.443835616438356,
+    "t1": 6.443835616438356,
+    "name": "15 Apr",
+    "w": 0.2013382911682129,
+    "gate": 0.8800685405731201,
+    "mod": "S2",
+    "date": 14,
+    "day": 18001,
+    "class": "Meadow"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 6,
+    "t0": 6.608219178082192,
+    "t1": 6.608219178082192,
+    "name": "20 Apr",
+    "w": 0.260530561208725,
+    "gate": 0.8767291903495789,
+    "mod": "S2",
+    "date": 15,
+    "day": 18006,
+    "class": "Meadow"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 7,
+    "t0": 7.758904109589041,
+    "t1": 7.758904109589041,
+    "name": "25 May",
+    "w": 0.08841656893491745,
+    "gate": 0.8865131735801697,
+    "mod": "S2",
+    "date": 18,
+    "day": 18041,
+    "class": "Meadow"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 8,
+    "t0": 8.087671232876712,
+    "t1": 8.087671232876712,
+    "name": "04 Jun",
+    "w": 0.11577475816011429,
+    "gate": 0.8800685405731201,
+    "mod": "S2",
+    "date": 20,
+    "day": 18051,
+    "class": "Meadow"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 9,
+    "t0": 10.553424657534247,
+    "t1": 10.553424657534247,
+    "name": "18 Aug",
+    "w": 0.12487538158893585,
+    "gate": 0.8744587898254395,
+    "mod": "S2",
+    "date": 30,
+    "day": 18126,
+    "class": "Meadow"
+   }
+  ]
+ },
+ {
+  "tile": "40091@r64c64",
+  "cell": [
+   12,
+   11
+  ],
+  "file": "cand02_40091_r64c64_y12x11.png",
+  "weighted_sum_matches_model_output": true,
+  "score": 5.952,
+  "cell_classes": 2,
+  "block_classes": 3,
+  "cell_acc_season": 0.0,
+  "cell_acc_all": 0.9375,
+  "block_acc_season": 0.43795621395111084,
+  "block_acc_all": 0.6715328693389893,
+  "month_crops": 1,
+  "date_crops": 3,
+  "weights": {
+   "season": 0.0111,
+   "month": 0.1351,
+   "date": 0.8538
+  },
+  "tokens": [
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 0,
+    "t0": 0.0,
+    "t1": 3.0,
+    "name": "season 1",
+    "w": 0.0009274093899875879,
+    "class": "Soybeans"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 1,
+    "t0": 3.0,
+    "t1": 6.0,
+    "name": "season 2",
+    "w": 0.0025493802968412638,
+    "class": "Soybeans"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 2,
+    "t0": 6.0,
+    "t1": 9.0,
+    "name": "season 3",
+    "w": 0.0032297996804118156,
+    "class": "Soybeans"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 3,
+    "t0": 9.0,
+    "t1": 12.0,
+    "name": "season 4",
+    "w": 0.004378059413284063,
+    "class": "Soybeans"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 4,
+    "t0": 7.0,
+    "t1": 8.0,
+    "name": "May",
+    "w": 0.13510090112686157,
+    "gate": 1.0,
+    "month": 7,
+    "class": "Corn"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 5,
+    "t0": 9.73150684931507,
+    "t1": 9.73150684931507,
+    "name": "24 Jul",
+    "w": 0.21307425200939178,
+    "gate": 0.8744587898254395,
+    "mod": "S2",
+    "date": 26,
+    "day": 18101,
+    "class": "Corn"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 6,
+    "t0": 9.895890410958904,
+    "t1": 9.895890410958904,
+    "name": "29 Jul",
+    "w": 0.3009960949420929,
+    "gate": 0.8709862232208252,
+    "mod": "S2",
+    "date": 27,
+    "day": 18106,
+    "class": "Corn"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 7,
+    "t0": 10.717808219178082,
+    "t1": 10.717808219178082,
+    "name": "23 Aug",
+    "w": 0.3397441506385803,
+    "gate": 0.883329451084137,
+    "mod": "S2",
+    "date": 31,
+    "day": 18131,
+    "class": "Corn"
+   }
+  ]
+ },
+ {
+  "tile": "40091@r64c0",
+  "cell": [
+   7,
+   7
+  ],
+  "file": "cand03_40091_r64c0_y7x7.png",
+  "weighted_sum_matches_model_output": true,
+  "score": 5.879,
+  "cell_classes": 2,
+  "block_classes": 3,
+  "cell_acc_season": 0.0,
+  "cell_acc_all": 0.9375,
+  "block_acc_season": 0.1015625,
+  "block_acc_all": 0.26171875,
+  "month_crops": 4,
+  "date_crops": 4,
+  "weights": {
+   "season": 0.0028,
+   "month": 0.5776,
+   "date": 0.4196
+  },
+  "tokens": [
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 0,
+    "t0": 0.0,
+    "t1": 3.0,
+    "name": "season 1",
+    "w": 0.0004244137089699507,
+    "class": "Soft winter wheat"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 1,
+    "t0": 3.0,
+    "t1": 6.0,
+    "name": "season 2",
+    "w": 0.00024389769532717764,
+    "class": "Soft winter wheat"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 2,
+    "t0": 6.0,
+    "t1": 9.0,
+    "name": "season 3",
+    "w": 0.0005075639928691089,
+    "class": "Corn"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 3,
+    "t0": 9.0,
+    "t1": 12.0,
+    "name": "season 4",
+    "w": 0.0016387013019993901,
+    "class": "Background"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 4,
+    "t0": 6.0,
+    "t1": 7.0,
+    "name": "Apr",
+    "w": 0.13715724647045135,
+    "gate": 1.0,
+    "month": 6,
+    "class": "Sunflower"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 5,
+    "t0": 7.0,
+    "t1": 8.0,
+    "name": "May",
+    "w": 0.15284250676631927,
+    "gate": 1.0,
+    "month": 7,
+    "class": "Sunflower"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 6,
+    "t0": 8.0,
+    "t1": 9.0,
+    "name": "Jun",
+    "w": 0.14649543166160583,
+    "gate": 1.0,
+    "month": 8,
+    "class": "Sunflower"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 7,
+    "t0": 9.0,
+    "t1": 10.0,
+    "name": "Jul",
+    "w": 0.14107806980609894,
+    "gate": 1.0,
+    "month": 9,
+    "class": "Sunflower"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 8,
+    "t0": 7.4301369863013695,
+    "t1": 7.4301369863013695,
+    "name": "15 May",
+    "w": 0.10488284379243851,
+    "gate": 0.866769015789032,
+    "mod": "S2",
+    "date": 17,
+    "day": 18031,
+    "class": "Sunflower"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 9,
+    "t0": 7.758904109589041,
+    "t1": 7.758904109589041,
+    "name": "25 May",
+    "w": 0.05900347977876663,
+    "gate": 0.876034677028656,
+    "mod": "S2",
+    "date": 18,
+    "day": 18041,
+    "class": "Sunflower"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 10,
+    "t0": 8.087671232876712,
+    "t1": 8.087671232876712,
+    "name": "04 Jun",
+    "w": 0.143926739692688,
+    "gate": 0.8714730143547058,
+    "mod": "S2",
+    "date": 20,
+    "day": 18051,
+    "class": "Sunflower"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 11,
+    "t0": 9.73150684931507,
+    "t1": 9.73150684931507,
+    "name": "24 Jul",
+    "w": 0.11179903894662857,
+    "gate": 0.876034677028656,
+    "mod": "S2",
+    "date": 26,
+    "day": 18101,
+    "class": "Sunflower"
+   }
+  ]
+ },
+ {
+  "tile": "40091@r0c0",
+  "cell": [
+   3,
+   4
+  ],
+  "file": "cand04_40091_r0c0_y3x4.png",
+  "weighted_sum_matches_model_output": true,
+  "score": 5.849,
+  "cell_classes": 2,
+  "block_classes": 2,
+  "cell_acc_season": 0.0,
+  "cell_acc_all": 0.875,
+  "block_acc_season": 0.0,
+  "block_acc_all": 0.9117646813392639,
+  "month_crops": 2,
+  "date_crops": 4,
+  "weights": {
+   "season": 0.0018,
+   "month": 0.3816,
+   "date": 0.6166
+  },
+  "tokens": [
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 0,
+    "t0": 0.0,
+    "t1": 3.0,
+    "name": "season 1",
+    "w": 0.0001575049536768347,
+    "class": "Soft winter wheat"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 1,
+    "t0": 3.0,
+    "t1": 6.0,
+    "name": "season 2",
+    "w": 5.387765486375429e-05,
+    "class": "Soft winter wheat"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 2,
+    "t0": 6.0,
+    "t1": 9.0,
+    "name": "season 3",
+    "w": 0.0007974373293109238,
+    "class": "Winter barley"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 3,
+    "t0": 9.0,
+    "t1": 12.0,
+    "name": "season 4",
+    "w": 0.0008038795785978436,
+    "class": "Soft winter wheat"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 4,
+    "t0": 7.0,
+    "t1": 8.0,
+    "name": "May",
+    "w": 0.18063117563724518,
+    "gate": 1.0,
+    "month": 7,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 5,
+    "t0": 8.0,
+    "t1": 9.0,
+    "name": "Jun",
+    "w": 0.20095372200012207,
+    "gate": 1.0,
+    "month": 8,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 6,
+    "t0": 7.758904109589041,
+    "t1": 7.758904109589041,
+    "name": "25 May",
+    "w": 0.09644747525453568,
+    "gate": 0.8526368737220764,
+    "mod": "S2",
+    "date": 18,
+    "day": 18041,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 7,
+    "t0": 8.087671232876712,
+    "t1": 8.087671232876712,
+    "name": "04 Jun",
+    "w": 0.07271914184093475,
+    "gate": 0.8641362190246582,
+    "mod": "S2",
+    "date": 20,
+    "day": 18051,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 8,
+    "t0": 8.745205479452055,
+    "t1": 8.745205479452055,
+    "name": "24 Jun",
+    "w": 0.2119065523147583,
+    "gate": 0.8591216206550598,
+    "mod": "S2",
+    "date": 22,
+    "day": 18071,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 9,
+    "t0": 8.90958904109589,
+    "t1": 8.90958904109589,
+    "name": "29 Jun",
+    "w": 0.23552925884723663,
+    "gate": 0.8713752031326294,
+    "mod": "S2",
+    "date": 23,
+    "day": 18076,
+    "class": "Leguminous fodder"
+   }
+  ]
+ },
+ {
+  "tile": "40091@r0c0",
+  "cell": [
+   4,
+   6
+  ],
+  "file": "cand05_40091_r0c0_y4x6.png",
+  "weighted_sum_matches_model_output": true,
+  "score": 5.785,
+  "cell_classes": 2,
+  "block_classes": 6,
+  "cell_acc_season": 0.0,
+  "cell_acc_all": 0.9375,
+  "block_acc_season": 0.6796875,
+  "block_acc_all": 0.74609375,
+  "month_crops": 3,
+  "date_crops": 1,
+  "weights": {
+   "season": 0.0122,
+   "month": 0.7168,
+   "date": 0.2709
+  },
+  "tokens": [
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 0,
+    "t0": 0.0,
+    "t1": 3.0,
+    "name": "season 1",
+    "w": 0.0013333008391782641,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 1,
+    "t0": 3.0,
+    "t1": 6.0,
+    "name": "season 2",
+    "w": 0.0008377524791285396,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 2,
+    "t0": 6.0,
+    "t1": 9.0,
+    "name": "season 3",
+    "w": 0.003113676095381379,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 3,
+    "t0": 9.0,
+    "t1": 12.0,
+    "name": "season 4",
+    "w": 0.006949050351977348,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 4,
+    "t0": 7.0,
+    "t1": 8.0,
+    "name": "May",
+    "w": 0.17840225994586945,
+    "gate": 1.0,
+    "month": 7,
+    "class": "Winter barley"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 5,
+    "t0": 9.0,
+    "t1": 10.0,
+    "name": "Jul",
+    "w": 0.2817670702934265,
+    "gate": 1.0,
+    "month": 9,
+    "class": "Winter barley"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 6,
+    "t0": 10.0,
+    "t1": 11.0,
+    "name": "Aug",
+    "w": 0.2566746175289154,
+    "gate": 1.0,
+    "month": 10,
+    "class": "Winter barley"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 7,
+    "t0": 8.745205479452055,
+    "t1": 8.745205479452055,
+    "name": "24 Jun",
+    "w": 0.27092233300209045,
+    "gate": 0.8931655883789062,
+    "mod": "S2",
+    "date": 22,
+    "day": 18071,
+    "class": "Winter barley"
+   }
+  ]
+ },
+ {
+  "tile": "40091@r0c0",
+  "cell": [
+   4,
+   15
+  ],
+  "file": "cand06_40091_r0c0_y4x15.png",
+  "weighted_sum_matches_model_output": true,
+  "score": 5.785,
+  "cell_classes": 2,
+  "block_classes": 5,
+  "cell_acc_season": 0.0625,
+  "cell_acc_all": 0.9375,
+  "block_acc_season": 0.4765625,
+  "block_acc_all": 0.73046875,
+  "month_crops": 1,
+  "date_crops": 1,
+  "weights": {
+   "season": 0.0764,
+   "month": 0.2752,
+   "date": 0.6484
+  },
+  "tokens": [
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 0,
+    "t0": 0.0,
+    "t1": 3.0,
+    "name": "season 1",
+    "w": 0.006264812778681517,
+    "class": "Soft winter wheat"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 1,
+    "t0": 3.0,
+    "t1": 6.0,
+    "name": "season 2",
+    "w": 0.01096817385405302,
+    "class": "Background"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 2,
+    "t0": 6.0,
+    "t1": 9.0,
+    "name": "season 3",
+    "w": 0.0330631360411644,
+    "class": "Soft winter wheat"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 3,
+    "t0": 9.0,
+    "t1": 12.0,
+    "name": "season 4",
+    "w": 0.026115912944078445,
+    "class": "Soft winter wheat"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 4,
+    "t0": 7.0,
+    "t1": 8.0,
+    "name": "May",
+    "w": 0.2752198874950409,
+    "gate": 1.0,
+    "month": 7,
+    "class": "Winter barley"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 5,
+    "t0": 8.745205479452055,
+    "t1": 8.745205479452055,
+    "name": "24 Jun",
+    "w": 0.6483679413795471,
+    "gate": 0.8748698830604553,
+    "mod": "S2",
+    "date": 22,
+    "day": 18071,
+    "class": "Winter barley"
+   }
+  ]
+ },
+ {
+  "tile": "40091@r64c64",
+  "cell": [
+   2,
+   13
+  ],
+  "file": "cand07_40091_r64c64_y2x13.png",
+  "weighted_sum_matches_model_output": true,
+  "score": 5.785,
+  "cell_classes": 2,
+  "block_classes": 3,
+  "cell_acc_season": 0.125,
+  "cell_acc_all": 0.9375,
+  "block_acc_season": 0.45703125,
+  "block_acc_all": 0.8984375,
+  "month_crops": 1,
+  "date_crops": 5,
+  "weights": {
+   "season": 0.0108,
+   "month": 0.1601,
+   "date": 0.829
+  },
+  "tokens": [
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 0,
+    "t0": 0.0,
+    "t1": 3.0,
+    "name": "season 1",
+    "w": 0.0026990771293640137,
+    "class": "Meadow"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 1,
+    "t0": 3.0,
+    "t1": 6.0,
+    "name": "season 2",
+    "w": 0.0016494612209498882,
+    "class": "Background"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 2,
+    "t0": 6.0,
+    "t1": 9.0,
+    "name": "season 3",
+    "w": 0.0031931542325764894,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 3,
+    "t0": 9.0,
+    "t1": 12.0,
+    "name": "season 4",
+    "w": 0.003299674252048135,
+    "class": "Meadow"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 4,
+    "t0": 8.0,
+    "t1": 9.0,
+    "name": "Jun",
+    "w": 0.16012915968894958,
+    "gate": 1.0,
+    "month": 8,
+    "class": "Background"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 5,
+    "t0": 6.443835616438356,
+    "t1": 6.443835616438356,
+    "name": "15 Apr",
+    "w": 0.16692228615283966,
+    "gate": 0.8744587898254395,
+    "mod": "S2",
+    "date": 14,
+    "day": 18001,
+    "class": "Background"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 6,
+    "t0": 6.608219178082192,
+    "t1": 6.608219178082192,
+    "name": "20 Apr",
+    "w": 0.1897406429052353,
+    "gate": 0.8936482667922974,
+    "mod": "S2",
+    "date": 15,
+    "day": 18006,
+    "class": "Background"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 7,
+    "t0": 7.4301369863013695,
+    "t1": 7.4301369863013695,
+    "name": "15 May",
+    "w": 0.148047536611557,
+    "gate": 0.8744587898254395,
+    "mod": "S2",
+    "date": 17,
+    "day": 18031,
+    "class": "Background"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 8,
+    "t0": 8.087671232876712,
+    "t1": 8.087671232876712,
+    "name": "04 Jun",
+    "w": 0.11529883742332458,
+    "gate": 0.8767291903495789,
+    "mod": "S2",
+    "date": 20,
+    "day": 18051,
+    "class": "Background"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 9,
+    "t0": 9.73150684931507,
+    "t1": 9.73150684931507,
+    "name": "24 Jul",
+    "w": 0.20902012288570404,
+    "gate": 0.8698105812072754,
+    "mod": "S2",
+    "date": 26,
+    "day": 18101,
+    "class": "Background"
+   }
+  ]
+ },
+ {
+  "tile": "40091@r0c0",
+  "cell": [
+   8,
+   6
+  ],
+  "file": "cand08_40091_r0c0_y8x6.png",
+  "weighted_sum_matches_model_output": true,
+  "score": 5.766,
+  "cell_classes": 2,
+  "block_classes": 4,
+  "cell_acc_season": 0.0625,
+  "cell_acc_all": 0.9375,
+  "block_acc_season": 0.62890625,
+  "block_acc_all": 0.86328125,
+  "month_crops": 3,
+  "date_crops": 3,
+  "weights": {
+   "season": 0.0017,
+   "month": 0.5307,
+   "date": 0.4675
+  },
+  "tokens": [
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 0,
+    "t0": 0.0,
+    "t1": 3.0,
+    "name": "season 1",
+    "w": 0.0006806344026699662,
+    "class": "Meadow"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 1,
+    "t0": 3.0,
+    "t1": 6.0,
+    "name": "season 2",
+    "w": 0.00016280754061881453,
+    "class": "Soft winter wheat"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 2,
+    "t0": 6.0,
+    "t1": 9.0,
+    "name": "season 3",
+    "w": 9.985428187064826e-05,
+    "class": "Soft winter wheat"
+   },
+   {
+    "level": "season",
+    "ps": 16,
+    "k": 3,
+    "t0": 9.0,
+    "t1": 12.0,
+    "name": "season 4",
+    "w": 0.0007708017365075648,
+    "class": "Meadow"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 4,
+    "t0": 5.0,
+    "t1": 6.0,
+    "name": "Mar",
+    "w": 0.14794085919857025,
+    "gate": 1.0,
+    "month": 5,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 5,
+    "t0": 8.0,
+    "t1": 9.0,
+    "name": "Jun",
+    "w": 0.22977079451084137,
+    "gate": 1.0,
+    "month": 8,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "month",
+    "ps": 4,
+    "k": 6,
+    "t0": 9.0,
+    "t1": 10.0,
+    "name": "Jul",
+    "w": 0.15302537381649017,
+    "gate": 1.0,
+    "month": 9,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 7,
+    "t0": 6.443835616438356,
+    "t1": 6.443835616438356,
+    "name": "15 Apr",
+    "w": 0.12801535427570343,
+    "gate": 0.8486287593841553,
+    "mod": "S2",
+    "date": 14,
+    "day": 18001,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 8,
+    "t0": 8.745205479452055,
+    "t1": 8.745205479452055,
+    "name": "24 Jun",
+    "w": 0.16193518042564392,
+    "gate": 0.851310670375824,
+    "mod": "S2",
+    "date": 22,
+    "day": 18071,
+    "class": "Leguminous fodder"
+   },
+   {
+    "level": "date",
+    "ps": 4,
+    "k": 9,
+    "t0": 8.90958904109589,
+    "t1": 8.90958904109589,
+    "name": "29 Jun",
+    "w": 0.1775982826948166,
+    "gate": 0.8486287593841553,
+    "mod": "S2",
+    "date": 23,
+    "day": 18076,
+    "class": "Leguminous fodder"
+   }
+  ]
+ }
+]

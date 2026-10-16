@@ -59,17 +59,20 @@ def flat(x):
 
 
 def manyup_losses(up, batch):
+    """Only the steps the upsampler upsampled count (frame_valid of its output: a step
+    without guidance of its own dates is skipped, see manyup/upsamplers/base.py)."""
     lr, tgt = batch.feats["lr"], batch.feats["target"]
-    out = up(lr, batch.guidance, out_geometry(batch)).tokens               # (B, T', 16, 16, D)
+    res = up(lr, batch.guidance, out_geometry(batch))
+    out, keep = res.tokens, res.frame_valid.flatten()                     # (B, T', 16, 16, D)
     if up.time_matching == "pooled":
         want = time_mean(tgt.tokens.float(), tgt.frame_valid)[:, None]
         src = time_mean(lr.tokens.float(), lr.frame_valid)[:, None]
     else:
         want, src = tgt.tokens, lr.tokens
     bil = F.interpolate(flat(src), size=want.shape[2:4], mode="bilinear", align_corners=False)
-    loss = cos_mse(flat(out), flat(want))["total"]
+    loss = cos_mse(flat(out)[keep], flat(want)[keep])["total"]
     with torch.no_grad():
-        c_bil = cos_mse(bil, flat(want))["total"]
+        c_bil = cos_mse(bil[keep], flat(want)[keep])["total"]
     return loss, {"recon": loss, "c_bilinear": c_bil}
 
 
@@ -82,22 +85,27 @@ def timanyup_losses(up, batch, a):
     hrhc = tgt.tokens.float().permute(0, 1, 4, 2, 3).contiguous()
     guide = up.build_guidance(batch.guidance, lr).to(lrhc.device)          # (B, T, C, H, W)
     size = tuple(hrhc.shape[-2:])
-    lrhc_up = m.upsample(lrhc, guide, size)
+    # steps without guidance of their own dates are not upsampled and count in no loss
+    present = up.guidance_present(batch.guidance, lr).to(lrhc.device)     # (B, T)
+    keep = present.flatten()
+    lrhc_up = m.upsample(lrhc, guide, size, present)
     hrlc_t = m.transform(hrlc)
     scores = m.query(lrhc, size, lrhc_up=lrhc_up)
+    where = present[:, :, None, None].expand_as(scores)                   # (B, T, H, W)
     fl = lambda x: x.flatten(0, 1).float()                                  # noqa: E731
     up_f, hr_f = fl(lrhc_up), fl(hrhc)
 
-    mask = topk_mask(scores.detach().float(), up.k)
-    l_recon = cos_mse(fl(m.project(blend(lrhc_up, hrlc_t, mask))), hr_f)["total"]
+    mask = topk_mask(scores.detach().float().masked_fill(~where, float("-inf")), up.k) & where
+    l_recon = cos_mse(fl(m.project(blend(lrhc_up, hrlc_t, mask)))[keep], hr_f[keep])["total"]
 
     up_proj_f = fl(m.project(lrhc_up))
     err = cosmse_map(up_proj_f, hr_f).reshape(scores.shape).detach()
-    l_query = F.binary_cross_entropy_with_logits(scores.float(), rank_normalize(err))
+    l_query = F.binary_cross_entropy_with_logits(scores.float()[where],
+                                                 rank_normalize(err, where)[where])
 
     B = err.shape[0]
-    flat_err = err.reshape(B, -1)
-    n_fit = max(1, int(flat_err.shape[1] * a.transform_frac))
+    flat_err = err.reshape(B, -1).masked_fill(~where.reshape(B, -1), float("inf"))
+    n_fit = max(1, int(where.reshape(B, -1).sum(1).min() * a.transform_frac))
     fit = torch.zeros_like(flat_err, dtype=torch.bool).scatter_(
         1, flat_err.argsort(dim=1)[:, :n_fit], True)
     fit = fit.reshape(err.shape)
@@ -106,11 +114,11 @@ def timanyup_losses(up, batch, a):
     loss = l_recon + a.lambda_query * l_query + a.lambda_transform * l_transform
     with torch.no_grad():
         bil = F.interpolate(fl(lrhc), size=size, mode="bilinear", align_corners=False)
-        rfused = blend(lrhc_up, hrlc_t, random_mask(scores.float(), up.k))
+        rfused = blend(lrhc_up, hrlc_t, random_mask(scores.float(), up.k, valid=where) & where)
         logs = {"recon": l_recon, "query": l_query, "transform": l_transform,
-                "c_upsample": cos_mse(up_proj_f, hr_f)["total"],
-                "c_random": cos_mse(fl(m.project(rfused)), hr_f)["total"],
-                "c_bilinear": cos_mse(bil, hr_f)["total"]}
+                "c_upsample": cos_mse(up_proj_f[keep], hr_f[keep])["total"],
+                "c_random": cos_mse(fl(m.project(rfused))[keep], hr_f[keep])["total"],
+                "c_bilinear": cos_mse(bil[keep], hr_f[keep])["total"]}
     return loss, logs
 
 

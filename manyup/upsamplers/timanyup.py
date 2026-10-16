@@ -75,7 +75,11 @@ class TimAnyUp(FeatureUpsampler):
         lrhc = lr.tokens.float().permute(0, 1, 4, 2, 3).contiguous()     # (B, T, D, h, w)
         hrlc = hr.tokens.float().permute(0, 1, 4, 2, 3).contiguous().to(lrhc.device)
         guide = self.build_guidance(guidance, lr).to(lrhc.device)        # (B, T, C, H, W)
-        up = self.model.upsample(lrhc, guide, size)
-        mask = topk_mask(self.model.query(lrhc, size, lrhc_up=up).float(), self.k)
+        present = self.guidance_present(guidance, lr).to(lrhc.device)    # (B, T)
+        up = self.model.upsample(lrhc, guide, size, present)
+        where = present[:, :, None, None]
+        scores = self.model.query(lrhc, size, lrhc_up=up).float()
+        mask = topk_mask(scores.masked_fill(~where, float("-inf")), self.k) & where
         fused = self.model.project(blend(up, self.model.transform(hrlc), mask))
-        return self.output(lr, fused.permute(0, 1, 3, 4, 2), target)
+        fused = fused * where[:, :, None].to(fused.dtype)       # steps not upsampled stay 0
+        return self.output(lr, fused.permute(0, 1, 3, 4, 2), target, present)

@@ -153,6 +153,8 @@ class JBU(FrameUpsampler):
                 raise ValueError(f"{self.key}: kernel cache {self.kernels.dir} was fitted "
                                  f"for {self.kernels.meta}")
             raw = self.kernels.get(self._ids).flatten(0, 1).to(feats.device)
+            if self._frames is not None:                  # only the upsampled steps
+                raw = raw[self._frames.to(raw.device)]
             if len(raw) != len(feats):
                 raise ValueError(f"{self.key}: cached kernels are for another time setup")
         else:

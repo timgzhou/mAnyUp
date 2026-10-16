@@ -1,0 +1,4 @@
+job,run,task,model_size,method,key,time_matching,epochs,best_epoch,k,val_recon,val_query,val_transform,val_c_upsample,val_c_random,val_c_bilinear,ckpt
+5665253,manyup_geoidflood_tiny_ep2,geoidflood,tiny,manyup,manyup[S1GRD2-per_t],nearest,2,2,,0.22348,,,,,0.26761,checkpoints/upsamplers/manyup_geoidflood_tiny_ep2.pt
+5665255,timanyup_geoidflood_tiny_ep2,geoidflood,tiny,timanyup,timanyup[S1GRD2-per_t],nearest,2,2,85,0.13943,0.64901,0.09572,0.14389,0.14287,0.26761,checkpoints/upsamplers/timanyup_geoidflood_tiny_ep2.pt
+5685506,timanyup_2stage_geoidflood_tiny_ep2,geoidflood,tiny,timanyup,timanyup[S1GRD2-per_t]k85,nearest,2,2,85,0.14836,0.63625,0.11067,0.15368,0.15252,0.26761,checkpoints/upsamplers/timanyup_2stage_geoidflood_tiny_ep2.pt

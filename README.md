@@ -3,11 +3,13 @@
 Feature upsampling for remote-sensing foundation models. OlmoEarth features are cheap at
 coarse patch sizes and expensive at fine ones; mAnyUp and timAnyUp learn to recover the
 fine features from coarse ones (plus cheap guidance), and are evaluated by linear probing
-on three datasets:
+on four datasets:
 
 - **PASTIS**: crop-type segmentation from S2/S1 time series (UTAE is the baseline)
 - **GEOID-Flood**: flood segmentation from S1 pre/post pairs
 - **Biomassters**: forest biomass regression (not yet ported)
+- **YieldSAT**: pixel crop-yield regression from S2 time series (4 countries x 4 crops); the
+  ML-ready 24 steps for fixed-resolution baselines, every acquisition for mixed resolution
 
 ## Layout
 
@@ -20,6 +22,7 @@ exp/                      experiments, run as `python -m exp.<pkg>.<module>`
   common/                 run config, paths (data / feature caches), OlmoEarth import shims
   pastis/                 prepare -> extract features -> linear probe / fine-tune -> visualize
   geoidflood/             prep tiles -> extract features -> linear probe -> visualize
+  yieldsat/               build the packed store from the two releases (+ verify)
   upsamplers/             train + evaluate mAnyUp, timAnyUp, UPA/UPMA
   utae/                   UTAE baseline on PASTIS (+ our early/late fusion)
   bench/                  throughput / FLOPs benchmarks

@@ -1,0 +1,4 @@
+job,run,readout,k_frac,split,test_pick,crops_per_sample,test_rmse,test_mae,test_r2,test_primary
+5757825,inject_fft_biomassters_tiny_random_L0_k0.167_loc_native_attn_lr0.001_ep10,native_attn,0.16666666666666666,test,oracle,455.5,36.29543,21.5153,0.75487,36.29543
+5757825,inject_fft_biomassters_tiny_random_L0_k0.167_loc_native_attn_lr0.001_ep10,native_attn,0.16666666666666666,test,random,455.5,37.32007,21.52989,0.74084,37.32007
+5757825,inject_fft_biomassters_tiny_random_L0_k0.167_loc_native_attn_lr0.001_ep10,native_attn,0.16666666666666666,test,none,0.0,41.29258,24.0663,0.68273,41.29258

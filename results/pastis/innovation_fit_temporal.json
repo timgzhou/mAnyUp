@@ -1,0 +1,18 @@
+{
+ "pred@0.1": 0.17779827381544297,
+ "pred@0.2": 0.3140336268266002,
+ "pred@0.3": 0.43282092709635056,
+ "oracle@0.1": 0.22481886665487,
+ "oracle@0.2": 0.3790818484980733,
+ "oracle@0.3": 0.505502058027853,
+ "month_hit": 0.31465395035282256,
+ "month_chance": 0.08521200156199836,
+ "random@0.1": 0.1,
+ "random@0.2": 0.2,
+ "random@0.3": 0.3,
+ "fit": "cache/innov/pastis_val",
+ "test": "cache/innov/pastis_test",
+ "temporal": true,
+ "n_fit": 1928,
+ "n_test": 1984
+}

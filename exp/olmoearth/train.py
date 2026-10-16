@@ -104,7 +104,11 @@ class FromCache(torch.nn.Module):
 def run_name(a) -> str:
     src = f"_cache{a.from_cache}" if a.from_cache else ""
     return (f"oe_{a.task}_{a.model_size}_{a.temporal_mode}_ps{a.patch_size}ts{a.tile_size}"
-            f"_{a.mode}{src}{'_bn' if a.head_norm else ''}_ep{a.epochs}")
+            f"_{a.mode}{src}{'_bn' if a.head_norm else ''}"
+            # _nopre: random init; _wuN: N warmup epochs; _foldF: benchmark protocol fold
+            f"{'_nopre' if a.no_pretrain else ''}"
+            f"{f'_wu{a.warmup_epochs}' if a.warmup_epochs else ''}"
+            f"{f'_fold{a.fold}' if a.fold != 1 else ''}_ep{a.epochs}")
 
 
 class Arm:
@@ -118,6 +122,7 @@ class Arm:
                                        cooldown=SCHEDULER_COOLDOWN)
         self.best, self.best_epoch, self.best_val, self.state = None, -1, None, None
         self.loss_sum, self.loss_n = 0.0, 0
+        self.best_samples_s, self.best_peak_mem_gb = None, None
 
     def improved(self, v) -> bool:
         return self.best is None or (v > self.best if self.better else v < self.best)
@@ -162,6 +167,13 @@ def main():
     ap.add_argument("--features_root", default=str(FEATURES))
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--no_pretrain", action="store_true",
+                    help="fft: OlmoEarth from its random initialization, no frozen phase, the "
+                         "whole model at the given lr")
+    ap.add_argument("--warmup_epochs", type=int, default=0,
+                    help="--no_pretrain: linear learning-rate warmup over the first epochs")
+    ap.add_argument("--fold", type=int, default=1, choices=(1, 2, 3, 4, 5),
+                    help="PASTIS benchmark protocol fold (1 = train folds 1-3, val 4, test 5)")
     ap.add_argument("--limit_batches", type=int, default=0,
                     help="cap train/eval batches per epoch (smoke tests, throughput); "
                          "results then go to a _smoke CSV")
@@ -171,6 +183,15 @@ def main():
     a = ap.parse_args()
 
     task = TASKS[a.task]
+    if a.fold != 1:
+        if not hasattr(task, "fold_groups"):
+            raise SystemExit(f"--fold: {a.task} has no benchmark folds")
+        task.fold = a.fold
+        print(f"Protocol fold {a.fold}: dataset folds {task.fold_groups()}")
+    if (a.no_pretrain or a.fold != 1) and (a.mode != "fft" or a.from_cache):
+        raise SystemExit("--no_pretrain / --fold: fft only (cached features are fold 1, pretrained)")
+    if a.warmup_epochs and not a.no_pretrain:
+        raise SystemExit("--warmup_epochs is for --no_pretrain")
     lrs = [float(x) for x in a.lrs.split(",")]
     if a.mode == "fft" and len(lrs) != 1:
         raise SystemExit("fft trains the encoder, so one learning rate per job")
@@ -198,7 +219,7 @@ def main():
     else:
         inputs = OlmoEarthInput(task.olmoearth.modalities, task.olmoearth.impute)
         encoder = OlmoEarthEncoder(MODEL_SIZE_TO_ID[a.model_size], inputs, a.patch_size,
-                                   a.tile_size).cuda()
+                                   a.tile_size, pretrained=not a.no_pretrain).cuda()
         encoder.check(task.dataset("train"), a.temporal_mode)
         dl = {s: loader(task, inputs, s, bs, a.num_workers, s == "train")
               for s in ("train", "val", "test")}
@@ -218,6 +239,8 @@ def main():
         params = list(head.parameters()) + (list(encoder.parameters()) if a.mode == "fft" else [])
         arms.append(Arm(lr, head, params, task, better))
     freeze_epochs = math.ceil(FREEZE_EPOCH_FRACTION * a.epochs) if a.mode == "fft" else a.epochs
+    if a.no_pretrain:       # nothing to protect: train everything at lrs[0] from the start
+        freeze_epochs = 0
     loss_fn = task.loss().cuda()
     heads = [arm.head for arm in arms]
     start_epoch, hours_before, epoch_s = 0, 0.0, None
@@ -232,10 +255,11 @@ def main():
                   f"{a.max_hours}; rerun the same command to resume")
             return
         e0 = time.time()
+        torch.cuda.reset_peak_memory_stats()
         torch.manual_seed(a.seed + epoch)          # same shuffle order with or without resuming
         tuning = a.mode == "fft" and epoch >= freeze_epochs
         encoder.requires_grad_(tuning)
-        if a.mode == "fft" and epoch == freeze_epochs:
+        if a.mode == "fft" and epoch == freeze_epochs and not a.no_pretrain:
             arms[0].opt.param_groups[0]["lr"] = lrs[0] * UNFREEZE_LR_FACTOR
             print(f"epoch {epoch + 1}: backbone unfrozen, lr -> {lrs[0] * UNFREEZE_LR_FACTOR:g}")
         encoder.train(tuning)
@@ -247,6 +271,10 @@ def main():
                 break
             fv, target = fv.cuda(), target.cuda()
             B = target.shape[0]
+            if epoch < a.warmup_epochs:     # linear warmup, per step: 0 -> lrs[0]
+                steps = len(dl["train"])
+                arms[0].opt.param_groups[0]["lr"] = lrs[0] * (epoch * steps + i + 1) / (
+                    a.warmup_epochs * steps)
             if tuning:                     # fft, one arm: accumulate over micro-batches
                 arm = arms[0]
                 arm.opt.zero_grad(set_to_none=True)
@@ -274,9 +302,11 @@ def main():
         train_s = time.time() - t0
 
         vals = evaluate(encoder, heads, task, dl["val"], a.temporal_mode, a.limit_batches)
-        print(f"epoch {epoch + 1}/{a.epochs} | {n / train_s:.1f} samples/s train "
+        samples_s = n / train_s
+        peak_mem_gb = torch.cuda.max_memory_allocated() / 2**30
+        print(f"epoch {epoch + 1}/{a.epochs} | {samples_s:.1f} samples/s train "
               f"({train_s / 60:.1f} min) | eval {(time.time() - t0 - train_s) / 60:.1f} min | "
-              f"peak mem {torch.cuda.max_memory_allocated() / 2**30:.1f} GB")
+              f"peak mem {peak_mem_gb:.1f} GB")
         for arm, v in zip(arms, vals):
             loss = arm.loss_sum / max(arm.loss_n, 1)
             arm.loss_sum, arm.loss_n = 0.0, 0
@@ -286,6 +316,7 @@ def main():
                 print(f"   lr {arm.lr:g}: loss is not finite")
             if arm.improved(v["primary"]):
                 arm.best, arm.best_epoch, arm.best_val = v["primary"], epoch + 1, v
+                arm.best_samples_s, arm.best_peak_mem_gb = samples_s, peak_mem_gb
                 arm.state = {"head": copy.deepcopy(arm.head.state_dict())}
                 if a.mode == "fft":
                     arm.state["encoder"] = {k: t.detach().cpu().clone()
@@ -315,7 +346,11 @@ def main():
                "model_size": a.model_size, "temporal_mode": a.temporal_mode,
                "patch_size": a.patch_size, "tile_size": a.tile_size, "mode": a.mode,
                "lr": arm.lr, "epochs": a.epochs, "batch_size": bs, "head_norm": a.head_norm,
+               "pretrained": int(not a.no_pretrain), "warmup_epochs": a.warmup_epochs,
+               "fold": a.fold,
                "best_epoch": arm.best_epoch, "hours": round(elapsed / 3600, 2),
+               "samples_s": round(arm.best_samples_s, 2) if arm.best_samples_s else "",
+               "peak_mem_gb": round(arm.best_peak_mem_gb, 2) if arm.best_peak_mem_gb else "",
                **{f"val_{k}": round(x, 5) for k, x in arm.best_val.items()},
                **{f"test_{k}": round(x, 5) for k, x in test.items()}}
         _append(csv_path, row)
@@ -327,7 +362,8 @@ def _save_state(path, epochs_done, hours, epoch_s, encoder, arms, mode):
     """Everything needed to continue after `epochs_done` epochs; written atomically."""
     state = {"epochs_done": epochs_done, "hours": hours, "epoch_s": epoch_s, "arms": [
         {"head": a.head.state_dict(), "opt": a.opt.state_dict(), "sched": a.sched.state_dict(),
-         "best": a.best, "best_epoch": a.best_epoch, "best_val": a.best_val, "state": a.state}
+         "best": a.best, "best_epoch": a.best_epoch, "best_val": a.best_val, "state": a.state,
+         "best_samples_s": a.best_samples_s, "best_peak_mem_gb": a.best_peak_mem_gb}
         for a in arms]}
     if mode == "fft":
         state["encoder"] = encoder.encoder.state_dict()
@@ -347,6 +383,8 @@ def _load_state(path, encoder, arms, mode):
         arm.sched.load_state_dict(s["sched"])
         arm.best, arm.best_epoch, arm.best_val = s["best"], s["best_epoch"], s["best_val"]
         arm.state = s["state"]
+        arm.best_samples_s = s.get("best_samples_s")
+        arm.best_peak_mem_gb = s.get("best_peak_mem_gb")
     return state["epochs_done"], state["hours"], state["epoch_s"]
 
 
@@ -357,8 +395,12 @@ def _rows(sample, lo, hi):
 
 def _brief(metrics: dict) -> str:
     """Metrics for the log; per-class IoUs only when there are a few (all go to the CSV)."""
-    per_class = [k for k in metrics if k.startswith("iou_")]
-    keep = [k for k in metrics if k != "primary" and (len(per_class) <= 3 or k not in per_class)]
+    def per_class(prefix):   # prefix_<class name>, excluding the prefix_headline summary key
+        ks = [k for k in metrics if k.startswith(prefix) and k != f"{prefix}headline"]
+        return ks if len(ks) <= 3 else []
+    hide = (set(k for k in metrics if k.startswith(("iou_", "biou_")))
+            - set(per_class("iou_")) - set(per_class("biou_")))
+    keep = [k for k in metrics if k != "primary" and k not in hide]
     return f"primary {metrics['primary']:.4f} | " + " ".join(f"{k} {metrics[k]:.4f}" for k in keep)
 
 
