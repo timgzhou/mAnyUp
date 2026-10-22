@@ -221,3 +221,6 @@ job,run,task,model_size,samples_traced,gmacs,gmacs_attention,gmacs_other,tokens_
 6288886,inject_fft_pastis_tiny_random_L0_k0.0625_loc_native_set_cpx8_poscenter_lr0.001_ep50,pastis,tiny,128,9.612,4.247,5.365,960.0,960,176.0,,
 6288886,inject_fft_pastis_tiny_oracle_L0_k0.125_loc_native_set_cpx8_st8_poscenter_lr0.001_ep50,pastis,tiny,128,23.775,13.061,10.714,1920.0,1664,352.0,,
 6288886,inject_fft_pastis_tiny_random_L0_k0.125_loc_native_set_cpx8_poscenter_lr0.001_ep50,pastis,tiny,128,22.057,12.759,9.298,1664.0,1664,352.0,,
+6296065,inject_fft_pastis_tiny_oracle_L0_k0.0312_loc_native_set_cpx8_st6_poscenter_lr0.001_ep50,pastis,tiny,128,6.824,2.005,4.818,864.0,608,88.0,,
+6296065,inject_fft_pastis_tiny_oracle_L0_k0.0625_loc_native_set_cpx8_st6_poscenter_lr0.001_ep50,pastis,tiny,128,11.333,4.549,6.784,1216.0,960,176.0,,
+6296065,inject_fft_pastis_tiny_oracle_L0_k0.125_loc_native_set_cpx8_st6_poscenter_lr0.001_ep50,pastis,tiny,128,23.777,13.061,10.716,1920.0,1664,352.0,,

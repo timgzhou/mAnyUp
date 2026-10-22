@@ -1010,3 +1010,161 @@ LINKS=1 chain "zs_ora_st${S}_n${N}_mean_oneway" "${OS[@]}" --loc_stride "$S" --k
 done
 done
 fi
+# round 54 (2026-10-16): PER-SEASON label oracles -- each season token's own head map vs the
+# label gives one loss map per season; crops are (season, location) pairs, every present month
+# of the season at that ps8 window, within the location oracle's crop budget at n (n windows x
+# present months):
+#   oracle_season   the highest-loss (season, window) pairs
+#   oracle_tophalf  the highest-loss windows (overall), each its worse half of seasons
+#   oracle_bothalf  the same, each its BETTER half (does HR help where the season is already
+#                   informative?)
+# candidate strides 4 / 6 / 8, full FT, native_set, joint attention. Submitted with EMAIL=.
+if [ "$TASK" = pastis ] || [ "$TASK" = biomassters ]; then
+for SEL in oracle_season oracle_tophalf oracle_bothalf; do
+for S in 4 6 8; do
+for N in 8 16 32; do
+KF=$(python3 -c "print($N / 256)")
+LINKS=3 chain "${SEL#oracle_}_st${S}_n${N}_L0_set" --selector "$SEL" --inject_layer 0 --select_unit location \
+  --crop_px 8 --loc_stride "$S" --k_frac "$KF" --readout native_set
+done
+done
+done
+fi
+# round 55 (2026-10-16): the four label oracles (location, season, tophalf, bothalf) with ps8
+# SEASONS + ps4 month crops. ps4 crops sit on the ps4 grid (no overlap; no --loc_stride); the
+# budgets cover the same tile share as rounds 49 / 54's 8 / 16 / 32 ps8 windows: n = 32 / 64 /
+# 128 ps4 locations (1/8, 1/4, 1/2 of the tile) x present months. Full FT, native_set, joint
+# attention. Baseline: none_native_set_lrps8 (= fix_ps8). Submitted with EMAIL=.
+if [ "$TASK" = pastis ] || [ "$TASK" = biomassters ]; then
+for SEL in oracle oracle_season oracle_tophalf oracle_bothalf; do
+for N in 32 64 128; do
+KF=$(python3 -c "print($N / 256)")
+LINKS=$(case $N in 32) echo 4 ;; 64) echo 6 ;; *) echo 8 ;; esac) \
+  chain "s8m4_${SEL}_n${N}_L0_set" --selector "$SEL" --inject_layer 0 --select_unit location \
+  --lr_patch 8 --crop_px 4 --k_frac "$KF" --readout native_set
+done
+done
+fi
+# round 56 (2026-10-16): content-blind controls for the per-season oracles, and the missing
+# controls of round 55 (both setups: ps16 seasons + ps8 crops at n = 8/16/32 windows, ps8
+# seasons + ps4 crops at n = 32/64/128 ps4 cells; budget n x present months; native_set, block 0):
+#   sctl_{season_random,season_grid}_<setup>_n<N>   random (season, window) pairs / a lattice of
+#        n windows in every season, shifted one coset per season (same budget as oracle_season)
+#   s8m4_{grid,random}_n<N>   location grid / random for the ps8 + ps4 setup (cf. round 52)
+#   dedr_<pair>_n<K>   FULLY random per-(month, pixel) crops, a model dedicated to K crops: round
+#        44's dedicated grid models with --selector random (uniform pixel position, uniform month)
+# Submitted with EMAIL=.
+if [ "$TASK" = pastis ] || [ "$TASK" = biomassters ]; then
+for SEL in season_random season_grid; do
+for N in 8 16 32; do
+LINKS=3 chain "sctl_${SEL}_s16m8_n${N}" --selector "$SEL" --inject_layer 0 --select_unit location \
+  --crop_px 8 --k_frac "$(python3 -c "print($N / 256)")" --readout native_set
+done
+done
+for SEL in season_random season_grid grid random; do
+for N in 32 64 128; do
+NAME=$(case $SEL in season_*) echo "sctl_${SEL}_s8m4_n${N}" ;; *) echo "s8m4_${SEL}_n${N}_L0_set" ;; esac)
+LINKS=$(case $N in 32) echo 4 ;; 64) echo 6 ;; *) echo 8 ;; esac) \
+  chain "$NAME" --selector "$SEL" --inject_layer 0 --select_unit location \
+  --lr_patch 8 --crop_px 4 --k_frac "$(python3 -c "print($N / 256)")" --readout native_set
+done
+done
+FRR=(--select_unit "$UNIT" --readout native_set --inject_layer 0 --crop_free --vary_crops --selector random)
+for PAIR in "16 8" "8 4"; do
+set -- $PAIR
+for K in 64 128 256 512 1024 2048; do
+LINKS=$(case $K in 2048) echo 12 ;; 1024) echo 7 ;; 512) echo 5 ;; *) echo 4 ;; esac) \
+  chain "dedr_$1-$2_n$K" "${FRR[@]}" --lr_patch "$1" --crop_px "$2" --crop_counts "$K"
+done
+done
+fi
+# round 57 (2026-10-16): round 55's four label oracles (ps8 seasons + ps4 crops) with candidate
+# stride 2 (--loc_stride 2): 31 x 31 ps4 windows with top-left corners every 2 px, neighbours
+# overlap by half -- the ps4 analogue of stride 4 for ps8 crops. Same budgets n = 32 / 64 / 128.
+# Submitted with EMAIL=.
+if [ "$TASK" = pastis ] || [ "$TASK" = biomassters ]; then
+for SEL in oracle oracle_season oracle_tophalf oracle_bothalf; do
+for N in 32 64 128; do
+LINKS=$(case $N in 32) echo 4 ;; 64) echo 6 ;; *) echo 8 ;; esac) \
+  chain "s8m4_${SEL}_st2_n${N}_L0_set" --selector "$SEL" --inject_layer 0 --select_unit location \
+  --lr_patch 8 --crop_px 4 --loc_stride 2 --k_frac "$(python3 -c "print($N / 256)")" --readout native_set
+done
+done
+fi
+# round 58 (2026-10-16): readout SEASON DROPOUT (--season_drop 0.25: in training each (sample,
+# season) token leaves the native_set pool with p 0.25, all cells, crops kept) -- the round-55
+# season-oracle runs had pools collapsed onto one season (weights .73 / .94), the ignored seasons
+# then carry high loss and attract the season oracle's crops. ps8 seasons + ps4 crops: no-crop
+# baseline + location / season / better-half oracles at n = 32 / 64 / 128. Submitted with EMAIL=.
+if [ "$TASK" = pastis ] || [ "$TASK" = biomassters ]; then
+SD=(--inject_layer 0 --select_unit location --lr_patch 8 --crop_px 4 --readout native_set --season_drop 0.25)
+LINKS=3 chain "sd_none_s8" --selector none --lr_patch 8 --readout native_set --season_drop 0.25
+for SEL in oracle oracle_season oracle_bothalf; do
+for N in 32 64 128; do
+LINKS=$(case $N in 32) echo 4 ;; 64) echo 6 ;; *) echo 8 ;; esac) \
+  chain "sd_s8m4_${SEL}_n${N}" --selector "$SEL" "${SD[@]}" --k_frac "$(python3 -c "print($N / 256)")"
+done
+done
+fi
+# round 59 (2026-10-18): a SECOND oracle layer inside the better-half season oracle's ps8 month
+# crops (layer 1: ps16 seasons + ps8 windows at stride 8, n1 = 8 / 16 / 32), warm from that
+# layer-1 checkpoint, full FT (finetune_inject --level2, InjectFT.set_level2): the n2 ps4 cells
+# under a layer-1 crop where the layer-1 model's loss is highest, each its lower-loss half of the
+# cropped months (a month crop's own head map vs the label), n2 = n1 / 2, n1, 2 n1:
+#   m4  those months' composites at ps4    (resolution only)
+#   d8  their raw dates at ps8 on n2 / 4 windows   (time only; PASTIS: S2 + S1A dates)
+#   d4  their raw dates at ps4                       (both)
+# + d4 (BioMassters: m4) with random cells and a random half of the months; l2none = the
+# layer-1 checkpoint fine-tuned again with no level 2 (the extra epochs alone). BioMassters
+# has ONE image per month: m4 only. Submitted with EMAIL=.
+if [ "$TASK" = pastis ] || [ "$TASK" = biomassters ]; then
+L1=(--selector oracle_bothalf --inject_layer 0 --select_unit location --crop_px 8 --loc_stride 8
+    --readout native_set --pos center)
+EPS=$([ "$TASK" = pastis ] && echo 50 || echo 10)
+ARMS=$([ "$TASK" = pastis ] && echo "m4 d8 d4" || echo "m4")
+CTRL=$([ "$TASK" = pastis ] && echo d4 || echo m4)
+for N in 8 16 32; do
+KF=$(python3 -c "print($N / 256)")
+CK=$(python3 -c "print('inject_fft_${TASK}_tiny_oracle_bothalf_L0_k' + format($N / 256, '.3g') + '_loc_native_set_cpx8_st8_poscenter_lr0.001_ep${EPS}')")
+[ -f "checkpoints/$CK.pt" ] || { echo "missing $CK" >&2; exit 1; }
+LINKS=3 chain "l2none_n${N}" "${L1[@]}" --k_frac "$KF" --init_ckpt "$CK"
+for N2 in $((N / 2)) "$N" $((2 * N)); do
+for ARM in $ARMS; do
+LINKS=$([ "$ARM" = m4 ] && echo 3 || echo 4) \
+  chain "l2${ARM}_n${N}_${N2}" "${L1[@]}" --k_frac "$KF" --init_ckpt "$CK" --level2 "$ARM" --l2_n "$N2"
+done
+LINKS=$([ "$CTRL" = m4 ] && echo 3 || echo 4) \
+  chain "l2${CTRL}r_n${N}_${N2}" "${L1[@]}" --k_frac "$KF" --init_ckpt "$CK" --level2 "$CTRL" \
+  --l2_n "$N2" --l2_pick random
+done
+done
+fi
+# round 60 (2026-10-18): the second oracle layer under ps8 SEASONS + ps4 month crops (layer 1:
+# better-half oracle, n1 = 32 / 64 / 128 ps4 cells, round 55 checkpoints), warm, full FT:
+# n2 = n1 / 2, n1, 2 n1 ps2 cells under a layer-1 crop, each its lower-loss half of the cropped
+# months:  m2 = those months' composites at ps2,  d2 = their raw dates at ps2 (PASTIS only; one
+# image per month on BioMassters). + d2 (BioMassters m2) with random picks, + l2none. PASTIS d2
+# at n1 = 128 runs at batch 16 (batch 32 runs out of the L40S's 44 GB). Submitted with EMAIL=.
+if [ "$TASK" = pastis ] || [ "$TASK" = biomassters ]; then
+L1=(--selector oracle_bothalf --inject_layer 0 --select_unit location --lr_patch 8 --crop_px 4
+    --readout native_set --pos center)
+EPS=$([ "$TASK" = pastis ] && echo 50 || echo 10)
+ARMS=$([ "$TASK" = pastis ] && echo "m2 d2" || echo "m2")
+CTRL=$([ "$TASK" = pastis ] && echo d2 || echo m2)
+for N in 32 64 128; do
+KF=$(python3 -c "print($N / 256)")
+CK=$(python3 -c "print('inject_fft_${TASK}_tiny_oracle_bothalf_L0_k' + format($N / 256, '.3g') + '_loc_native_set_poscenter_lrps8_lr0.001_ep${EPS}')")
+[ -f "checkpoints/$CK.pt" ] || { echo "missing $CK" >&2; exit 1; }
+LINKS=3 chain "s8l2none_n${N}" "${L1[@]}" --k_frac "$KF" --init_ckpt "$CK"
+for N2 in $((N / 2)) "$N" $((2 * N)); do
+for ARM in $ARMS ${CTRL}r; do
+A=${ARM%r}; PICK=(); [ "$A" != "$ARM" ] && PICK=(--l2_pick random)
+BS=(); LK=$([ "$A" = m2 ] && echo 4 || echo 5)
+if [ "$A" = d2 ] && [ "$N" = 128 ]; then BS=(--batch_size 16); LK=8; fi
+[ "$TASK" = biomassters ] && LK=3
+LINKS=$LK chain "s8l2${ARM}_n${N}_${N2}" "${L1[@]}" --k_frac "$KF" --init_ckpt "$CK" --level2 "$A" \
+  --l2_n "$N2" "${PICK[@]}" "${BS[@]}"
+done
+done
+done
+fi

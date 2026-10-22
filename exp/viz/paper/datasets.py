@@ -7,11 +7,12 @@ Writes to figures/paper/datasets/:
     dataset_stats.json            every number in the table, as counted here from the data
     dataset_table.md / .tex       one row per modality of each release; the modalities the
                                   models read are in bold
-    examples.{png,pdf}            the four examples in one figure
+    examples.{png,pdf}            the five examples in one figure
     example_<dataset>.{png,pdf}   each example on its own
     frames/<dataset>/             every panel as its own PNG (nearest-neighbour upscaled)
 
-Timestep counts are per sample: PASTIS from metadata.geojson (all 2,433 patches), BioMassters
+Timestep counts are per sample: PASTIS and PLANTEUR from metadata.geojson (all 2,433 / 2,750
+patches), BioMassters
 from the tortilla index (every --bio_every-th chip), GEOID from the packed series' metadata
 (test + val chips' tiles, the fixed 6-month evaluation window), YieldSAT from the packed index
 (all 2,173 fields).
@@ -39,6 +40,10 @@ from manyup.data import All  # noqa: E402
 from manyup.data.datasets.biomassters import MONTHS, BiomasstersDataset  # noqa: E402
 from manyup.data.datasets.geoidflood_series import GeoidSeriesDataset, _meta  # noqa: E402
 from manyup.data.datasets.pastis import CLASS_NAMES, PastisDataset  # noqa: E402
+from manyup.data.datasets.planteur import CLASS_NAMES as PLANTEUR_CLASSES  # noqa: E402
+from manyup.data.datasets.planteur import DEFAULT_ROOT as PLANTEUR_ROOT  # noqa: E402
+from manyup.data.datasets.planteur import FOLDS as PLANTEUR_FOLDS  # noqa: E402
+from manyup.data.datasets.planteur import PlanteurDataset  # noqa: E402
 from manyup.data.datasets.yieldsat import CLEAR_SCL, PACKED, load_index  # noqa: E402
 from manyup.data.time import from_days  # noqa: E402
 
@@ -54,6 +59,11 @@ INK, MUTED, RULE = "#111111", "#555555", "#bbbbbb"
 GEOID_COLORS = {0: (0.90, 0.90, 0.88), 1: (0.16, 0.47, 0.84), 2: (0.92, 0.41, 0.20),
                 255: (1.0, 1.0, 1.0)}
 GEOID_NAMES = {0: "background", 1: "permanent water", 2: "flood", 255: "unmapped (ignored)"}
+# the release's own class colours (documentation/colormap.txt); void white
+PLANTEUR_COLORS = {**{int(r[0]): tuple(int(v) / 255 for v in r[1:]) for r in
+                      (ln.split() for ln in open(PLANTEUR_ROOT / "documentation/colormap.txt"))
+                      if r},
+                   255: (1.0, 1.0, 1.0)}
 
 
 def rng3(v):
@@ -74,6 +84,12 @@ def stats(bio_every: int = 10) -> dict:
     n = {m: [len(f["properties"][f"dates-{m}"]) for f in feats] for m in ("S2", "S1A", "S1D")}
     out["pastis"] = {"patches": len(feats), "steps": {m: rng3(v) for m, v in n.items()},
                      "tiles": {s: len(TASKS["pastis"].dataset(s)) for s in ("train", "val", "test")}}
+    # PLANTEUR
+    feats = json.load(open(PLANTEUR_ROOT / "metadata.geojson"))["features"]
+    n = {m: [len(f["properties"][f"dates-{m}"]) for f in feats] for m in ("S2", "S1", "LS")}
+    out["planteur"] = {"patches": len(feats), "steps": {m: rng3(v) for m, v in n.items()},
+                       "tiles": {s: len(TASKS["planteur"].dataset(s))
+                                 for s in ("train", "val", "test")}}
     # BioMassters: months with a frame, per chip
     counts = {"S1": [], "S2": []}
     sizes = {}
@@ -124,6 +140,7 @@ def table_rows(st: dict) -> list[dict]:
     """One row per modality. used: the models read it. `steps`: timesteps per sample in the
     release; `ours`: what the mixed-resolution model is given."""
     p, b, g, y = st["pastis"], st["biomassters"], st["geoid"], st["yieldsat"]
+    pl = st["planteur"]
     tiles = lambda t: f"{t['train']:,} / {t['val']:,} / {t['test']:,}"  # noqa: E731
     return [
         dict(ds="PASTIS-R", task="crop type, 19 classes (mIoU)",
@@ -136,6 +153,21 @@ def table_rows(st: dict) -> list[dict]:
              ours="4 seasons → 12 monthly means → single dates"),
         dict(mod="Sentinel-1 descending", bands="VV, VH, VV−VH", used=False,
              steps=f"{span(p['steps']['S1D'])} dates", cadence="irregular, own dates", ours="—"),
+        dict(ds="PLANTEUR", task="tropical crop type, 8 classes (mIoU)",
+             size=f"{pl['patches']:,} patches, 128 px; {tiles(pl['tiles'])} tiles of 64 px",
+             mod="Sentinel-2 L2A", bands="10 bands", used=True,
+             steps=f"{span(pl['steps']['S2'])} dates", cadence="irregular, own dates",
+             ours="4 seasons → 12 monthly means (2019) → single dates"),
+        dict(mod="Sentinel-1 RTC, both orbits", bands="VV, VH (linear → dB)", used=True,
+             steps=f"{span(pl['steps']['S1'])} dates", cadence="irregular, own dates",
+             ours="4 seasons → 12 monthly means (2019) → single dates"),
+        dict(mod="Landsat-8 L1 (+ panchromatic)", bands="10 bands at 20 m (+ B8 at 10 m)",
+             used=False, steps=f"{span(pl['steps']['LS'])} dates", cadence="irregular, 16-day",
+             ours="—"),
+        dict(mod="S2 / S1 / Landsat monthly mosaics", bands="as above", used=False,
+             steps="12 months", cadence="least-cloudy scene per 30 days, 2019", ours="—"),
+        dict(mod="Embeddings (AlphaEarth, Tessera, OlmoEarth)", bands="64–128 dims", used=False,
+             steps="static", cadence="annual, 2019", ours="—"),
         dict(ds="BioMassters", task="above-ground biomass, t/ha (RMSE)",
              size=f"{sum(b['chips'].values()):,} chips, 256 px; {tiles(b['tiles'])} tiles of 64 px",
              mod="Sentinel-2 L2A", bands="10 bands", used=True,
@@ -244,6 +276,71 @@ def pastis_example(pid: str, ncols: int) -> dict:
         label=poster.colorize(label, poster.PASTIS_COLORS), label_title="crop type",
         legend=[Patch(fc=poster.PASTIS_COLORS[c], ec="0.5", lw=0.4, label=CLASS_NAMES[c])
                 for c in present])
+
+
+PLANTEUR_CLEAR_B02 = 1000     # display only: brighter in blue (B02) = cloud / haze
+PLANTEUR_LIT_B08 = 1500       # darker in NIR (B08) = cloud shadow (the patches are mostly green)
+
+
+def planteur_clear(s2: np.ndarray) -> np.ndarray:
+    """(T, C, H, W) -> (T,) share of pixels with data, B02 below PLANTEUR_CLEAR_B02 and B08 above
+    PLANTEUR_LIT_B08. PLANTEUR ships no cloud mask; this only chooses which dates the figure
+    shows (B02 alone let thin cloud and shadowed dates through)."""
+    b2, b8 = s2[:, 0], s2[:, 6]
+    return ((b2 > 0) & (b2 < PLANTEUR_CLEAR_B02) & (b8 > PLANTEUR_LIT_B08)).reshape(
+        len(s2), -1).mean(1)
+
+
+def planteur_pick(ncols: int) -> str:
+    """A test patch with >= 4 classes, >= ncols clear 2019 S2 dates (planteur_clear >= 0.9), and
+    the most crop (non-background) pixels."""
+    ds = PlanteurDataset("test", {"S2": All()}, tiling=None)
+    best, best_id = -1.0, ds.sample_id(0)
+    for pid in ds._native_ids("test"):
+        lab = np.load(PLANTEUR_ROOT / "ANNOTATIONS" / f"TARGET_{pid}.npy")[0]
+        crop = float(((lab > 0) & (lab != 255)).mean())
+        if len(set(np.unique(lab).tolist()) - {255}) < 4 or crop <= best:
+            continue
+        dates = ds._meta[pid]["dates-S2"]
+        in_2019 = [int(k) for k, d in dates.items() if d // 10000 == 2019]
+        s2 = np.load(PLANTEUR_ROOT / "DATA_S2" / f"S2_{pid}.npy", mmap_mode="r")
+        if int((planteur_clear(np.asarray(s2[in_2019])) >= 0.9).sum()) >= ncols:
+            best, best_id = crop, pid
+    return best_id
+
+
+def planteur_example(pid: str | None, ncols: int) -> dict:
+    pid = pid or planteur_pick(ncols)
+    for split in ("test", "val", "train"):
+        ds = PlanteurDataset(split, {"S2": All(), "S1": All()}, tiling=None)
+        if ds._meta[pid]["Fold"] in PLANTEUR_FOLDS[split]:
+            break
+    s = ds[ds.index_of(pid)]
+    s2, s1 = s.modalities["S2"], s.modalities["S1"]
+    year = lambda md: [t for t, d in enumerate(md.time.start.tolist())  # noqa: E731
+                       if from_days(d).year == 2019]
+    x2 = s2.data.numpy()
+    good = [t for t in year(s2) if planteur_clear(x2[t:t + 1])[0] >= 0.9]
+    i2 = [good[i] for i in evenly(len(good), ncols)]
+    f2 = poster.s2_rgb_series(x2[i2], [2, 1, 0])           # one stretch over the shown dates
+    y1 = year(s1)
+    i1 = [y1[i] for i in evenly(len(y1), ncols)]
+    f1 = poster.s1_rgb_series(s1.data[i1, 0].numpy(), s1.data[i1, 1].numpy(),
+                              s1.pixel_valid[i1].numpy())
+    label = s.target.numpy().astype(int)
+    return dict(
+        name="planteur", title=f"PLANTEUR · patch {pid} ({s.meta['island']}, {split})",
+        sub=f"crop type · 128 × 128 px at 10 m · {s2.num_frames} S2 and {s1.num_frames} S1 dates "
+            f"in 2018-09..2019-12; {len(good)} of {len(year(s2))} S2 dates in 2019 clear (display test: ≥ 90% of pixels "
+            f"with B02 < {PLANTEUR_CLEAR_B02} and B08 > {PLANTEUR_LIT_B08})",
+        rows=[(f"Sentinel-2 RGB\n{len(i2)} of {len(good)} clear\n2019 dates",
+               [(f, fmt(s2.time.start[t])) for f, t in zip(f2, i2)]),
+              (f"Sentinel-1 A + D\n{len(i1)} of {len(y1)}\n2019 dates",
+               [(f, fmt(s1.time.start[t])) for f, t in zip(f1, i1)])],
+        label=poster.colorize(label, PLANTEUR_COLORS), label_title="crop type",
+        legend=[Patch(fc=PLANTEUR_COLORS[c], ec="0.5", lw=0.4,
+                      label=PLANTEUR_CLASSES[c] if c != 255 else "void (ignored)")
+                for c in np.unique(label)])
 
 
 def biomassters_pick(n_scan: int = 120) -> str:
@@ -473,6 +570,7 @@ def main():
     ap.add_argument("--only", choices=["table", "examples"])
     ap.add_argument("--ncols", type=int, default=12, help="timesteps shown per row")
     ap.add_argument("--pastis_id", default="40091")
+    ap.add_argument("--planteur_id", default=None)
     ap.add_argument("--biomassters_chip", default=None)
     ap.add_argument("--geoid_chip", default=None)
     ap.add_argument("--yieldsat_field", default=None)
@@ -485,7 +583,8 @@ def main():
         path.write_text(json.dumps(st, indent=1))
         write_table(st)
     if a.only != "table":
-        ex = [pastis_example(a.pastis_id, a.ncols), biomassters_example(a.biomassters_chip, a.ncols),
+        ex = [pastis_example(a.pastis_id, a.ncols), planteur_example(a.planteur_id, a.ncols),
+              biomassters_example(a.biomassters_chip, a.ncols),
               geoid_example(a.geoid_chip, a.ncols), yieldsat_example(a.yieldsat_field, a.ncols)]
         (OUT / "examples.json").write_text(json.dumps(
             {e["name"]: e["title"] for e in ex}, indent=1))

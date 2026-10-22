@@ -3,6 +3,11 @@
 | **PASTIS-R** | crop type, 19 classes (mIoU) | 2,433 patches, 128 px; 5,820 / 1,928 / 1,984 tiles of 64 px | **Sentinel-2 L2A** | 10 bands | 38–61 (median 46) dates | irregular, own dates | 4 seasons → 12 monthly means → single dates |
 |  |  |  | **Sentinel-1 ascending** | VV, VH, VV−VH | 65–71 (median 71) dates | irregular, own dates | 4 seasons → 12 monthly means → single dates |
 |  |  |  | Sentinel-1 descending | VV, VH, VV−VH | 69–70 (median 70) dates | irregular, own dates | — |
+| **PLANTEUR** | tropical crop type, 8 classes (mIoU) | 2,750 patches, 128 px; 7,584 / 1,644 / 1,772 tiles of 64 px | **Sentinel-2 L2A** | 10 bands | 40–150 (median 87) dates | irregular, own dates | 4 seasons → 12 monthly means (2019) → single dates |
+|  |  |  | **Sentinel-1 RTC, both orbits** | VV, VH (linear → dB) | 40–150 (median 123) dates | irregular, own dates | 4 seasons → 12 monthly means (2019) → single dates |
+|  |  |  | Landsat-8 L1 (+ panchromatic) | 10 bands at 20 m (+ B8 at 10 m) | 28–61 (median 30) dates | irregular, 16-day | — |
+|  |  |  | S2 / S1 / Landsat monthly mosaics | as above | 12 months | least-cloudy scene per 30 days, 2019 | — |
+|  |  |  | Embeddings (AlphaEarth, Tessera, OlmoEarth) | 64–128 dims | static | annual, 2019 | — |
 | **BioMassters** | above-ground biomass, t/ha (RMSE) | 8,513 chips, 256 px; 64,032 / 27,808 / 44,368 tiles of 64 px | **Sentinel-2 L2A** | 10 bands | 5–12 (median 11) months | monthly composites, Sep–Aug | 4 seasons → 12 months (no dates in the release) |
 |  |  |  | **Sentinel-1 ascending** | VV, VH | 12 months | monthly composites, Sep–Aug | 4 seasons → 12 months |
 |  |  |  | Sentinel-1 descending | VV, VH | ≤ 12 months | monthly composites | — |

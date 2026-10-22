@@ -6,6 +6,8 @@ predicts (target, loss, metrics) and, per model family, how its inputs are packe
   task        data (OlmoEarth)                         head       target / primary metric
   pastis      S2 + S1A, monthly MEAN on the agri year,  time_mean  19 crop classes (void
               64 px tiles of the 128 px patches                    ignored) / mIoU
+  planteur    S2 + S1 (dB), monthly MEAN on calendar    time_mean  8 tropical crop classes
+              2019, 64 px tiles of the 128 px patches              (void ignored) / mIoU
   biomassters S1 (ascending) + S2, the 12 month slots,  time_mean  AGBM t/ha, standardized
               64 px tiles of the 256 px chips                      for the loss / RMSE
   geoidflood  S1 pre + post (dB), 64 px chips with       diff       background / permanent
@@ -39,6 +41,10 @@ from manyup.data import All, MTMMBatch, MTMMDataset, Pool, PoolYears, TemporalPo
 from manyup.data.datasets.biomassters import PLACEHOLDER_YEAR, BiomasstersDataset
 from manyup.data.datasets.geoidflood import ChipSelection, GeoidFloodDataset
 from manyup.data.datasets.pastis import AGRI_YEAR, CLASS_NAMES, PastisDataset
+from manyup.data.datasets.planteur import CLASS_NAMES as PLANTEUR_CLASSES
+from manyup.data.datasets.planteur import VOID as PLANTEUR_VOID
+from manyup.data.datasets.planteur import YEAR_2019 as PLANTEUR_YEAR
+from manyup.data.datasets.planteur import PlanteurDataset
 from manyup.data.datasets.yieldsat import PACKED as YIELDSAT_PACKED
 from manyup.data.datasets.yieldsat import S2_BANDS as YIELDSAT_S2_BANDS
 from manyup.data.datasets.yieldsat import YieldSat24Dataset, YieldSatDataset
@@ -234,6 +240,62 @@ class PastisS2(Pastis):
 
     def policies(self):
         return {"S2": Pool("month", "mean", window=AGRI_YEAR)}
+
+
+# ---- PLANTEUR --------------------------------------------------------------------------------
+# PASTIS's recipe on the tropical crop-type benchmark (manyup/data/datasets/planteur.py): monthly
+# MEAN on calendar 2019, the label year (S2 is NOT cloud-masked: cloudy frames enter the mean;
+# only no-data pixels are left out). S1 is one dB series with both orbits. 8 classes, void 255.
+# Batch sizes as PASTIS: the same token count (12 months, 64 px tiles, S2 + S1).
+# UTAE input norm: per-channel mean / std over valid pixels of every frame (clouds included),
+# 300 random train patches (seed 0), every 4th pixel; S1 in dB (the release's NORM_S1 is linear)
+PLANTEUR_NORM = {
+    "S2": ((2813.0, 2838.8, 2645.0, 3151.5, 4062.4, 4412.8, 4377.8, 4532.1, 2695.5, 1859.1),
+           (3282.5, 3017.1, 2953.4, 2962.3, 2464.3, 2332.9, 2334.0, 2225.0, 1470.6, 1257.0)),
+    "S1": ((-8.017, -14.071), (3.509, 3.301)),
+}
+
+
+class Planteur(Task):
+    name, kind, num_outputs, reduction = "planteur", "classification", 8, "time_mean"
+    olmoearth = OlmoEarthSetup({"S2": "sentinel2_l2a", "S1": "sentinel1"}, {"S2": S2_IMPUTE})
+    # dates in days since 2018-09-01 (the retrieval window's start)
+    utae = UTAESetup(("S2", "S1"), to_days(dt.date(2018, 9, 1)), PLANTEUR_NORM, batch_size=16)
+    batch_size = {4: 8, 16: 32}
+    stored_modalities = ("S2", "S1")
+    guidance = {"S2": PlanteurDataset.SPEC.modalities["S2"].bands, "S1": ("VV", "VH")}
+    rgb = {"S2": S2_RGB}
+    store_name, store_dtypes = "planteur_tile64", {"S2": "uint16", "target": "uint8"}
+    season = 3
+
+    def policies(self):
+        month_mean = Pool("month", "mean", window=PLANTEUR_YEAR)
+        return {"S2": month_mean, "S1": month_mean}
+
+    def raw(self, split, policies):
+        return PlanteurDataset(split, policies, Tiling(64, "col-major"))
+
+    def target(self, batch):
+        t = batch.target.clone()
+        t[t == PLANTEUR_VOID] = IGNORE
+        return t
+
+    def loss(self):
+        return nn.CrossEntropyLoss(ignore_index=IGNORE)
+
+    def meter(self):
+        return SegMeter(self.num_outputs, tuple(n.lower().replace(" ", "_").replace(",", "")
+                                                for n in PLANTEUR_CLASSES))
+
+
+class PlanteurS2(Planteur):
+    name = "planteur_s2"
+    olmoearth = OlmoEarthSetup({"S2": "sentinel2_l2a"}, {"S2": S2_IMPUTE})
+    utae = UTAESetup(("S2",), to_days(dt.date(2018, 9, 1)), PLANTEUR_NORM, batch_size=16)
+    guidance = {"S2": PlanteurDataset.SPEC.modalities["S2"].bands}
+
+    def policies(self):
+        return {"S2": Pool("month", "mean", window=PLANTEUR_YEAR)}
 
 
 # ---- BioMassters -----------------------------------------------------------------------------
@@ -490,6 +552,6 @@ class YieldSatRaw(_YieldSat):
         return {"S2": PoolYears(2, "mean")}    # the same 24 slots, clear-pixel monthly means
 
 
-TASKS: dict[str, Task] = {t.name: t for t in (Pastis(), PastisS2(), Biomassters(), GeoidFlood(),
-                                              GeoidSeries(), GeoidSeriesFlood(),
-                                              YieldSatML24(), YieldSatRaw())}
+TASKS: dict[str, Task] = {t.name: t for t in (Pastis(), PastisS2(), Planteur(), PlanteurS2(),
+                                              Biomassters(), GeoidFlood(), GeoidSeries(),
+                                              GeoidSeriesFlood(), YieldSatML24(), YieldSatRaw())}

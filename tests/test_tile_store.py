@@ -9,7 +9,7 @@ from exp.common.tasks import TASKS
 from manyup.data import All
 from manyup.data.tile_store import TileStoreDataset, build_tile_store, store_name
 
-NATIVES = {"pastis": 2, "biomassters": 1, "geoidflood": 40}
+NATIVES = {"pastis": 2, "planteur": 2, "planteur_s2": 2, "biomassters": 1, "geoidflood": 40}
 
 
 def _raw_or_skip(task, split):

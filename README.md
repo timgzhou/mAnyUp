@@ -3,9 +3,10 @@
 Feature upsampling for remote-sensing foundation models. OlmoEarth features are cheap at
 coarse patch sizes and expensive at fine ones; mAnyUp and timAnyUp learn to recover the
 fine features from coarse ones (plus cheap guidance), and are evaluated by linear probing
-on four datasets:
+on five datasets:
 
 - **PASTIS**: crop-type segmentation from S2/S1 time series (UTAE is the baseline)
+- **PLANTEUR**: PASTIS-format crop-type segmentation in France's tropical overseas territories
 - **GEOID-Flood**: flood segmentation from S1 pre/post pairs
 - **Biomassters**: forest biomass regression (not yet ported)
 - **YieldSAT**: pixel crop-yield regression from S2 time series (4 countries x 4 crops); the

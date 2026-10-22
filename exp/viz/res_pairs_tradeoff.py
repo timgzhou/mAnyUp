@@ -152,7 +152,7 @@ VARIANTS = {   # variant -> (file tag, subtitle)
 
 
 def draw(grid_mode, variant, overlay=None, suffix="", note="", mixed=True, subtitle=None,
-         footnote=None):
+         footnote=None, ncol=3):
     """overlay(ax, task, higher_is_better, pending): extra series drawn on each panel;
     suffix: appended to the file name; note: an extra footnote line; mixed=False: no grid-crop
     curves (nor their coverage legend); subtitle / footnote: replace the default texts."""
@@ -216,7 +216,7 @@ def draw(grid_mode, variant, overlay=None, suffix="", note="", mixed=True, subti
     if variant == "ded+ded3":
         lab.append("same pair, crops join at block 3 (coverage as the block-0 point "
                    "with the same count)")
-    fig.legend(h, lab, loc="lower left", ncol=3, frameon=False, fontsize=9.5,
+    fig.legend(h, lab, loc="lower left", ncol=ncol, frameon=False, fontsize=9.5,
                bbox_to_anchor=(0.005, 0.09))
     fig.suptitle("Mixed-resolution OlmoEarth tiny against fixed patch sizes: accuracy for compute",
                  x=0.012, y=0.985, ha="left", fontsize=14, fontweight="bold")

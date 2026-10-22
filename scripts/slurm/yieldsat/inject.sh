@@ -488,3 +488,101 @@ chain "zs_ora_st${S}_n${N}_mean_oneway" 1 "${W[@]}" --selector oracle "${OR[@]}"
   --readout native_mean --attn oneway --init_ckpt "$ZS_CKPT" --epochs 0 --pos center
 done
 done
+# 2026-10-16: per-season label oracles (see scripts/slurm/inject.sh round 54). Submitted with EMAIL=.
+for SEL in oracle_season oracle_tophalf oracle_bothalf; do
+for S in 4 6 8; do
+for N in 8 16 32; do
+KF=$(python3 -c "print($N / 256)")
+chain "${SEL#oracle_}_st${S}_n${N}_L0_set" 5 "${W[@]}" --selector "$SEL" "${OR[@]}" --loc_stride "$S" \
+  --k_frac "$KF" --readout native_set
+done
+done
+done
+# 2026-10-16: the four label oracles with ps8 seasons + ps4 month crops (see
+# scripts/slurm/inject.sh round 55). Submitted with EMAIL=.
+for SEL in oracle oracle_season oracle_tophalf oracle_bothalf; do
+for N in 32 64 128; do
+KF=$(python3 -c "print($N / 256)")
+chain "s8m4_${SEL}_n${N}_L0_set" "$(case $N in 32) echo 6 ;; 64) echo 8 ;; *) echo 10 ;; esac)" "${W[@]}" \
+  --selector "$SEL" --inject_layer 0 --select_unit location --lr_patch 8 --crop_px 4 --k_frac "$KF" \
+  --readout native_set
+done
+done
+# 2026-10-16: controls for the per-season oracles and round 55 (see scripts/slurm/inject.sh
+# round 56). Submitted with EMAIL=.
+for SEL in season_random season_grid; do
+for N in 8 16 32; do
+chain "sctl_${SEL}_s16m8_n${N}" 5 "${W[@]}" --selector "$SEL" "${OR[@]}" \
+  --k_frac "$(python3 -c "print($N / 256)")" --readout native_set
+done
+done
+for SEL in season_random season_grid grid random; do
+for N in 32 64 128; do
+NAME=$(case $SEL in season_*) echo "sctl_${SEL}_s8m4_n${N}" ;; *) echo "s8m4_${SEL}_n${N}_L0_set" ;; esac)
+chain "$NAME" "$(case $N in 32) echo 6 ;; 64) echo 8 ;; *) echo 10 ;; esac)" "${W[@]}" \
+  --selector "$SEL" --inject_layer 0 --select_unit location --lr_patch 8 --crop_px 4 \
+  --k_frac "$(python3 -c "print($N / 256)")" --readout native_set
+done
+done
+FRR=("${W[@]}" --select_unit slot --readout native_set --inject_layer 0 --crop_free --vary_crops --selector random)
+for PAIR in "16 8" "8 4"; do
+set -- $PAIR
+for K in 64 128 256 512 1024 2048; do
+chain "dedr_$1-$2_n$K" $(case $K in 2048) echo 12 ;; 1024) echo 7 ;; 512) echo 5 ;; *) echo 4 ;; esac) \
+  "${FRR[@]}" --lr_patch "$1" --crop_px "$2" --crop_counts "$K"
+done
+done
+# 2026-10-16: the four label oracles, ps8 seasons + ps4 crops, candidate stride 2 (see
+# scripts/slurm/inject.sh round 57). Submitted with EMAIL=.
+for SEL in oracle oracle_season oracle_tophalf oracle_bothalf; do
+for N in 32 64 128; do
+chain "s8m4_${SEL}_st2_n${N}_L0_set" "$(case $N in 32) echo 6 ;; 64) echo 8 ;; *) echo 10 ;; esac)" "${W[@]}" \
+  --selector "$SEL" --inject_layer 0 --select_unit location --lr_patch 8 --crop_px 4 --loc_stride 2 \
+  --k_frac "$(python3 -c "print($N / 256)")" --readout native_set
+done
+done
+# 2026-10-16: readout season dropout (see scripts/slurm/inject.sh round 58). Submitted with EMAIL=.
+SD=(--inject_layer 0 --select_unit location --lr_patch 8 --crop_px 4 --readout native_set --season_drop 0.25)
+chain "sd_none_s8" 4 "${W[@]}" --selector none --lr_patch 8 --readout native_set --season_drop 0.25
+for SEL in oracle oracle_season oracle_bothalf; do
+for N in 32 64 128; do
+chain "sd_s8m4_${SEL}_n${N}" "$(case $N in 32) echo 6 ;; 64) echo 8 ;; *) echo 10 ;; esac)" "${W[@]}" \
+  --selector "$SEL" "${SD[@]}" --k_frac "$(python3 -c "print($N / 256)")"
+done
+done
+# 2026-10-18: second oracle layer inside the better-half season oracle's month crops (see
+# scripts/slurm/inject.sh round 59). Date arms at batch 32 / 8 workers need ~64+ GB: MEM=100G.
+# Submitted with EMAIL=.
+L1=(--selector oracle_bothalf --inject_layer 0 --select_unit location --crop_px 8 --loc_stride 8
+    --readout native_set --pos center "${W[@]}")
+for N in 8 16 32; do
+KF=$(python3 -c "print($N / 256)")
+CK=$(python3 -c "print('inject_fft_${TASK}_tiny_oracle_bothalf_L0_k' + format($N / 256, '.3g') + '_loc_native_set_cpx8_st8_poscenter_lr0.001_ep${EP}')")
+[ -f "checkpoints/$CK.pt" ] || { echo "missing $CK" >&2; exit 1; }
+chain "l2none_n${N}" 4 "${L1[@]}" --k_frac "$KF" --init_ckpt "$CK"
+for N2 in $((N / 2)) "$N" $((2 * N)); do
+chain "l2m4_n${N}_${N2}" 4 "${L1[@]}" --k_frac "$KF" --init_ckpt "$CK" --level2 m4 --l2_n "$N2"
+for ARM in d8 d4; do
+MEM=100G chain "l2${ARM}_n${N}_${N2}" 6 "${L1[@]}" --k_frac "$KF" --init_ckpt "$CK" --level2 "$ARM" --l2_n "$N2"
+done
+MEM=100G chain "l2d4r_n${N}_${N2}" 6 "${L1[@]}" --k_frac "$KF" --init_ckpt "$CK" --level2 d4 \
+  --l2_n "$N2" --l2_pick random
+done
+done
+# 2026-10-18: second oracle layer under ps8 seasons + ps4 crops (see scripts/slurm/inject.sh
+# round 60): m2 / d2 / d2 random at n2 = n1 / 2, n1, 2 n1 ps2 cells + s8l2none. Date arms
+# MEM=100G. Submitted with EMAIL=.
+L1=(--selector oracle_bothalf --inject_layer 0 --select_unit location --lr_patch 8 --crop_px 4
+    --readout native_set --pos center "${W[@]}")
+for N in 32 64 128; do
+KF=$(python3 -c "print($N / 256)")
+CK=$(python3 -c "print('inject_fft_${TASK}_tiny_oracle_bothalf_L0_k' + format($N / 256, '.3g') + '_loc_native_set_poscenter_lrps8_lr0.001_ep${EP}')")
+[ -f "checkpoints/$CK.pt" ] || { echo "missing $CK" >&2; exit 1; }
+chain "s8l2none_n${N}" 4 "${L1[@]}" --k_frac "$KF" --init_ckpt "$CK"
+for N2 in $((N / 2)) "$N" $((2 * N)); do
+chain "s8l2m2_n${N}_${N2}" 4 "${L1[@]}" --k_frac "$KF" --init_ckpt "$CK" --level2 m2 --l2_n "$N2"
+MEM=100G chain "s8l2d2_n${N}_${N2}" 7 "${L1[@]}" --k_frac "$KF" --init_ckpt "$CK" --level2 d2 --l2_n "$N2"
+MEM=100G chain "s8l2d2r_n${N}_${N2}" 7 "${L1[@]}" --k_frac "$KF" --init_ckpt "$CK" --level2 d2 \
+  --l2_n "$N2" --l2_pick random
+done
+done

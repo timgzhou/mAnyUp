@@ -264,6 +264,45 @@ MAX_JOB_H=3 bash scripts/slurm/sweep.sh yieldsat_ml24 olmoearth
 bash scripts/slurm/yieldsat/inject.sh             # DRY=1 prints the 40 sbatch lines
 ```
 
+## PLANTEUR: tropical crop types, PASTIS format
+
+Code: `manyup/data/datasets/planteur.py`, `exp/common/tasks.py` (`planteur`, `planteur_s2`) ·
+Launchers: `scripts/slurm/planteur/{fetch,inject}.sh`, `exp.common.build_tile_store`,
+`scripts/slurm/sweep.sh` · Tests: `tests/test_planteur.py`, `tests/test_tile_store.py`
+
+PLANTEUR (Wolters et al. 2026, <https://huggingface.co/datasets/allenai/planteur-benchmark>):
+2,750 patches of 128 x 128 px at 10 m in France's overseas territories (Guadeloupe, Martinique,
+Guyane, Reunion, Mayotte, Saint-Martin), 8 classes (Background, Meadow, Fruits/vegetables/
+flowers, Orchard, Sugarcane, Banana, Pineapple, Tropical tuber) + void 255, 2019 labels. Every
+S2 L2A and S1 RTC acquisition 2018-09..2019-12 (40-150 per patch each). Split: the release's
+spatial-block default, train Fold 1 / val 4 / test 5 = 1896 / 411 / 443 patches (x 4 tiles).
+
+Differences from PASTIS the loader handles: S1 is ONE linear series with both orbits -> dB
+(OlmoEarth's S1 statistics are dB), zeros = no observation -> pixel_valid False; S2 is uint16
+with no cloud mask (all-zero pixels = no data, masked; clouds are NOT); geometry is exact,
+read from ANNOTATIONS_GEOTIFF (five UTM zones). The tasks pool calendar-2019 months with a
+plain mean (cloudy frames included; chosen 2026-10-22 to match the PASTIS recipe), S2 B01/B09
+imputed from B02/B8A as for PASTIS. The release's metric counts a class absent from the
+evaluated labels as IoU 0; SegMeter skips classes absent from labels AND predictions, which only
+matters for per-island subsets.
+
+```shell
+bash scripts/slurm/planteur/fetch.sh               # ~120 GB, >= 25 min (Hub rate limit), resumable
+python -m pytest -q tests/test_planteur.py
+sbatch -J store_planteur --gres=none --cpus-per-task=17 --mem=64G --time=3:00:00 \
+    scripts/slurm/run.sh exp.common.build_tile_store --task planteur --num_workers 16
+MAX_JOB_H=3 bash scripts/slurm/sweep.sh planteur extract     # then: olmoearth | utae
+# fixed + mixed resolution (tiny): fixed endpoints, per-month crop curves, better-half season
+# oracle + location controls -- the PASTIS arms of exp.viz.{res_pairs,oracle_season}_tradeoff;
+# also submits the tile store build, which every chain waits for (STORE_JOB=<id>|none to skip)
+bash scripts/slurm/planteur/inject.sh              # DRY=1: 259 jobs in 36 chains
+```
+
+`scripts/slurm/planteur/inject.sh` (submitted 2026-10-22). Not yet on PLANTEUR:
+Landsat (OlmoEarth `landsat` = B8 pan 10 m + 10 bands 20 m, Level-1 DN like the release ->
+a future `planteur_ls` task), season controls (sctl_*), fully random per-month curves (dedr_*),
+GMACs (exp.bench.oracle_flops), the base-model sweep.
+
 ---
 
 ## UTAE baseline (PASTIS)

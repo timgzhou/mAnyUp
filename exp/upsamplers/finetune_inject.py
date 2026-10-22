@@ -131,6 +131,7 @@ olmo_bootstrap.apply()
 import argparse  # noqa: E402
 import copy  # noqa: E402
 import math  # noqa: E402
+import re  # noqa: E402
 import time  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -164,8 +165,24 @@ from manyup.seasonal import season_index, season_mean, seasons_used, select  # n
 from manyup.timAnyUp import topk_mask  # noqa: E402
 
 LR_PS, LOOKUP_PS, TILE = 16, 4, 64
-SELECTORS = ("none", "random", "grid", "learned", "xattn", "oracle", "entropy", "apt")
+SELECTORS = ("none", "random", "grid", "learned", "xattn", "oracle", "entropy", "apt",
+             "oracle_season", "oracle_tophalf", "oracle_bothalf", "season_random", "season_grid")
 PRIOR = ("oracle", "entropy")     # scored by a crop-free pass of the model itself
+# label oracles on PER-SEASON loss (each season token's own head map vs the label), picking
+# (season, location) pairs -- every month of a picked season at that location:
+#   oracle_season   the highest-loss (season, window) pairs
+#   oracle_tophalf  the highest-loss windows (overall, as oracle), each its worse half seasons
+#   oracle_bothalf  the same windows, each its better (lower-loss) half seasons
+# all taken best-first while their crops fit the location oracle's budget at n = k_frac x 256
+# (n windows x present months): ~2n windows for the halves, ~n x seasons pairs
+SEASON_PRIOR = ("oracle_season", "oracle_tophalf", "oracle_bothalf")
+# content-blind controls for oracle_season, same (season, window) pairs and crop budget:
+#   season_random  random pairs
+#   season_grid    in every season a lattice of n windows (location_grid_scores), shifted by one
+#                  coset from season to season (random phase in training, fixed at test)
+SEASON_CTRL = ("season_random", "season_grid")
+SEASONAL = SEASON_PRIOR + SEASON_CTRL
+LR_ENT = ("lr_entropy", "lrent_oloc", "lrent_osea")   # --score_src from the LR-only scorer
 PIXEL_PRIOR = ("apt",)            # scored from raw pixels alone, no model pass at all
 APT_BINS = 32                     # histogram bins for H(P) = -sum p_i log2 p_i (paper: Eq. 1)
 LEARNED = ("learned", "xattn")
@@ -272,8 +289,10 @@ def native_time_logits(linear, ro, lr_F, lr_valid, season, present, frac, hr, hr
     # slot (B, Q, M) -- what a per-date prediction and its leave-one-out need
     return (out, (wgt, cand, crop_of)) if parts else out
 JOINT_ARCH = ("mlp", "xattn", "xenc", "xenc_t", "xenc_ts", "xs", "xc")
-NEW_PARAMS = ("acq_score.", "joint.", "recon_splat.", "joint_embed.", "date_pred.", "date_type")     # modules a warm start (--init_ckpt) may add
-SPARSE = ("cellattn", "cellattn_overlap") + SET   # no month grid: take date crops
+NEW_PARAMS = ("acq_score.", "joint.", "recon_splat.", "joint_embed.", "date_pred.", "date_type",
+              "rank_head.", "res_sel.")     # modules a warm start (--init_ckpt) may add
+SPARSE = ("cellattn", "cellattn_overlap") + SET
+L2_PX = {"m2": 2, "d2": 2, "m4": 4, "d4": 4, "d8": 8}   # --level2 arm -> its crops' px   # no month grid: take date crops
 
 
 class NativeSetReadout(nn.Module):
@@ -317,6 +336,7 @@ class NativeSetReadout(nn.Module):
         # same rule the crops follow.
         self.base_px = base_px or lr_px
         self.no_base = False            # --no_seasons: the season tokens are not candidates
+        self.season_drop = 0.0          # --season_drop p: training drops each (sample, season)
         self.score = None if mean else nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, 1))
         if self.score is not None:
             nn.init.zeros_(self.score[1].weight)
@@ -341,7 +361,8 @@ class NativeSetReadout(nn.Module):
                                     grid (--jitter, --crop_px): a crop then covers part of
                                     several cells, and the pool runs per PIXEL over what covers
                                     it (wgt (B, Q, K, 16) in parts)
-        hr_fp     the off-grid crops' footprint side in px (None: crop_px = 4; --crop_px 16:
+        hr_fp     the off-grid crops' footprint side in px, or (N,) long per crop (--level2
+                  ps2 crops beside ps4 crops) (None: crop_px = 4; --crop_px 16:
                   one ps16 token read at its native 16 x 16 px)
         parts     also return (wgt (B, Q, K), candidate logits (B, Q, K, C, 16), the pooled
                   per-cell logits (B, Q, C, 16), the crop index of each crop slot (B, Q, M),
@@ -370,6 +391,15 @@ class NativeSetReadout(nn.Module):
         s_a = s_a.masked_fill((n_s == 0)[:, :, None, None], float("-inf"))     # unused seasons
         if self.no_base:                                                       # crops only
             s_a = torch.full_like(s_a, float("-inf"))
+        elif self.training and self.season_drop:
+            # whole season tokens out of the pool (every cell), crops kept; at least one used
+            # season stays, so no cell is left without a candidate
+            used = n_s > 0                                                     # (B, NS)
+            drop = (torch.rand_like(n_s) < self.season_drop) & used
+            keep = torch.multinomial(used.float() + 1e-6, 1)                   # (B, 1)
+            rescue = (drop == used).all(1, keepdim=True)                       # all dropped
+            drop = drop & ~(torch.zeros_like(drop).scatter(1, keep, True) & rescue)
+            s_a = s_a.masked_fill(drop[:, :, None, None], float("-inf"))
         s_a = (s_a.repeat_interleave(rs, 2).repeat_interleave(rs, 3)          # (B, NS, H, W)
                .flatten(2).transpose(1, 2))                                    # (B, Q, NS)
         logs, acts = [s_log], [s_a]
@@ -379,29 +409,36 @@ class NativeSetReadout(nn.Module):
         N = len(b)
         cover = None
         if N and hr_px is not None:        # off-grid ps4 crops: entries per overlapped cell
-            fp = hr_fp or c                                     # footprint side, px
-            maps = linear(hr.float()).view(N, C, self.lr_px, self.lr_px)
-            maps = F.avg_pool2d(maps, self.lr_px // fp) if fp < self.lr_px else maps   # (N,C,fp,fp)
+            # footprint side in px: one for all crops, or per crop (--level2 ps2 + ps4 crops)
+            fps = (hr_fp if torch.is_tensor(hr_fp)
+                   else torch.full((N,), hr_fp or c, dtype=torch.long, device=dev))
             c_a_tok = self._score(hr.float())
             if hr_logw is not None:
                 c_a_tok = c_a_tok + hr_logw.float()
-            py, px = hr_px
-            ar_c, ar_n = torch.arange(c, device=dev), torch.arange(N, device=dev)
+            py_all, px_all = hr_px
+            ar_c = torch.arange(c, device=dev)
             e_log, e_cov, e_cell, e_crop = [], [], [], []
-            for da in range(fp // c + 1):
-                for db in range(fp // c + 1):
-                    cy, cx = py // c + da, px // c + db
-                    ui = cy[:, None] * c + ar_c[None] - py[:, None]            # (N, c) crop row
-                    uj = cx[:, None] * c + ar_c[None] - px[:, None]
-                    cov = (((ui >= 0) & (ui < fp))[:, :, None] & ((uj >= 0) & (uj < fp))[:, None, :]
-                           & ((cy < H) & (cx < W) & (cy >= 0) & (cx >= 0))[:, None, None])
-                    keep = cov.flatten(1).any(1)
-                    g = maps[ar_n[:, None, None], :, ui.clamp(0, fp - 1)[:, :, None],
-                             uj.clamp(0, fp - 1)[:, None, :]]                    # (N, c, c, C)
-                    e_log.append(g.permute(0, 3, 1, 2).flatten(2)[keep])        # (n, C, c*c)
-                    e_cov.append(cov.flatten(1)[keep])
-                    e_cell.append((b * Q + cy * W + cx)[keep])       # (kept: inside the tile)
-                    e_crop.append(ar_n[keep])
+            for fp in fps.unique().tolist():
+                ar_n = (fps == fp).nonzero(as_tuple=True)[0]                  # crops of size fp
+                py, px, bg = py_all[ar_n], px_all[ar_n], b[ar_n]
+                maps = linear(hr[ar_n].float()).view(-1, C, self.lr_px, self.lr_px)
+                maps = F.avg_pool2d(maps, self.lr_px // fp) if fp < self.lr_px else maps
+                ar_l = torch.arange(len(ar_n), device=dev)
+                for da in range(fp // c + 1):
+                    for db in range(fp // c + 1):
+                        cy, cx = py // c + da, px // c + db
+                        ui = cy[:, None] * c + ar_c[None] - py[:, None]        # (n, c) crop row
+                        uj = cx[:, None] * c + ar_c[None] - px[:, None]
+                        cov = (((ui >= 0) & (ui < fp))[:, :, None]
+                               & ((uj >= 0) & (uj < fp))[:, None, :]
+                               & ((cy < H) & (cx < W) & (cy >= 0) & (cx >= 0))[:, None, None])
+                        keep = cov.flatten(1).any(1)
+                        g = maps[ar_l[:, None, None], :, ui.clamp(0, fp - 1)[:, :, None],
+                                 uj.clamp(0, fp - 1)[:, None, :]]                # (n, c, c, C)
+                        e_log.append(g.permute(0, 3, 1, 2).flatten(2)[keep])    # (n, C, c*c)
+                        e_cov.append(cov.flatten(1)[keep])
+                        e_cell.append((bg * Q + cy * W + cx)[keep])  # (kept: inside the tile)
+                        e_crop.append(ar_n[keep])
             crop, cov_e = torch.cat(e_log), torch.cat(e_cov)
             cell, ecrop = torch.cat(e_cell), torch.cat(e_crop)
             c_a = c_a_tok[ecrop]
@@ -625,8 +662,298 @@ def arm_label(selector: str, k: int, L: int, G: int, T: int, unit: str = "slot",
     return f"{base} + {look} inject@L{L} @ {how}, {ft}{tail}"
 
 
+class ConvRankHead(nn.Module):
+    """--rank_arch conv: the rank head with spatial context -- per season, a 3 x 3 conv over the
+    token grid, GELU, a 1 x 1 conv to the 2 r r scores. (..., h, w, D) -> (..., h, w, out)."""
+
+    def __init__(self, dim: int, out: int, hidden: int = 256):
+        super().__init__()
+        self.net = nn.Sequential(nn.Conv2d(dim, hidden, 3, padding=1), nn.GELU(),
+                                 nn.Conv2d(hidden, out, 1))
+
+    def forward(self, x):
+        lead, (h, w, d) = x.shape[:-3], x.shape[-3:]
+        y = self.net(x.reshape(-1, h, w, d).permute(0, 3, 1, 2))
+        return y.permute(0, 2, 3, 1).reshape(*lead, h, w, -1)
+
+
+class AttnRankHead(nn.Module):
+    """--rank_arch sattn / mattn / smattn: per candidate window, its seasons' tokens processed
+    together. Every season token (D -> d, + its sub-window position under the token, + its
+    season index) of one window forms a set (unused seasons masked):
+        sattn   self-attention over [location token, season tokens]: the location token
+                scores the window, each season output scores that season
+        mattn   each month's own patch embedding of the window (no encodings; + its season
+                index) cross-attends to the window's season tokens -> a (location, season)
+                score per month; season score = mean over the season's present months,
+                location score = mean over the present months; no self-attention
+        smattn  sattn's self-attention, then mattn's month queries read its season outputs;
+                location from the location token, season scores from the months
+    forward(lr_F (B, NS, h, w, D), used (B, NS), e (B, T, S, S, D) or None, season (B, T),
+    valid (B, T)) -> season scores (B, NS, S, S), location scores (B, S, S); S = h r."""
+
+    def __init__(self, dim: int, r: int, mode: str, d: int = 128, heads: int = 4,
+                 layers: int = 2, max_seasons: int = 8):
+        super().__init__()
+        self.r, self.mode = r, mode
+        self.inp = nn.Linear(dim, d)
+        self.sub = nn.Parameter(torch.randn(r * r, d) * 0.02)
+        self.sea = nn.Parameter(torch.randn(max_seasons, d) * 0.02)
+        if mode in ("sattn", "smattn"):
+            self.loc = nn.Parameter(torch.randn(1, 1, d) * 0.02)
+            self.enc = nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(d, heads, 2 * d, dropout=0.0, batch_first=True,
+                                           norm_first=True), layers, enable_nested_tensor=False)
+            self.out_loc = nn.Linear(d, 1)
+        if mode == "sattn":
+            self.out_sea = nn.Linear(d, 1)
+        if mode in ("mattn", "smattn"):
+            self.minp = nn.Linear(dim, d)
+            self.q_norm = nn.ModuleList(nn.LayerNorm(d) for _ in range(layers))
+            self.kv_norm = nn.ModuleList(nn.LayerNorm(d) for _ in range(layers))
+            self.cross = nn.ModuleList(nn.MultiheadAttention(d, heads, batch_first=True)
+                                       for _ in range(layers))
+            self.ff = nn.ModuleList(nn.Sequential(nn.LayerNorm(d), nn.Linear(d, 2 * d),
+                                                  nn.GELU(), nn.Linear(2 * d, d))
+                                    for _ in range(layers))
+            self.out_month = nn.Linear(d, 2)
+
+    def forward(self, lr_F, used, e, season, valid):
+        B, NS, gh, gw, _ = lr_F.shape
+        r = self.r
+        S = gh * r
+        N = B * S * S
+        dev = lr_F.device
+        x = self.inp(lr_F).repeat_interleave(r, 2).repeat_interleave(r, 3)     # (B, NS, S, S, d)
+        ij = torch.arange(S, device=dev) % r
+        x = x + self.sub[ij[:, None] * r + ij[None, :]] + self.sea[:NS][None, :, None, None]
+        x = x.permute(0, 2, 3, 1, 4).reshape(N, NS, -1)                       # (N, NS, d)
+        pad = (~used)[:, None, None].expand(B, S, S, NS).reshape(N, NS)
+        if self.mode in ("sattn", "smattn"):
+            h = self.enc(torch.cat([self.loc.expand(N, 1, -1), x], 1),
+                         src_key_padding_mask=torch.cat([pad.new_zeros(N, 1), pad], 1))
+            loc = self.out_loc(h[:, 0])[:, 0]
+            x = h[:, 1:]
+        if self.mode == "sattn":
+            sea = self.out_sea(x)[..., 0]                                       # (N, NS)
+        else:
+            T = e.shape[1]
+            s_idx = season.clamp(min=0)
+            q = self.minp(e).permute(0, 2, 3, 1, 4).reshape(B, S * S, T, -1)
+            q = (q + self.sea[s_idx][:, None]).reshape(N, T, -1)               # (N, T, d)
+            for qn, kn, att, ff in zip(self.q_norm, self.kv_norm, self.cross, self.ff):
+                kv = kn(x)
+                q = q + att(qn(q), kv, kv, key_padding_mask=pad, need_weights=False)[0]
+                q = q + ff(q)
+            mo = self.out_month(q)                                              # (N, T, 2)
+            vm = valid.float()[:, None].expand(B, S * S, T).reshape(N, T)
+            oh = (F.one_hot(s_idx, NS).float() * valid.float()[..., None])     # (B, T, NS)
+            oh = oh[:, None].expand(B, S * S, T, NS).reshape(N, T, NS)
+            sea = torch.einsum("ntk,nt->nk", oh, mo[..., 1]) / oh.sum(1).clamp(min=1)
+            if self.mode == "mattn":
+                loc = (mo[..., 0] * vm).sum(1) / vm.sum(1).clamp(min=1)
+        return (sea.view(B, S, S, NS).permute(0, 3, 1, 2), loc.view(B, S, S))
+
+
+class UncHead(nn.Module):
+    """--rank_arch unc0 / unc_nll / unc_rank / unc_both: (season, window) picks from the
+    uncertainty of each season token's own per-pixel prediction (its pa2px head map):
+        spatial    the windows of highest TOTAL uncertainty of the season ensemble
+        temporal   within a window, the half of its seasons with the LOWEST own uncertainty
+    (the better-half oracle's rule, with uncertainty in place of the label loss).
+        unc_ent    no parameters: the model's own head; classification: own = the season's
+                   entropy, total = entropy of the mean season probabilities; regression: the
+                   variance of the predicted values INSIDE each crop window (own: the season's
+                   map, total: the mean of the seasons' maps) -- see InjectFT.unc_scores
+        unc0       no parameters: the model's own head; total = season disagreement (mutual
+                   information / variance of the season means), own = distance of the season's
+                   map from the season mean (KL / squared difference)
+        unc_*      a trained copy of the head (+ a per-pixel log-variance channel for
+                   regression); own = entropy / predicted variance, total = entropy of the mean
+                   season probabilities / mean variance + variance of the season means.
+                   Trained (exp.upsamplers.learned_select) with a per-season proper scoring
+                   rule (nll: cross-entropy / Gaussian NLL), the ListNet ranking of the label
+                   losses (rank), or both."""
+
+    def __init__(self, linear: nn.Linear, mode: str):
+        super().__init__()
+        self.mode, self._live = mode, [linear]        # a list: never a submodule / parameter
+        self.C = linear.out_features // LR_PS ** 2
+        self.trained = mode not in ("unc0", "unc_ent")
+        if self.trained:
+            self.lin = nn.Linear(linear.in_features, linear.out_features)
+            self.lin.load_state_dict(linear.state_dict())
+            self.lv = (nn.Linear(linear.in_features, LR_PS ** 2) if self.C == 1 else None)
+            if self.lv is not None:
+                nn.init.zeros_(self.lv.weight)
+                nn.init.zeros_(self.lv.bias)
+
+    def maps(self, lr_F, lr_ps):
+        """(B, NS, h, w, D) final season tokens -> per-season maps (B, NS, C, 64, 64) and
+        log-variances (B, NS, 64, 64) (None: classification or an untrained mode)."""
+        B, NS, gh, gw, _ = lr_F.shape
+        lin = self.lin if self.trained else self._live[0]
+
+        def grid(x, c):
+            x = x.float().reshape(-1, c, LR_PS, LR_PS)
+            if lr_ps < LR_PS:                         # ps8 seasons: area-pooled (as the readout)
+                x = F.avg_pool2d(x, LR_PS // lr_ps)
+            return rearrange(x, "(b s gh gw) c i j -> b s c (gh i) (gw j)", b=B, s=NS, gh=gh, gw=gw)
+
+        mu = grid(lin(lr_F.to(lin.weight.dtype)), self.C)
+        lv = (grid(self.lv(lr_F.float()), 1)[:, :, 0]
+              if self.trained and self.lv is not None else None)
+        return mu, lv
+
+    def uncertainty(self, mu, lv, used):
+        """-> own (B, NS, 64, 64) and total (B, 64, 64) uncertainty; used (B, NS) bool."""
+        w = used.float() / used.float().sum(1, keepdim=True).clamp(min=1)       # (B, NS)
+        if self.C > 1:
+            lp = mu.log_softmax(2)
+            p = lp.exp()
+            pbar = torch.einsum("bs,bschw->bchw", w, p)
+            lpbar = pbar.clamp(min=1e-8).log()
+            ent = -(p * lp).sum(2)                                              # (B, NS, h, w)
+            tot = -(pbar * lpbar).sum(1)
+            if self.mode == "unc0":
+                own = (pbar[:, None] * (lpbar[:, None] - lp)).sum(2)            # KL(pbar || p_s)
+                tot = tot - torch.einsum("bs,bshw->bhw", w, ent)                # mutual info
+            else:
+                own = ent
+            return own, tot
+        m = mu[:, :, 0]
+        mbar = torch.einsum("bs,bshw->bhw", w, m)
+        if self.mode == "unc_ent":      # per-window variance: unc_scores pools x and x^2
+            return m, mbar
+        dev2 = (m - mbar[:, None]) ** 2
+        disagree = torch.einsum("bs,bshw->bhw", w, dev2)
+        if self.mode == "unc0":
+            return dev2, disagree
+        var = lv.exp()
+        return var, torch.einsum("bs,bshw->bhw", w, var) + disagree
+
+
+class ResidualScorer(nn.Module):
+    """--res_mode: a learned correction r (B, S, S) to the LR-only scorer's window entropy, per
+    candidate window (stride = crop size). The last layer starts at zero: score = z(entropy) + r
+    is the plain entropy selector at the start of training. --res_arch picks the inputs:
+        conv        the frozen scorer's crop-free pass: its mean class probabilities, entropy
+                    (mean of the pixels'), top-2 margin, the pixels' disagreement (entropy of the
+                    mean - mean entropy) and its final tokens (mean over used seasons, projected
+                    to 32) -> a 1x1 / 3x3 / 1x1 conv stack
+        hr          the window's raw monthly pixels (the HR input the crops would encode): each
+                    present month's C x P x P patch -> LayerNorm -> linear -> + window position
+                    -> mean over present months -> MLP
+        xattn       hr, each (window, month) patch embedding a query cross-attending to the
+                    scorer's final season tokens (keys / values, + token position and season
+                    embeddings; unused seasons masked) -> [query, attended] -> mean over present
+                    months -> MLP
+        xattn_conv  xattn's window vector as extra channels of conv's stack"""
+
+    def __init__(self, dim: int, n_cls: int, hidden: int = 64, arch: str = "conv",
+                 C: int = 0, P: int = 0, S: int = 0, gh: int = 0, NS: int = 0, heads: int = 4):
+        super().__init__()
+        self.arch, self.heads = arch, heads
+        q_out = 0
+        if arch != "conv":
+            d = hidden
+            self.pix = nn.Sequential(nn.LayerNorm(C * P * P), nn.Linear(C * P * P, d))
+            self.qpos = nn.Parameter(torch.zeros(S * S, d))
+            nn.init.trunc_normal_(self.qpos, std=0.02)
+            q_out = d
+            if arch in ("xattn", "xattn_conv"):
+                self.kv = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, 2 * d))
+                self.kpos = nn.Parameter(torch.zeros(gh * gh, 2 * d))
+                self.ksea = nn.Parameter(torch.zeros(NS, 2 * d))
+                nn.init.trunc_normal_(self.kpos, std=0.02)
+                nn.init.trunc_normal_(self.ksea, std=0.02)
+                self.qn = nn.LayerNorm(d)
+                self.o = nn.Linear(d, d)
+                q_out = 2 * d
+        if arch in ("conv", "xattn_conv"):
+            self.tok = nn.Linear(dim, 32)
+            self.net = nn.Sequential(nn.Conv2d(n_cls + 3 + 32 + (q_out if arch != "conv" else 0),
+                                               hidden, 1), nn.GELU(),
+                                     nn.Conv2d(hidden, hidden, 3, padding=1), nn.GELU(),
+                                     nn.Conv2d(hidden, 1, 1))
+        else:
+            self.net = nn.Sequential(nn.Linear(q_out, hidden), nn.GELU(), nn.Linear(hidden, hidden),
+                                     nn.GELU(), nn.Linear(hidden, 1))
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+
+    def window_vec(self, pix, mon, lr_F, used):
+        """pix (B, S, S, T, C*P*P) raw monthly window pixels, mon (B, T) present months, lr_F
+        (B, NS, gh, gw, D) the scorer's final tokens, used (B, NS) -> (B, S, S, q_out)."""
+        B, S, _, T, _ = pix.shape
+        q = self.pix(pix.float()) + self.qpos.view(1, S, S, 1, -1)              # (B,S,S,T,d)
+        if self.arch in ("xattn", "xattn_conv"):
+            NS, gh, gw = lr_F.shape[1:4]
+            kv = (self.kv(lr_F.float()) + self.kpos.view(1, 1, gh, gw, -1)
+                  + self.ksea.view(1, NS, 1, 1, -1)).flatten(1, 3)              # (B, NS*gh*gw, 2d)
+            k, v = kv.chunk(2, -1)
+            h = self.heads
+            qh = self.qn(q).flatten(1, 3).unflatten(-1, (h, -1)).transpose(1, 2)  # (B,h,L,dh)
+            kh = k.unflatten(-1, (h, -1)).transpose(1, 2)
+            vh = v.unflatten(-1, (h, -1)).transpose(1, 2)
+            m = used[:, None, None, :, None, None].expand(B, 1, 1, NS, gh, gw).flatten(3)
+            att = F.scaled_dot_product_attention(qh, kh, vh, attn_mask=m)
+            att = self.o(att.transpose(1, 2).flatten(2)).view(B, S, S, T, -1)
+            q = torch.cat([q, att], -1)
+        w = mon.float()[:, None, None, :, None]
+        return (q * w).sum(3) / w.sum(3).clamp(min=1)                           # (B,S,S,q_out)
+
+    def forward(self, feats, tok, pix=None, mon=None, lr_F=None, used=None):
+        """feats (B, n_cls + 3, S, S), tok (B, S, S, D); the HR arms: + window_vec's inputs
+        -> (B, S, S)."""
+        if self.arch == "conv":
+            t = self.tok(tok.float()).permute(0, 3, 1, 2)
+            return self.net(torch.cat([feats.float(), t], 1))[:, 0]
+        qv = self.window_vec(pix, mon, lr_F, used)
+        if self.arch == "xattn_conv":
+            t = self.tok(tok.float()).permute(0, 3, 1, 2)
+            return self.net(torch.cat([feats.float(), t, qv.permute(0, 3, 1, 2)], 1))[:, 0]
+        return self.net(qv)[..., 0]
+
+
+def window_pixels(ms, P_):
+    """The raw monthly pixels of every candidate window (stride = size = P_): (B, S, S, T,
+    C*P_*P_), every float band of every modality, NaN -> 0."""
+    xs = [v for k, v in ms.as_dict().items()
+          if torch.is_tensor(v) and v.ndim == 5 and "mask" not in k and v.is_floating_point()]
+    x = torch.cat(xs, -1).float().nan_to_num()                                  # (B,H,W,T,C)
+    return rearrange(x, "b (s p) (r q) t c -> b s r t (c p q)", p=P_, q=P_)
+
+
+def listnet_loss(pred, target, valid, beta=2.0):
+    """ListNet (softmax cross-entropy) between (L, N) scores and z-scored targets over the valid
+    entries of each list; lists with < 2 valid entries or constant targets are skipped."""
+    t = target.masked_fill(~valid, 0.0)
+    cnt = valid.sum(1, keepdim=True).clamp(min=1)
+    mu = t.sum(1, keepdim=True) / cnt
+    sd = (((t - mu) ** 2) * valid).sum(1, keepdim=True).div(cnt).sqrt()
+    keep = (valid.sum(1) >= 2) & (sd[:, 0] > 1e-6)
+    if not keep.any():
+        return pred.sum() * 0
+    z = ((t - mu) / sd.clamp(min=1e-6) * beta).masked_fill(~valid, float("-inf"))
+    lp = pred.masked_fill(~valid, float("-inf")).log_softmax(1)
+    return -(z.softmax(1) * lp.masked_fill(~valid, 0.0)).sum(1)[keep].mean()
+
+
+RANK_ARCHS = ("linear", "conv", "sattn", "mattn", "smattn", "unc_ent", "unc0", "unc_nll",
+              "unc_rank", "unc_both")
+
+
+def make_rank_head(arch: str, dim: int, out: int, head: nn.Linear | None = None) -> nn.Module:
+    if arch.startswith("unc"):
+        return UncHead(head, arch)
+    if arch in ("sattn", "mattn", "smattn"):
+        return AttnRankHead(dim, int(round((out // 2) ** 0.5)), arch)
+    return nn.Linear(dim, out) if arch == "linear" else ConvRankHead(dim, out)
+
+
 def location_grid_scores(B: int, H: int, n: int, crop_px: int, random_phase: bool,
-                         device) -> torch.Tensor:
+                         device, offset: int = 0) -> torch.Tensor:
     """(B, H, H) location scores whose top n are a regular lattice of crop windows
     (--selector grid --select_unit location): the tile's S x S non-overlapping crop_px windows
     (S = TILE / crop_px), point (i, j) kept when (i + c j + phase) mod m == 0, m = S^2 / n,
@@ -640,7 +967,7 @@ def location_grid_scores(B: int, H: int, n: int, crop_px: int, random_phase: boo
                           indexing="ij")
     phase = (torch.randint(0, m, (B, 1, 1), device=device) if random_phase
              else torch.zeros(B, 1, 1, dtype=torch.long, device=device))
-    on = ((i + c * j)[None] + phase) % m == 0                                  # (B, S, S)
+    on = ((i + c * j)[None] + phase + offset) % m == 0                         # (B, S, S)
     scores = torch.rand(B, H, H, device=device) * 1e-3
     cy = (torch.arange(S, device=device) * crop_px + crop_px // 2) // (TILE // H)
     scores[:, cy[:, None], cy[None, :]] += on.float()
@@ -1160,6 +1487,10 @@ class InjectFT(nn.Module):
             raise ValueError("the date level refines month picks: it needs a selector")
         if date_selector not in ("random", "xattn") or date_gate not in ("month", "none"):
             raise ValueError(f"date_selector {date_selector!r} / date_gate {date_gate!r}")
+        if selector in SEASONAL and (readout not in ("native_set", "native_mean")
+                                         or select_unit != "location" or lr_patch not in (8, 16)):
+            raise ValueError(f"--selector {selector}: --readout native_set | native_mean, "
+                             "--select_unit location, ps16 or ps8 seasons")
         if selector in PRIOR and (readout not in SPARSE + NATIVE or select_unit != "location"):
             raise ValueError(f"--selector {selector} scores cells from a crop-free cellattn pass: "
                              "--readout cellattn --select_unit location")
@@ -1276,6 +1607,35 @@ class InjectFT(nn.Module):
         self.grid_phase = "random"      # ... a fresh lattice offset per training sample, or fixed
         self.force_grid = False         # score any arm's weights with lattice picks (eval only)
         self.loc_px = None              # --loc_stride: (H,) window top-left px of an anchor cell, -1 else
+        # the per-season oracles' scores (set from outside, eval-time): label = the oracle;
+        # season_sum = locations by the summed per-season losses; entropy = label-free
+        # predictive entropy; learned = self.rank_head (exp.upsamplers.learned_select);
+        # mix_oloc / mix_osea = oracle locations + learned seasons / learned locations +
+        # oracle seasons (exp.upsamplers.select_diag)
+        self.score_src, self.rank_head, self.rank_collect = "label", None, False
+        # test-time content ablation of the picked crops (exp.upsamplers.crop_content_test):
+        # real | mean (each band's mean over the crop) | shift (same month, random window of the
+        # tile) | swap (same month and window of the next sample that has that month)
+        self.crop_content = "real"
+        # --season_rule: which seasons of a picked window get crops -- score (the scores' better
+        # half), all, prior (a fixed per-season-index ranking, low = usually the better half),
+        # random (a random half)
+        self.season_rule, self.season_prior = "score", None
+        # --score_src lr_entropy: a FROZEN LR-only model (no crops in its training) scores the
+        # (season, window) pairs from its own prediction's entropy; held in a list so it is never a
+        # submodule (not saved, not optimized). _lr_ent: this batch's (sc, loc).
+        self._scorer, self._lr_ent = None, None
+        # --res_mode oracle | e2e | both: a learned residual on the scorer's window entropy
+        # (ResidualScorer). oracle: trained by res_lambda x ListNet to the scorer's own window
+        # loss; e2e: by the task loss, each picked crop gated by logsigmoid(its window's score),
+        # windows drawn with Gumbel noise (res_tau) while training; both: e2e + the oracle loss
+        # with a decaying res_lambda. res_loss: this batch's oracle loss; _res_gate (B, H, W).
+        self.res_sel, self.res_mode, self.res_lambda, self.res_tau = None, None, 0.0, 0.0
+        self.res_loss, self._res_gate = None, None
+        self.loc_fine = False           # ... stride < crop: loc_px lists every candidate window
+        # --level2 (set_level2): a second oracle layer on top of the season oracle's month crops
+        self.l2, self.l2_n, self.l2_pick = None, 0, "oracle"
+        self._l2_inner, self._l1_mask, self._l2_cap = False, None, None
         # --no_seasons (set by main): no season tokens in the sequence or the readout -- only
         # the crops; a pixel no crop covers in any month reads 0
         self.no_seasons = False
@@ -1397,19 +1757,157 @@ class InjectFT(nn.Module):
         P_ = self.crop_px
         n = (TILE - P_) // stride + 1
         tl = sorted({round(i * (TILE - P_) / (n - 1)) for i in range(n)})
+        if stride < P_:     # finer than the crop (ps4 crops every 2 px): two windows per cell,
+            # so the candidates get their own (n, n) grid -- loc_px[i] = window i's px
+            self.loc_fine = True
+            self.loc_px = torch.tensor(tl)
+            return
         cells = [v // LOOKUP_PS for v in tl]
         if len(set(cells)) != len(cells):
             raise ValueError(f"--loc_stride {stride}: two windows share an anchor cell")
         self.loc_px = torch.full((TILE // LOOKUP_PS,), -1, dtype=torch.long)
         self.loc_px[cells] = torch.tensor(tl)
 
+    def set_level2(self, arm: str, n: int, pick: str = "oracle"):
+        """--level2 m4 | d8 | d4: after the season oracle's ps8 month crops (layer 1), a second
+        layer of finer crops INSIDE them, picked from the layer-1 prediction:
+            location  the n ps4 cells (d8: n / 4 ps8 windows, the same area) under a layer-1
+                      crop where the layer-1 model's loss vs the TRUE label is highest
+            months    at each, the lower-loss half of the months layer 1 cropped there (a month
+                      crop's own native head map vs the label)
+            crops     m4: those months' composites at ps4; d8 / d4: every raw acquisition of
+                      those months (all modalities) at ps8 / ps4
+        pick random: the same candidates, random locations and a random half of the months.
+        Same-size crops never overlap (ps4 cells / the ps8 windows of stride 8).
+        Under ps8 seasons + ps4 month crops (layer 1): m2 / d2 = composites / raw dates at ps2
+        in the n ps2 cells under a layer-1 crop (n counts level-2 crops at their own size; only
+        d8 is area-matched to d4)."""
+        if arm not in L2_PX or pick not in ("oracle", "random"):
+            raise ValueError(f"level2 {arm!r} / {pick!r}")
+        if L2_PX[arm] > self.crop_px or (L2_PX[arm] == self.crop_px and arm[0] == "m"):
+            raise ValueError(f"level2 {arm}: finer than layer 1's {self.crop_px} px month crops")
+        self.l2, self.l2_n, self.l2_pick = arm, n, pick
+        if arm[0] == "d" and self.date_type is None:     # a raw date, not a month composite
+            self.date_type = nn.Parameter(torch.zeros(self.backbone().embedding_size,
+                                                      device=self.head.linear.weight.device))
+
     @torch.no_grad()
-    def _prior_scores(self, lr, season, present, G, extra, B, H):
+    def _level2_picks(self, ms, ss, season, present, extra, mask):
+        """The layer-1 prediction (this model with the month crops `mask`, no level 2) ->
+        (B, T, Hu, Hu) bool level-2 mask on the arm's own grid (u = 1 ps4 cells, 2 ps8
+        windows) and u."""
+        was = self.training
+        self.eval()
+        self._l2_inner, self._l1_mask = True, mask
+        try:
+            logits = self.forward(ms, ss, season, present, None, extra)[0].float()
+            v, b, t, y, x, hr_px = self._l2_cap
+        finally:
+            self._l2_inner, self._l1_mask, self._l2_cap = False, None, None
+            self.train(was)
+        B, T = present.shape
+        dev = present.device
+        if hr_px is None:                       # layer-1 crops on the ps4 grid
+            py, px = y * LOOKUP_PS, x * LOOKUP_PS
+        else:
+            py, px = hr_px
+        P_, su = self.crop_px, L2_PX[self.l2]
+        Hs = TILE // su                         # the level-2 grid (ps2: 32, ps4: 16, ps8: 8)
+        tgt = extra["target"].to(dev)
+        cell = F.avg_pool2d(self._label_loss(logits, tgt)[:, None], su)[:, 0]     # (B, Hs, Hs)
+        # each month crop's own head map over its window, vs the label there
+        lin = self.head.linear
+        C = lin.out_features // LR_PS ** 2
+        maps = F.avg_pool2d(lin(v).view(-1, C, LR_PS, LR_PS), LR_PS // P_)       # (N, C, P, P)
+        ar = torch.arange(P_, device=dev)
+        ry, rx = (py[:, None] + ar)[:, :, None], (px[:, None] + ar)[:, None, :]
+        tb = tgt[b]
+        tw = (tb[torch.arange(len(b), device=dev)[:, None, None], ry, rx] if tb.ndim == 3 else
+              tb[torch.arange(len(b), device=dev)[:, None, None, None],
+                 torch.arange(tb.shape[1], device=dev)[None, :, None, None],
+                 ry[:, None], rx[:, None]])
+        ml = F.avg_pool2d(self._label_loss(maps, tw)[:, None], su)[:, 0]          # (N, f, f)
+        f = P_ // su
+        ML = torch.full((B, T, Hs, Hs), float("nan"), device=dev)
+        for i in range(f):
+            for j in range(f):
+                ML[b, t, py // su + i, px // su + j] = ml[:, i, j]
+        avail = ~torch.isnan(ML)                                              # (B, T, Hu, Hu)
+        cand = avail.any(1)                                                   # (B, Hu, Hu)
+        n = max(1, round(self.l2_n / 4)) if self.l2 == "d8" else self.l2_n
+        loc = cell if self.l2_pick == "oracle" else torch.rand_like(cell)
+        loc = loc.masked_fill(~cand, float("-inf")).flatten(1)
+        rank = loc.argsort(1, descending=True).argsort(1)
+        loc = ((rank < n) & torch.isfinite(loc)).view_as(cand)
+        key = ML if self.l2_pick == "oracle" else torch.rand_like(ML)
+        r = key.masked_fill(~avail, float("inf")).argsort(1).argsort(1)      # 0 = lowest loss
+        half = (avail.sum(1, keepdim=True) // 2).clamp(min=1)
+        self.l2_last = (float(loc.flatten(1).sum(1).float().mean()),)
+        return (r < half) & avail & loc[:, None], su
+
+    def _level2_crops(self, ms, extra, season, present, frac, l2, su):
+        """The level-2 mask -> crop sets for tail_multi / NativeSetReadout (as _date_crops)."""
+        dev = present.device
+        P2 = su
+        u = max(1, su // LOOKUP_PS)   # footprint in ps4 cells (ps2: a part of one, off-grid)
+
+        def entry(hr, bb, tt, py, px):
+            e = {"hr": hr, "idx": (bb, tt, py // LOOKUP_PS, px // LOOKUP_PS), "logw": None,
+                 "size": u}
+            if su < LOOKUP_PS:        # read per pixel (NativeSetReadout's off-grid path)
+                e["px"], e["fp"] = (py, px), su
+            return e
+        if self.l2[0] == "m":         # month composites
+            bb, tt, yy, xx = l2.nonzero(as_tuple=True)
+            if not len(bb):
+                return []
+            py, px = yy * P2, xx * P2
+            hr = self.mix.embed(crop_patches(ms, bb, tt, py, px, P2, pixels=True), P2,
+                                slot=self._crop_slot(season[bb, tt], frac[bb, tt]), py=py, px=px)
+            hr = self.mix.head_blocks(hr, self._lr, bb)
+            return [entry(hr, bb, tt, py, px)]
+        out = []
+        bidx = torch.arange(len(present), device=dev)[:, None]
+        for m, (d_sample, d_valid, d_month, d_frac) in extra["dates"].items():
+            d_valid, d_month, d_frac = d_valid.to(dev), d_month.to(dev), d_frac.to(dev)
+            ok = d_valid & (d_month >= 0) & present.gather(1, d_month.clamp(min=0))  # (B, Td)
+            c = ok[:, :, None, None] & l2[bidx, d_month.clamp(min=0)]          # (B, Td, Hu, Hu)
+            bb, dd, yy, xx = c.nonzero(as_tuple=True)
+            if not len(bb):
+                continue
+            d_sample = _to_device(d_sample, dev, torch.bfloat16)
+            mo = d_month[bb, dd]
+            py, px = yy * P2, xx * P2
+            # a date's time slot: its season + its position in it, so dates of a month differ
+            hr = self.mix.embed(crop_patches(d_sample, bb, dd, py, px, P2, pixels=True), P2,
+                                slot=season[bb, mo].float() + d_frac[bb, dd], py=py, px=px)
+            hr.x = (hr.x + self.date_type).to(hr.x.dtype)
+            hr = self.mix.head_blocks(hr, self._lr, bb)
+            out.append(entry(hr, bb, mo, py, px))
+        return out
+
+    @torch.no_grad()
+    def _prior_scores(self, lr, season, present, G, extra, B, H, kind=None):
         """(B, H, W) per ps4 cell, from the model's own crop-free prediction (the lr tokens
         through the remaining blocks, the cellattn readout, the head):
             oracle   the loss against the TRUE label (a ceiling for choosing where to look;
                      uses labels at test time too -- never a real method)
             entropy  the predictive entropy (label-free: where the model is unsure)"""
+        _, logits = self._crop_free(lr, season, present, G)
+        if (kind or ("entropy" if self.sel_name == "entropy" else "label")) == "entropy":
+            px = self._entropy(logits)
+        else:
+            px = self._label_loss(logits, extra["target"])
+        return self._window_scores(px, B, H)
+
+    @staticmethod
+    def _entropy(logits):
+        p = logits.softmax(1)
+        return -(p * p.clamp(min=1e-8).log()).sum(1)                                # (N, 64, 64)
+
+    def _crop_free(self, lr, season, present, G):
+        """The model's own crop-free pass -> (final season tokens (B, NS, h, w, D), pooled
+        logits (B, C, 64, 64))."""
         was = self.training
         self.eval()
         try:
@@ -1430,17 +1928,26 @@ class InjectFT(nn.Module):
                     logits = self.head(pooled[:, None], torch.ones_like(present[:, :1])).float()
         finally:
             self.train(was)
-        if self.sel_name == "entropy":
-            p = logits.softmax(1)
-            px = -(p * p.clamp(min=1e-8).log()).sum(1)                              # (B, 64, 64)
-        else:
-            target = extra["target"].to(logits.device)
-            if logits.shape[1] > 1:
-                px = F.cross_entropy(logits, target.long(), ignore_index=-1, reduction="none")
-            else:
-                y = target[:, 0] if target.ndim == 4 else target   # YieldSAT: (value, field id)
-                px = ((logits[:, 0] - y.float()) ** 2).nan_to_num(0.0)        # NaN: unlabelled
+        return lr_F, logits.float()
+
+    @staticmethod
+    def _label_loss(logits, target):
+        """(N, C, 64, 64) logits vs the true label (N, ...) -> (N, 64, 64) per-pixel loss;
+        0 where unlabelled."""
+        target = target.to(logits.device)
+        if logits.shape[1] > 1:
+            return F.cross_entropy(logits, target.long(), ignore_index=-1, reduction="none")
+        y = target[:, 0] if target.ndim == 4 else target           # YieldSAT: (value, field id)
+        return ((logits[:, 0] - y.float()) ** 2).nan_to_num(0.0)               # NaN: unlabelled
+
+    def _window_scores(self, px, B, H):
+        """(B, 64, 64) per-pixel loss -> (B, H, W) per ps4 cell: the mean over the crop window
+        a pick of that cell would cut (-inf: not a --loc_stride candidate)."""
         P_ = self.crop_px
+        if self.loc_fine:               # --loc_stride < crop: the (n, n) candidate grid
+            win = F.avg_pool2d(px[:, None], P_, stride=1)[:, 0]
+            lut = self.loc_px.to(px.device)
+            return win[:, lut][:, :, lut]
         if P_ == LOOKUP_PS:
             return F.avg_pool2d(px[:, None], TILE // H)[:, 0]                      # (B, H, W)
         # a pick = the P_ window centred on the cell, clamped into the tile (as the crops are
@@ -1455,6 +1962,293 @@ class InjectFT(nn.Module):
         tl = (torch.arange(H, device=px.device) * LOOKUP_PS + LOOKUP_PS // 2
               - P_ // 2).clamp(0, TILE - P_)
         return win[:, tl][:, :, tl]                                                # (B, H, W)
+
+    @torch.no_grad()
+    def _season_mask(self, lr, season, present, G, extra, B, T, H, n, ms=None):
+        """--selector oracle_season / oracle_tophalf / oracle_bothalf / season_random /
+        season_grid -> (B, T, H, W) crop mask: every present month of each picked (season,
+        window) pair. Season s's loss map is its token's own native head map (the season
+        candidate of NativeSetReadout) vs the label; the controls score pairs without labels."""
+        dev = season.device
+        if self.sel_name == "season_random":
+            sc = torch.rand(B, G, H, H, device=dev)
+            return self._season_pick(sc, season, present, B, H, n, lr, G, extra)
+        if self.sel_name == "season_grid":
+            rp = self.training and self.grid_phase == "random"
+            sc = torch.stack([location_grid_scores(B, H, n, self.crop_px, rp, dev, offset=s)
+                              for s in range(G)], 1)                         # (B, G, H, W)
+            return self._season_pick(sc, season, present, B, H, n, lr, G, extra)
+        lr_F, pooled = self._crop_free(lr, season, present, G)                # (B, NS, h, w, D)
+        lin = self.head.linear
+        NS, gh, gw = lr_F.shape[1:4]
+        C, bp = lin.out_features // LR_PS ** 2, self.lr_ps
+        m = lin(lr_F).view(-1, C, LR_PS, LR_PS)            # each season token's 16 px head map
+        if bp < LR_PS:                                     # ps8 seasons: area-pooled to 8 px (as
+            m = F.avg_pool2d(m, LR_PS // bp)               # NativeSetReadout)
+        s_log = rearrange(m, "(b s gh gw) c i j -> (b s) c (gh i) (gw j)",
+                          s=NS, gh=gh, gw=gw)
+        src = self.score_src if self.sel_name in SEASON_PRIOR else "label"
+        if src in ("label", "season_sum", "mix_oloc", "mix_osea", "lrent_oloc", "lrent_osea") \
+                or self.rank_collect:
+            tgt = extra["target"].to(s_log.device)
+            px = self._label_loss(s_log, tgt.repeat_interleave(NS, 0))       # (B NS, 64, 64)
+            sc = self._window_scores(px, B * NS, H).view(B, NS, H, H)
+            loc = self._window_scores(self._label_loss(pooled, tgt), B, H)   # (B, H, W)
+        months = (isinstance(self.rank_head, AttnRankHead)
+                  and self.rank_head.mode in ("mattn", "smattn"))
+        need = src in ("learned", "mix_oloc", "mix_osea") or self.rank_collect
+        e = self.window_months(ms) if months and need else None
+        if self.rank_collect:           # train_rank_head: features + targets, then no crops
+            self._rank_batch = dict(lr_F=lr_F.detach(), sc=sc, loc=loc, season=season,
+                                    present=present, n=n, G=G, H=H, e=e, tgt=tgt)
+            return torch.zeros(B, T, H, H, dtype=torch.bool, device=season.device)
+        if src == "season_sum":
+            loc = "sum"
+        elif src == "entropy":          # the model's OWN crop-free prediction (as the oracle)
+            sc = self._window_scores(self._entropy(s_log.detach()), B * NS, H).view(B, NS, H, H)
+            loc = self._window_scores(self._entropy(pooled.detach()), B, H)
+            if self.res_sel is not None:
+                loc = self._residual_loc(pooled.detach(), lr_F.detach(), season, present, extra,
+                                         H, ms)
+        elif src == "learned":
+            sc, loc = self.rank_scores(lr_F, season, present, e)
+        elif src == "mix_oloc":         # oracle locations, learned seasons
+            sc, _ = self.rank_scores(lr_F, season, present, e)
+        elif src == "mix_osea":         # learned locations, oracle seasons
+            _, loc = self.rank_scores(lr_F, season, present, e)
+        elif src == "lr_entropy":       # the LR-only scorer's entropy, both rankings
+            sc, loc = self._lr_ent
+        elif src == "lrent_oloc":       # oracle windows, LR-entropy seasons
+            sc = self._lr_ent[0]
+        elif src == "lrent_osea":       # LR-entropy windows, oracle seasons
+            loc = self._lr_ent[1]
+        if self.season_rule == "random":                    # a random half per window
+            sc = torch.rand_like(sc.float())
+        elif self.season_rule == "prior":                   # the dataset's usual better half
+            sc = self.season_prior.to(sc.device)[None, :NS, None, None].expand_as(sc).float()
+        return self._season_pick(sc, season, present, B, H, n, lr, G, extra, loc)
+
+    def attach_scorer(self, ckpt: str):
+        """Load checkpoints/<ckpt>.pt (an LR-only run, same seasons) as the frozen scorer."""
+        sm = InjectFT(self.task, "tiny", 0, "oracle_bothalf", max(self.k_frac, 1 / 256),
+                      "location", readout="native_set", lr_patch=self.lr_ps, crop_px=self.crop_px,
+                      pos="center").to(self.head.linear.weight.device)
+        sd = torch.load(f"checkpoints/{ckpt}.pt", map_location="cpu", weights_only=False)["model"]
+        sd = {k: v for k, v in sd.items() if not k.startswith("task_loss_fn.")}
+        missing, unexpected = sm.load_state_dict(sd, strict=False)
+        if missing or unexpected:
+            raise SystemExit(f"--scorer {ckpt}: missing {missing[:5]} unexpected {unexpected[:5]}")
+        sm.requires_grad_(False)
+        self._scorer = [sm.eval()]
+
+    def lr_entropy_scores(self, ms, ss, season, present, pairs, extra):
+        """--score_src lr_entropy: the frozen LR-only scorer's crop-free prediction ->
+        (sc (B, NS, H, W), loc (B, H, W)) on THIS model's candidate grid:
+            loc  entropy of the scorer's pooled prediction, mean over each candidate window
+                 (the highest are picked, as the oracle picks the highest loss)
+            sc   entropy of each season token's own map (its pa2px head) over the window (the
+                 lowest half is picked, as oracle_bothalf picks the lower-loss half)"""
+        sm = self._scorer[0]
+        H = len(self.loc_px) if self.loc_fine else OUT_GRID
+        with torch.no_grad():
+            sm.rank_collect = True
+            try:
+                sm(ms, ss, season, present, pairs, extra)
+            finally:
+                sm.rank_collect = False
+            rb = sm._rank_batch
+            lr_F = rb["lr_F"]
+            B, NS = lr_F.shape[:2]
+            mu = UncHead(sm.head.linear, "unc_ent").maps(lr_F, sm.lr_ps)[0]       # (B,NS,C,64,64)
+            empty = torch.zeros(0, dtype=torch.long, device=lr_F.device)
+            none = (lr_F.new_zeros(0, lr_F.shape[-1]), (empty,) * 4)
+            pooled = sm.readout(sm.head.linear, lr_F, rb["season"], rb["present"], *none).float()
+        sc = self._window_scores(self._entropy(mu.flatten(0, 1).float()), B * NS, H)
+        loc = self._window_scores(self._entropy(pooled), B, H)
+        self.res_loss, self._res_gate = None, None
+        if self.res_sel is not None:
+            loc = self._residual_loc(pooled, lr_F, rb["season"], rb["present"], extra, H, ms)
+        return sc.view(B, NS, H, H), loc
+
+    def _residual_loc(self, pooled, lr_F, season, present, extra, H, ms):
+        """--res_mode: window score = z(entropy) + ResidualScorer(...) on the candidate windows
+        (stride = crop size), written at their anchor cells of the (B, H, W) grid (-inf elsewhere).
+        Sets res_loss (oracle / both, training) and _res_gate (e2e / both); returns the scores
+        the picks use (+ Gumbel noise while training, e2e / both)."""
+        P_ = self.crop_px
+        S = TILE // P_
+        B, NS = lr_F.shape[:2]
+        with torch.no_grad():
+            lp = pooled.float().log_softmax(1)
+            p = lp.exp()
+            ent = F.avg_pool2d((-(p * lp).sum(1))[:, None], P_)                    # (B,1,S,S)
+            top2 = p.topk(2, dim=1).values
+            margin = F.avg_pool2d((top2[:, :1] - top2[:, 1:]), P_)
+            pbar = F.avg_pool2d(p, P_)                                             # (B,C,S,S)
+            js = -(pbar * pbar.clamp(min=1e-8).log()).sum(1, keepdim=True) - ent
+            feats = torch.cat([pbar, ent, margin, js], 1)
+            valid = present & (season >= 0)
+            used = (F.one_hot(season.clamp(min=0), NS).bool() & valid[..., None]).any(1)
+            w = used.float() / used.float().sum(1, keepdim=True).clamp(min=1)
+            tok = torch.einsum("bs,bshwd->bhwd", w, lr_F.float())                  # (B,h,w,D)
+            tok = F.interpolate(tok.permute(0, 3, 1, 2), size=(S, S), mode="nearest")
+            e = ent[:, 0].flatten(1)
+            z = ((e - e.mean(1, keepdim=True)) / e.std(1, keepdim=True).clamp(min=1e-6))
+        hr_in = {}
+        if self.res_sel.arch != "conv":         # the HR arms: raw window pixels + scorer tokens
+            hr_in = dict(pix=window_pixels(ms, P_), mon=present, lr_F=lr_F, used=used)
+        score = z.view(B, S, S) + self.res_sel(feats, tok.permute(0, 2, 3, 1), **hr_in)
+        if self.training and self.res_mode in ("oracle", "both") and self.res_lambda > 0 \
+                and extra is not None and extra.get("target") is not None:
+            tgt = extra["target"].to(pooled.device)
+            px = self._label_loss(pooled.float(), tgt)                              # (B,64,64)
+            lab = (tgt[:, 0] if tgt.ndim == 4 else tgt)
+            lab = (torch.isfinite(lab.float()) & (lab >= 0) if self.task.kind == "classification"
+                   else torch.isfinite(lab.float())).float()[:, None]
+            nl = F.avg_pool2d(lab, P_)
+            wl = F.avg_pool2d(px[:, None] * lab, P_) / nl.clamp(min=1e-6)            # (B,1,S,S)
+            self.res_loss = self.res_lambda * listnet_loss(score.flatten(1), wl.flatten(1),
+                                                           (nl > 0).flatten(1))
+        cell = torch.arange(S, device=score.device) * P_ // LOOKUP_PS
+        out = score.new_full((B, H, H), float("-inf"))
+        out[:, cell[:, None], cell[None, :]] = score
+        if self.res_mode in ("e2e", "both"):
+            self._res_gate = out
+            if self.training and self.res_tau > 0:
+                g = -torch.log(-torch.log(torch.rand_like(score).clamp(1e-9, 1 - 1e-9)))
+                pick = out.detach().clone()
+                pick[:, cell[:, None], cell[None, :]] = (score + self.res_tau * g).detach()
+                return pick
+        return out.detach() if self.res_mode in ("e2e", "both") else out
+
+    def _crop_content(self, ms, b, t, py, px, P_, present):
+        """The picked crops, or (--crop_content) uninformative stand-ins at the same picks; the
+        model is still told each crop's picked month and position."""
+        mode = self.crop_content
+        if mode == "real":
+            return crop_patches(ms, b, t, py, px, P_, pixels=True)
+        if mode == "mean":
+            crops = crop_patches(ms, b, t, py, px, P_, pixels=True)
+            return _map(crops, lambda k, v: v if (k == "timestamps" or "mask" in k
+                                                  or not v.is_floating_point())
+                        else v.mean((1, 2), keepdim=True).expand_as(v).contiguous())
+        rand = lambda: torch.randint(0, TILE - P_ + 1, py.shape, device=py.device)  # noqa: E731
+        if mode == "shift":
+            return crop_patches(ms, b, t, rand(), rand(), P_, pixels=True)
+        if mode == "swap":                      # the next sample with month t present, else shift
+            B = present.shape[0]
+            cand = (b[:, None] + torch.arange(1, B, device=b.device)[None]) % B   # (N, B-1)
+            ok = present[cand, t[:, None]]
+            first = ok.float().argmax(1)
+            has = ok.any(1)
+            bb = torch.where(has, cand[torch.arange(len(b), device=b.device), first], b)
+            yy, xx = torch.where(has, py, rand()), torch.where(has, px, rand())
+            self._swap_fallback = float((~has).float().mean())
+            return crop_patches(ms, bb, t, yy, xx, P_, pixels=True)
+        raise ValueError(f"crop_content {mode}")
+
+    def rank_scores(self, lr_F, season, present, e=None):
+        """--score_src learned: the rank head on the final season tokens -> per-season scores
+        (B, NS, H, W) and location scores (B, H, W) = the sum of the location channel over the
+        sample's used seasons; one score per candidate window (r x r per token), written at
+        the window's anchor cell, -inf elsewhere. Candidates must tile the tokens (stride =
+        crop size)."""
+        B, NS, gh, gw, _ = lr_F.shape
+        r = self.lr_ps // self.crop_px
+        valid = present & (season >= 0)
+        used = (F.one_hot(season.clamp(min=0), NS).bool() & valid[..., None]).any(1)
+        if isinstance(self.rank_head, UncHead):
+            return self.unc_scores(lr_F, used)[:2]
+        if isinstance(self.rank_head, AttnRankHead):
+            w_sc, a = self.rank_head(lr_F.float(), used, None if e is None else e.float(),
+                                     season, valid)
+            w_sc, a = w_sc.float(), a.float()
+        else:
+            out = self.rank_head(lr_F.float()).float().view(B, NS, gh, gw, 2, r, r)
+            out = rearrange(out, "b s gh gw k i j -> k b s (gh i) (gw j)")  # (2, B, NS, S, S)
+            w_sc = out[1]
+            a = out[0].masked_fill(~used[:, :, None, None], 0.0).sum(1)     # (B, S, S)
+        H = TILE // LOOKUP_PS
+        cell = torch.arange(w_sc.shape[-1], device=lr_F.device) * self.crop_px // LOOKUP_PS
+        sc = w_sc.new_full((B, NS, H, H), float("-inf"))
+        sc[:, :, cell[:, None], cell[None, :]] = w_sc
+        loc = a.new_full((B, H, H), float("-inf"))
+        loc[:, cell[:, None], cell[None, :]] = a
+        return sc, loc
+
+    def unc_scores(self, lr_F, used):
+        """--rank_arch unc*: window scores of the own (B, NS, H, W) and total (B, H, W)
+        uncertainty, on the label oracle's candidate grid; + the maps (mu, lv) for training."""
+        B, NS = lr_F.shape[:2]
+        H = TILE // LOOKUP_PS
+        mu, lv = self.rank_head.maps(lr_F, self.lr_ps)
+        own, tot = self.rank_head.uncertainty(mu, lv, used)
+        if self.rank_head.mode == "unc_ent" and self.rank_head.C == 1:
+            def wvar(x, n):             # variance of the predicted values inside each window
+                return (self._window_scores(x ** 2, n, H) - self._window_scores(x, n, H) ** 2
+                        ).clamp(min=0)  # (-inf at non-candidates clamps to 0: masked below)
+            cand = torch.isfinite(self._window_scores(tot, B, H))
+            sc = wvar(own.flatten(0, 1), B * NS).view(B, NS, H, H)
+            sc = sc.masked_fill(~cand[:, None] | ~used[:, :, None, None], float("-inf"))
+            return sc, wvar(tot, B).masked_fill(~cand, float("-inf")), mu, lv
+        sc = self._window_scores(own.flatten(0, 1), B * NS, H).view(B, NS, H, H)
+        sc = sc.masked_fill(~used[:, :, None, None], float("-inf"))
+        return sc, self._window_scores(tot, B, H), mu, lv
+
+    def window_months(self, ms):
+        """(B, T, S, S, D): each month's ps4 patch embedding averaged over each candidate
+        window (stride = crop size) -- the month queries of --rank_arch mattn / smattn."""
+        e = self.month_embedding(ms).float()                                # (B, T, 16, 16, D)
+        f = self.crop_px // LOOKUP_PS
+        if f > 1:
+            e = rearrange(e, "b t (y i) (x j) d -> b t y x (i j) d", i=f, j=f).mean(4)
+        return e
+
+    def _season_pick(self, sc, season, present, B, H, n, lr, G, extra, loc=None):
+        """(B, NS, H, W) pair scores (-inf: not a candidate) -> the crop mask, best-first
+        within the location oracle's crop budget at n. loc: the halves' location scores
+        (B, H, W), "sum" (of the per-season scores), or None (the pooled label loss)."""
+        NS = sc.shape[1]
+        valid = present & (season >= 0)
+        s_idx = season.clamp(min=0)
+        used = F.one_hot(s_idx, NS).bool() & valid[..., None]                # (B, T, NS)
+        used = used.any(1)                                                   # (B, NS)
+        sc = sc.masked_fill(~used[:, :, None, None], float("-inf"))
+        # budget: the location oracle's crops, n windows x present months; picks are taken in
+        # loss order while their months still fit (a pair costs its season's present months)
+        budget = n * valid.sum(1)                                            # (B,)
+        months = (F.one_hot(s_idx, NS) & valid[..., None]).sum(1)          # (B, NS)
+
+        def take(score, cost):
+            """flat (B, N) scores / costs -> the best-first prefix within budget (B, N) bool"""
+            order = score.argsort(1, descending=True)
+            fin = torch.isfinite(score.gather(1, order))
+            spent = (cost.gather(1, order) * fin).cumsum(1)
+            keep = fin & (spent <= budget[:, None])
+            return torch.zeros_like(keep).scatter(1, order, keep)
+
+        cost = months[:, :, None, None].expand(B, NS, H, H)
+        if self.sel_name in ("oracle_season",) + SEASON_CTRL:
+            pair = take(sc.flatten(1), cost.flatten(1)).view(B, NS, H, H)
+        else:
+            nused = used.sum(1)[:, None, None, None]                            # (B, 1, 1, 1)
+            half = (nused // 2).clamp(min=1)
+            rank = sc.argsort(1, descending=True).argsort(1)    # 0 = worst; unused seasons last
+            pick = (rank < half if self.sel_name == "oracle_tophalf"
+                    else (rank >= nused - half) & (rank < nused))               # disjoint halves
+            if self.season_rule == "all":                   # --season_rule all: every season
+                pick = rank < nused
+            pick = pick & torch.isfinite(sc)
+            if loc is None:
+                loc = self._prior_scores(lr, season, present, G, extra, B, H, "label")
+            elif isinstance(loc, str):  # "sum": over the used seasons' scores
+                loc = sc.masked_fill(~torch.isfinite(sc), 0.0).sum(1)
+                loc = loc.masked_fill(~torch.isfinite(sc).any(1), float("-inf"))
+            loc = take(loc.flatten(1), (pick * cost).sum(1).flatten(1)).view(B, H, H)
+            pair = pick & loc[:, None]
+        mask = pair[torch.arange(B, device=pair.device)[:, None], s_idx]      # (B, T, H, W)
+        self._season_loss = sc
+        return mask & valid[:, :, None, None]
 
     def _apt_pixels(self, ms):
         """(B, T, Hpx, Wpx, C) -- EVERY band of EVERY modality OlmoEarth has for this task,
@@ -3041,6 +3835,11 @@ class InjectFT(nn.Module):
         pairs (consecutive present steps). extra: Collate's (step fractions, date views)."""
         device = self.head.linear.weight.device
         ms, ss = _to_device(ms, device, torch.bfloat16), _to_device(ss, device, torch.bfloat16)
+        self._lr_ent, self._res_gate, self.res_loss = None, None, None
+        if (self._scorer is not None and self.score_src in LR_ENT and not self._l2_inner
+                and self.sel_name in SEASON_PRIOR):
+            self._lr_ent = self.lr_entropy_scores(ms, ss, season.to(device), present.to(device),
+                                                  pairs, extra)
         season, present = season.to(device), present.to(device)
         B, T = present.shape
         G, H = ss.timestamps.shape[1], OUT_GRID
@@ -3069,7 +3868,8 @@ class InjectFT(nn.Module):
             self._apt_groups = None
             self._octree_leaves = None
             if k:
-                where = present[:, :, None, None].expand(B, T, H, H)
+                Hs = len(self.loc_px) if self.loc_fine else H     # side of the candidate grid
+                where = present[:, :, None, None].expand(B, T, Hs, Hs)
                 lr_L = lr.pooled().float()                                     # (B,G,h,w,D)
                 r = H // lr_L.shape[2]
                 lr_m = lr_L[bidx, season.clamp(min=0)]                         # (B,T,h,w,D)
@@ -3081,9 +3881,16 @@ class InjectFT(nn.Module):
                 elif self.sel_name == "grid" or self.force_grid:   # regular lattice, content-blind
                     scores = grid_scores(present, H, k, self.grid_mode,
                                          self.training and self.grid_phase == "random")
+                elif self.sel_name in SEASONAL and self._l1_mask is not None:   # --level2 look
+                    season_mask = self._l1_mask
+                    scores = season_mask.float()
+                elif self.sel_name in SEASONAL:                # (season, cell) pairs
+                    season_mask = self._season_mask(lr, season, present, G, extra, B, T, Hs,
+                                                    round(self.k_frac * H * H), ms)
+                    scores = season_mask.float()
                 elif self.sel_name in PRIOR:                   # crop-free pass, per cell
-                    cell = self._prior_scores(lr, season, present, G, extra, B, H)   # (B,H,W)
-                    scores = cell[:, None].expand(B, T, H, H).contiguous()
+                    cell = self._prior_scores(lr, season, present, G, extra, B, Hs)  # (B,Hs,Hs)
+                    scores = cell[:, None].expand(B, T, Hs, Hs).contiguous()
                 elif self.sel_name in PIXEL_PRIOR:             # raw pixels, no model pass (APT)
                     scores = self._apt_scores(ms, present, B, H)
                 elif self.joint is not None and self.joint_pairs:   # series: joint pair picks
@@ -3116,7 +3923,7 @@ class InjectFT(nn.Module):
                         var = (((scores.float() - mu) * wf) ** 2).flatten(1).sum(1)[
                             :, None, None, None] / (n - 1)
                         scores = (scores.float() - mu) * torch.rsqrt(var + 1e-6)   # finite grad at var 0
-                if self.loc_px is not None:     # --loc_stride: anchor cells only (random too)
+                if self.loc_px is not None and not self.loc_fine:   # anchor cells only (random too)
                     a1 = self.loc_px.to(device) >= 0
                     scores = scores.masked_fill(~(a1[:, None] & a1[None, :]), float("-inf"))
                 pick = scores.detach().float()
@@ -3169,12 +3976,16 @@ class InjectFT(nn.Module):
                     mask = self._pick_pairs(gumbel(pick) if explore else pick, present, pairs)
                 elif self.unit == "slot":
                     mask = select(gumbel(pick) if explore else pick, present, k_ps4)
+                elif self.sel_name in SEASONAL:
+                    mask = season_mask
                 else:
                     loc = pick.masked_fill(~where, float("-inf")).amax(1)      # (B, H, W)
                     mask = topk_mask((gumbel(loc) if explore else loc)[:, None],
                                      max(1, k // T)) & where
                 b, t, y, x = mask.nonzero(as_tuple=True)
                 n_crops = len(b)
+                if self.l2 is not None and not self._l2_inner:   # layer 2 from layer 1's output
+                    l2_mask = self._level2_picks(ms, ss, season, present, extra, mask)
                 if self.crop_free:              # uniform pixel positions, uniform present months
                     P_ = self.crop_px
                     if self.n_eval is not None and not self.training:
@@ -3276,6 +4087,9 @@ class InjectFT(nn.Module):
                 dates = dates + self._res_crops(ms, season, frac, self._res_masks)
             if self._octree_leaves is not None:                 # --apt_octree: every crop
                 dates = dates + self._apt_octree_crops(ms, self._octree_leaves, season, frac)
+            l2_on = self.l2 is not None and not self._l2_inner and k
+            if l2_on:                                           # --level2 crops
+                dates = dates + self._level2_crops(ms, extra, season, present, frac, *l2_mask)
             hr_px = None
             self._gate = self._gate_idx = None
             if n_crops:
@@ -3302,7 +4116,7 @@ class InjectFT(nn.Module):
                     crops = crop_patches(pad_sample(ms, P_), b, t, py + P_, px + P_, P_,
                                          pixels=True)
                 else:
-                    crops = crop_patches(ms, b, t, py, px, P_, pixels=True)
+                    crops = self._crop_content(ms, b, t, py, px, P_, present)
                 hr = self.mix.embed(crops, P_, slot=crop_slot, py=py, px=px)
                 hr = self.mix.head_blocks(hr, lr, b)
                 if getattr(self, "acq_pool", "none") != "none":     # pooled raw acquisitions
@@ -3330,6 +4144,12 @@ class InjectFT(nn.Module):
             g = TILE // self.lr_tile
             lr_F = rearrange(lr_F, "(b gy gx) s h w d -> b s (gy h) (gx w) d", gy=g, gx=g)
         v = hr.pooled(hr_x).float()[:, 0, 0, 0] if n_crops else None           # (N, D)
+        if self._l2_inner:                  # --level2: layer 1's month crops, for their maps
+            self._l2_cap = (v, b, t, y, x, hr_px)
+        if self.l2 is not None and not self._l2_inner and k and n_crops:
+            # layer 1's ps8 windows sit on the ps8 grid (stride 8): read on-grid, size 2, so
+            # the pool takes crops of mixed sizes
+            hr_px = None
         if isinstance(self.readout, (CellAttnReadout, NativeSetReadout)):   # sparse, per cell
             # every crop set with its gate log-weight, or None (ungated: log-weight 0)
             vs, idx, logw = [], [], []
@@ -3338,17 +4158,28 @@ class InjectFT(nn.Module):
                 idx.append(torch.stack([b, t, y, x]))
                 if self.selector is not None:
                     logw.append(F.logsigmoid(scores[b, t, y, x].float()))
+                elif self._res_gate is not None:    # --res_mode e2e / both: the window's score
+                    logw.append(F.logsigmoid(self._res_gate[b, y, x].float()))
                 elif self._dps_P is not None:   # weight exp(p - sg p) = 1, gradient dp/ds
                     pv = self._dps_P[b, t, y, x]
                     logw.append(pv - pv.detach())
                 else:
                     logw.append(None)
-            sizes = [torch.ones_like(b)] if n_crops else []
+            sizes = ([torch.full_like(b, self.crop_px // LOOKUP_PS) if self.l2 is not None
+                      and not self._l2_inner else torch.ones_like(b)] if n_crops else [])
             for d, dx_ in zip(dates, date_x if dates else []):
                 vs.append(d["hr"].pooled(dx_).float()[:, 0, 0, 0])
                 idx.append(torch.stack(d["idx"]))
                 logw.append(d["logw"])
                 sizes.append(torch.full_like(d["idx"][0], d.get("size", 1)))
+            hr_fp = self.crop_px
+            if any("px" in d for d in dates):     # --level2 ps2 crops: every crop per pixel
+                fp_of = lambda d: d.get("fp", LOOKUP_PS * d.get("size", 1))     # noqa: E731
+                hp = ([(y * LOOKUP_PS, x * LOOKUP_PS)] if n_crops else []) + [
+                    d.get("px", (d["idx"][2] * LOOKUP_PS, d["idx"][3] * LOOKUP_PS)) for d in dates]
+                hr_px = tuple(torch.cat(v) for v in zip(*hp))
+                hr_fp = torch.cat(([torch.full_like(b, self.crop_px)] if n_crops else [])
+                                  + [torch.full_like(d["idx"][0], fp_of(d)) for d in dates])
             if all(w is None for w in logw):
                 logw = []
             else:
@@ -3369,7 +4200,7 @@ class InjectFT(nn.Module):
                     tuple(torch.cat(idx, 1)) if idx else (empty,) * 4,
                     torch.cat(logw) if logw else None,
                     torch.cat(sizes) if sizes else None, parts=values, hr_px=hr_px,
-                    hr_fp=self.crop_px)
+                    hr_fp=hr_fp)
                 self.joint_loss = self.teach_loss = None
                 if values:
                     logits, parts = out
@@ -3763,10 +4594,26 @@ def main():
     ap.add_argument("--joint_embed", default="shared", choices=("shared", "own"),
                     help="--joint: the encoder's patch embedding | the selector's own trained copy")
     ap.add_argument("--jitter", action="store_true", help="ps4 month crops 0-3 px off the grid")
-    ap.add_argument("--loc_stride", type=int, default=4, choices=(4, 6, 8),
-                    help="--select_unit location, --crop_px 8, oracle / entropy / random: the "
-                         "candidate windows' top-left corners every loc_stride px (6: <= 2 px "
-                         "overlap, 8: none); 4 = a window centred on every ps4 cell (default)")
+    ap.add_argument("--level2", default="none", choices=("none",) + tuple(L2_PX),
+                    help="a second oracle layer inside the season oracle's ps8 month crops "
+                         "(InjectFT.set_level2): the --l2_n highest-loss ps4 cells of the "
+                         "layer-1 prediction, each its lower-loss half of the cropped months; "
+                         "m4 = those months at ps4, d8 / d4 = their raw dates at ps8 / ps4; "
+                         "under ps8 seasons + ps4 crops: m2 / d2 at ps2")
+    ap.add_argument("--l2_n", type=int, default=0, help="--level2 budget in ps4 cells (d8: "
+                    "/ 4 ps8 windows, the same area)")
+    ap.add_argument("--l2_pick", default="oracle", choices=("oracle", "random"),
+                    help="--level2 control: random locations and a random half of the months")
+    ap.add_argument("--season_drop", type=float, default=0.0,
+                    help="--readout native_set: in training, drop each (sample, season) token "
+                         "from the readout's pool with this probability (all cells; crops kept; "
+                         "one used season always stays) -- against a pool that collapses onto "
+                         "one season")
+    ap.add_argument("--loc_stride", type=int, default=4, choices=(2, 4, 6, 8),
+                    help="--select_unit location: the candidate windows' top-left corners every "
+                         "loc_stride px. --crop_px 8 (oracle / entropy / random): 6 = <= 2 px "
+                         "overlap, 8 = none; --crop_px 4 (label oracles): 2 = 31 x 31 windows, "
+                         "half overlap. 4 = a window centred on every ps4 cell (default)")
     ap.add_argument("--crop_px", type=int, default=4, choices=(4, 8, 16),
                     help="crop window side: 4 = ps4 crops; 16 = one ps16 token on the 16 px "
                          "window centred on each picked ps4 cell")
@@ -3876,6 +4723,38 @@ def main():
     ap.add_argument("--eps_anneal", type=float, default=0.5,
                     help="--joint: fraction of the epochs over which eps goes start -> end")
     ap.add_argument("--joint_weight", type=float, default=1.0, help="--joint: predictor loss weight")
+    ap.add_argument("--res_mode", default="none", choices=("none", "oracle", "e2e", "both"),
+                    help="--score_src lr_entropy: a learned residual on the scorer's window entropy "
+                         "(ResidualScorer), trained by the oracle ranking loss, the task loss "
+                         "through a crop gate, or both (oracle weight decaying)")
+    ap.add_argument("--res_arch", default="conv", choices=("conv", "hr", "xattn", "xattn_conv"),
+                    help="--res_mode: the residual's inputs (ResidualScorer): the scorer's maps + "
+                         "tokens (conv), the windows' raw monthly pixels (hr), those pixels as "
+                         "queries over the scorer's season tokens (xattn), or xattn + conv")
+    ap.add_argument("--res_decay", type=float, default=0.5,
+                    help="--res_mode both: the oracle loss weight goes 1 -> 0 over this share of "
+                         "the epochs (oracle: held at 1)")
+    ap.add_argument("--res_tau", type=float, default=0.5,
+                    help="--res_mode e2e / both: Gumbel noise scale on the window scores while "
+                         "training (exploration)")
+    ap.add_argument("--scorer", default="",
+                    help="--score_src lr_entropy: checkpoints/<name>.pt of an LR-only run (same "
+                         "--lr_patch, no crops) whose prediction entropy picks the crops")
+    ap.add_argument("--score_src", default="label",
+                    choices=("label", "learned", "lr_entropy", "entropy"),
+                    help="the per-season oracles' scores: label (the oracle), a FROZEN rank head "
+                         "(--rank_head, from exp.upsamplers.learned_select), the entropy of a "
+                         "frozen LR-only --scorer's prediction (lr_entropy), or the entropy of the "
+                         "in-training model's own crop-free prediction (entropy) -- no labels")
+    ap.add_argument("--rank_head", default="", help="checkpoints/<name>.pt: the rank head weights")
+    ap.add_argument("--rank_arch", default="linear", choices=RANK_ARCHS)
+    ap.add_argument("--season_rule", default="score", choices=("score", "all", "prior", "random"),
+                    help="better-half season selectors: which seasons of a picked window get "
+                         "crops -- the scores' better half, all, a fixed dataset prior "
+                         "(--season_prior), or a random half")
+    ap.add_argument("--season_prior", default="",
+                    help="checkpoints/<name>.pt: (NS,) per-season-index scores, low = picked "
+                         "(exp.upsamplers.season_rule)")
     ap.add_argument("--init_ckpt", default="",
                     help="warm start from checkpoints/<run>.pt (no frozen phase; the backbone "
                          "at lr x UNFREEZE_LR_FACTOR from the start, a new selector at lr)")
@@ -4003,6 +4882,15 @@ def main():
             + ("_jres8" if a.joint_res else "")
             + ("" if a.pos == "corner" else f"_pos{a.pos}") + ("_doy" if a.doy else "")
             + ("" if a.attn == "joint" else f"_{a.attn}")
+            + (f"_rk{a.rank_arch}" if a.score_src == "learned" else "")
+            + ("_lrent" if a.score_src == "lr_entropy" else "")
+            + ("_sent" if a.score_src == "entropy" else "")
+            + ("" if a.res_mode == "none" else f"_res{a.res_mode}"
+               + ("" if a.res_arch == "conv" else a.res_arch))
+            + ("" if a.season_rule == "score" else f"_sr{a.season_rule}")
+            + (f"_sd{a.season_drop:g}" if a.season_drop else "")
+            + ("" if a.level2 == "none" else f"_l2{a.level2}n{a.l2_n}"
+               + ("" if a.l2_pick == "oracle" else a.l2_pick))
             + ("" if a.head_attn == "alone" else f"_ha{a.head_attn}")
             + ("_eqcrops" if a.pair_match_random else "")
             + (f"_teach{a.self_teach}w{a.teach_weight:g}" if a.self_teach else "")
@@ -4039,11 +4927,28 @@ def main():
                      a.apt_octree_space_only).cuda()
     model.grid_mode, model.grid_phase = a.grid_mode, a.grid_phase
     if a.loc_stride != 4:
-        if (a.select_unit != "location" or a.crop_px != 8
-                or a.selector not in ("oracle", "entropy", "random")):
-            raise SystemExit("--loc_stride: --select_unit location --crop_px 8, "
-                             "--selector oracle | entropy | random")
+        ok8 = a.crop_px == 8 and a.loc_stride in (6, 8) and a.selector in (
+            ("oracle", "entropy", "random") + SEASON_PRIOR)
+        ok4 = a.crop_px == 4 and a.loc_stride == 2 and a.selector in ("oracle",) + SEASON_PRIOR
+        if a.select_unit != "location" or not (ok8 or ok4):
+            raise SystemExit("--loc_stride: --select_unit location; --crop_px 8 with stride 6 | 8 "
+                             "(oracle / entropy / random / season oracles) or --crop_px 4 with "
+                             "stride 2 (label oracles)")
         model.set_loc_stride(a.loc_stride)
+    if a.level2 != "none":
+        s16 = a.level2 in ("m4", "d4", "d8")
+        if (a.selector not in SEASON_PRIOR or a.readout != "native_set" or a.l2_n < 1
+                or (a.lr_patch, a.crop_px, a.loc_stride) != ((16, 8, 8) if s16 else (8, 4, 4))):
+            raise SystemExit("--level2: a season oracle, --readout native_set, --l2_n >= 1; "
+                             "m4 / d4 / d8: ps16 seasons, --crop_px 8 --loc_stride 8; m2 / d2: "
+                             "--lr_patch 8 --crop_px 4")
+        if a.level2[0] == "d" and task.name not in ("pastis", "planteur", "yieldsat_raw"):
+            raise SystemExit("--level2 d*: raw acquisitions: pastis / planteur / yieldsat_raw")
+        model.set_level2(a.level2, a.l2_n, a.l2_pick)
+    if a.season_drop:
+        if a.readout != "native_set" or not 0 < a.season_drop < 1:
+            raise SystemExit("--season_drop: --readout native_set, 0 < p < 1")
+        model.readout.season_drop = a.season_drop
     if a.selector == "grid" and (a.joint or a.select_unit not in ("slot", "location")
                                  or a.res_mix or a.date_level != "none"):
         raise SystemExit("--selector grid is a content-blind baseline: no --joint, "
@@ -4066,7 +4971,9 @@ def main():
     # (ps8 months through the bilinear head, no crops: the plain series fine-tune, a reference)
     if (a.lr_patch == 8 or a.lr_patch == 4 and a.readout == "native_set") and not (
             a.readout == "native_set"
-            and (a.crop_free or a.selector == "none")) and not (
+            and (a.crop_free or a.selector == "none"
+                 or a.lr_patch == 8 and a.select_unit == "location"
+                 and a.selector in PRIOR + SEASONAL + ("grid", "random"))) and not (
             a.lr_patch == 8 and a.readout == "bilinear" and a.selector == "none"):
         raise SystemExit("--lr_patch 8, or 4 with native_set (ps8 / ps4 seasons): --readout "
                          "native_set with --crop_free crops or --selector none")
@@ -4089,17 +4996,64 @@ def main():
                              f"{unexpected[:5]}")
         if model.joint_embed is not None:   # the selector's copy starts from the WARM embedding
             model.joint_embed.load_state_dict(model.mix.encoder.patch_embeddings.state_dict())
+    if a.score_src == "learned":            # a frozen rank head picks the (season, window) pairs
+        if a.selector not in SEASON_PRIOR or not a.rank_head:
+            raise SystemExit("--score_src learned: --selector oracle_season | oracle_tophalf | "
+                             "oracle_bothalf and --rank_head")
+        r = model.lr_ps // model.crop_px
+        model.rank_head = make_rank_head(a.rank_arch, model.backbone().embedding_size,
+                                         2 * r * r, model.head.linear).cuda()
+        model.rank_head.load_state_dict(torch.load(f"checkpoints/{a.rank_head}.pt",
+                                                   map_location="cpu"))
+        model.rank_head.requires_grad_(False)
+        model.score_src = "learned"
+    if a.score_src == "lr_entropy":
+        if a.selector not in SEASON_PRIOR or not a.scorer:
+            raise SystemExit("--score_src lr_entropy: a better-half season selector and --scorer")
+        model.attach_scorer(a.scorer)
+    if a.score_src == "entropy" and (a.selector not in SEASON_PRIOR or a.scorer):
+        raise SystemExit("--score_src entropy: a better-half season selector, no --scorer")
+    if a.score_src in ("lr_entropy", "entropy"):
+        model.score_src = a.score_src
+        if a.res_mode != "none":            # ResidualScorer is built once the loaders exist
+            model.res_mode, model.res_tau = a.res_mode, a.res_tau
+            model.res_lambda = 1.0 if a.res_mode in ("oracle", "both") else 0.0
+    elif a.res_mode != "none":
+        raise SystemExit("--res_mode: --score_src lr_entropy / entropy")
+    if a.season_rule != "score":
+        if a.selector not in SEASON_PRIOR or (a.season_rule == "prior") != bool(a.season_prior):
+            raise SystemExit("--season_rule: a better-half season selector; prior needs "
+                             "--season_prior (and only prior takes it)")
+        model.season_rule = a.season_rule
+        if a.season_prior:
+            model.season_prior = torch.load(f"checkpoints/{a.season_prior}.pt", map_location="cpu")
+    if model.sel_name in SEASON_PRIOR:     # say which picks this run trains and tests with
+        print(f"picks: {model.sel_name}, scores from {model.score_src}"
+              + (f" ({a.rank_arch} head {a.rank_head})" if model.score_src == "learned" else "")
+              + (f" (scorer {a.scorer})" if model.score_src == "lr_entropy" else "")
+              + ("" if a.res_mode == "none" else f", residual {a.res_mode} ({a.res_arch})")
+              + f", season rule {model.season_rule}", flush=True)
     if a.gain_loss and a.readout in SPARSE + NATIVE:
         raise SystemExit("--gain_loss reads the dense month feature grid; "
                          "cellattn / native never build it")
     if (a.score_norm or a.score_l1 or a.gain_loss) and a.selector not in LEARNED:
         raise SystemExit("--score_norm / --score_l1 regularize a learned selector")
     # --self_teach: the teacher reads the raw acquisitions where the step series is composites
-    teach_raw = bool(a.self_teach) and task.name in ("pastis", "pastis_s2", "yieldsat_raw")
+    teach_raw = bool(a.self_teach) and task.name in ("pastis", "pastis_s2", "planteur",
+                                                     "planteur_s2", "yieldsat_raw")
     dl = {s: loader(task, s, bs, a.num_workers, s == "train", a.lr_steps, a.epoch_samples,
-                    dates=a.date_level != "none" or a.date_joint != "none" or a.acq_pool != "none" or (teach_raw and s == "train"),
+                    dates=a.date_level != "none" or a.date_joint != "none" or a.acq_pool != "none" or (teach_raw and s == "train") or a.level2[0] == "d",
                     teach_n=a.self_teach if teach_raw and s == "train" and a.date_level == "none" else 0, mid_months=a.doy)
           for s in ("train", "val", "test")}
+    if a.res_mode != "none":                # the HR arms size their pixel embedding on a batch
+        sm = model._scorer[0] if model._scorer is not None else model   # whose tokens r reads
+        ms0, ss0 = next(iter(dl["val"]))[:2] if a.res_arch != "conv" else (None, None)
+        model.res_sel = ResidualScorer(sm.backbone().embedding_size,
+                                       sm.head.linear.out_features // LR_PS ** 2, arch=a.res_arch,
+                                       C=0 if ms0 is None else window_pixels(ms0, 1).shape[-1],
+                                       P=model.crop_px, S=TILE // model.crop_px,
+                                       gh=TILE // sm.lr_ps,
+                                       NS=0 if ss0 is None else ss0.timestamps.shape[1]).cuda()
     if a.sweep_only:
         model.load_state_dict(torch.load(f"checkpoints/{name}.pt", map_location="cpu",
                                          weights_only=False)["model"])
@@ -4178,6 +5132,8 @@ def main():
             hold = round(a.eps_hold * a.epochs)     # epochs of eps_start before the anneal
             model.joint_eps = a.eps_start + (a.eps_end - a.eps_start) * min(
                 1.0, max(0, epoch - hold) / span)
+        if model.res_mode == "both":        # the oracle loss weight 1 -> 0 over res_decay
+            model.res_lambda = max(0.0, 1.0 - epoch / max(1, round(a.res_decay * a.epochs)))
         if epoch == freeze_epochs and not a.init_ckpt and not a.no_pretrain:
             for g in opt.param_groups:
                 g["lr"] = a.lr * UNFREEZE_LR_FACTOR
@@ -4202,6 +5158,8 @@ def main():
                 loss = loss + a.gain_loss * gain_loss(model, task_loss)
             if model.joint is not None and model.joint_loss is not None:
                 loss = loss + a.joint_weight * model.joint_loss
+            if model.res_loss is not None:      # --res_mode oracle / both: ranking to the oracle
+                loss = loss + model.res_loss
             if model.teach_loss is not None:    # dense self-teacher: its task loss + reconstruction
                 loss = loss + model.teach_loss["task"] + a.teach_weight * model.teach_loss["recon"]
             opt.zero_grad(set_to_none=True)
@@ -4224,6 +5182,9 @@ def main():
                                f"{model.teach_loss['recon'].item():.4f}")
                 if model.joint is not None and model.joint_loss is not None:
                     extra_ += f" | selector loss {model.joint_loss.item():.3f} eps {model.joint_eps:.2f}"
+                if model.res_loss is not None:
+                    extra_ += (f" | residual oracle loss {model.res_loss.item():.4f} "
+                               f"(lambda {model.res_lambda:.2f})")
                 if a.acq_pool != "none" and getattr(model, "last_acq", None):
                     extra_ += (f" | {model.last_acq[0]:.0f} acquisition tokens/sample, "
                                f"{100 * model.last_acq[1]:.1f}% composite fallback")
@@ -4323,6 +5284,11 @@ def main():
                     "overlap": ", one-way attention to the overlapping lr cell only"}[a.attn]
     if a.init_ckpt:
         readout += ", warm start"
+    if a.level2 != "none":
+        readout += (f", + level 2 ({a.l2_pick}): {a.level2} in the {a.l2_n} worst ps4 cells "
+                    "of the layer-1 output, each its better half of cropped months")
+    if a.season_drop:
+        readout += f", readout season dropout {a.season_drop:g} in training"
     if res_mix:
         readout += (", token budget at ps16/ps8/ps4 = " + "/".join(f"{v:g}" for v in res_mix)
                     + " (random single-month crops)")
@@ -4348,6 +5314,9 @@ def main():
             arm = arm.replace("ps16", f"ps{a.lr_patch}", 1)
         if a.no_seasons:
             arm = "NO season tokens (crops only): " + arm
+        if a.selector in SEASONAL:              # (season, location) picks within that budget
+            arm = re.sub(r"(\d+locx\d+[MD]-ps\d+)", r"(season, loc) pairs in a \1 crop budget",
+                         arm, count=1)
     print(f"TEST {arm} (best val epoch {best_epoch}, val {best:.4f}): {_brief(test)} | "
           f"{test_crops:.0f} crops/sample")
     if not a.limit_batches:

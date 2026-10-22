@@ -2,7 +2,7 @@
 # Submit the feature extraction, the OlmoEarth LP / FFT sweep or the UTAE baselines for one
 # task (exp/common/tasks.py). Run from the repo root, NOT under sbatch:
 #
-#   [MODEL=base|tiny] bash scripts/slurm/sweep.sh <pastis|biomassters|geoidflood|yieldsat_ml24> <what>
+#   [MODEL=base|tiny] bash scripts/slurm/sweep.sh <pastis|planteur|biomassters|geoidflood|yieldsat_ml24> <what>
 #       what: extract | olmoearth | utae
 #   DRY=1 ...                                        # print the sbatch lines only
 #   ONLY=<regex> ...                                 # submit only jobs whose name matches
@@ -35,6 +35,7 @@ MAX_JOB_H="${MAX_JOB_H:-23}"         # longer runs are chained (24 h+ L40S jobs 
 # per task: OlmoEarth epochs, UTAE epochs, CPUs (loader workers + 1), cache store
 case "$TASK" in
   pastis)      OE_EPOCHS=50; UTAE_EPOCHS=100; CPUS=9;  DEFAULT_STORE=per_timestep ;;
+  planteur|planteur_s2) OE_EPOCHS=50; UTAE_EPOCHS=100; CPUS=9; DEFAULT_STORE=per_timestep ;;
   biomassters) OE_EPOCHS=10; UTAE_EPOCHS=50;  CPUS=17; DEFAULT_STORE=reduced ;;
   geoidflood)  OE_EPOCHS=10; UTAE_EPOCHS=20;  CPUS=9;  DEFAULT_STORE=reduced ;;
   yieldsat_ml24) OE_EPOCHS=50; UTAE_EPOCHS=100; CPUS=9; DEFAULT_STORE=reduced ;;
@@ -46,6 +47,7 @@ STORE="${STORE:-$DEFAULT_STORE}"
 #   base  pastis ps4 5.5-9.5/s (~22 min/epoch), ps16 ~37/s | bio ps4 6-10.6/s (~3.4 h/epoch),
 #         ps16 ~26/s (data-loading bound) | geoid ps4ts4 60-74/s, ps4ts64 ~200/s, ps16 ~370/s
 #   tiny  pastis ps4 ~20/s | bio ps4 21-23/s, ps16 ~26/s (data-loading bound) | geoid ps4ts4 ~290/s
+#   planteur: not benchmarked yet -- PASTIS hours x 1.3 (7584 vs 5820 train tiles, same tokens)
 #   base  yieldsat_ml24 (8703 train tiles, batch 4) ps4ts4 8.9/s (series and per_timestep),
 #         ps4ts64 12.3/s, ps16ts64 82/s -> 50 epochs: ps4 ~12-17 min/epoch, ps16 ~2 min/epoch
 # LP runs the encoder forward only (~1/3 of FFT) or reads a cache (disk bound).
@@ -54,15 +56,19 @@ hours() {   # hours <patch> <tile> <fft|lp|lp_cache|extract|utae>
     *:yieldsat_ml24:*:*:lp_cache) echo 2 ;;   # reduced cache: 10.9k tiles x one token map
     *:*:*:*:lp_cache)             echo 8 ;;
     *:pastis:*:*:utae)            echo 8 ;;
+    *:planteur*:*:*:utae)         echo 11 ;;
     *:biomassters:*:*:utae)       echo 12 ;;
     *:geoidflood:*:*:utae)        echo 8 ;;
     *:yieldsat_ml24:*:*:utae)     echo 8 ;;
     base:pastis:*:*:extract)      echo 4 ;;
+    base:planteur*:*:*:extract)   echo 6 ;;
     base:biomassters:*:*:extract) echo 12 ;;
     base:geoidflood:*:*:extract)  echo 6 ;;
     base:yieldsat_ml24:*:*:extract) echo 2 ;;
     base:pastis:4:*:fft)          echo 28 ;;  base:pastis:16:*:fft)       echo 6 ;;
     base:pastis:4:*:lp)           echo 12 ;;  base:pastis:16:*:lp)        echo 4 ;;
+    base:planteur*:4:*:fft)       echo 36 ;;  base:planteur*:16:*:fft)    echo 8 ;;
+    base:planteur*:4:*:lp)        echo 16 ;;  base:planteur*:16:*:lp)     echo 6 ;;
     base:biomassters:4:*:fft)     echo 54 ;;  base:biomassters:16:*:fft)  echo 16 ;;
     base:biomassters:4:*:lp)      echo 24 ;;  base:biomassters:16:*:lp)   echo 12 ;;
     base:geoidflood:4:4:fft)      echo 16 ;;  base:geoidflood:4:64:fft)   echo 6 ;;
@@ -74,6 +80,9 @@ hours() {   # hours <patch> <tile> <fft|lp|lp_cache|extract|utae>
     tiny:geoidflood:*:*:extract)  echo 4 ;;
     tiny:pastis:4:*:fft)          echo 8 ;;   tiny:pastis:16:*:fft)       echo 4 ;;
     tiny:pastis:*:*:lp)           echo 4 ;;
+    tiny:planteur*:*:*:extract)   echo 4 ;;
+    tiny:planteur*:4:*:fft)       echo 11 ;; tiny:planteur*:16:*:fft)    echo 6 ;;
+    tiny:planteur*:*:*:lp)        echo 6 ;;
     tiny:biomassters:*:*:fft)     echo 16 ;;  tiny:biomassters:*:*:lp)    echo 12 ;;
     tiny:geoidflood:4:4:fft)      echo 5 ;;   tiny:geoidflood:*:*:fft)    echo 4 ;;
     tiny:geoidflood:*:*:lp)       echo 4 ;;
