@@ -133,6 +133,7 @@ import copy  # noqa: E402
 import math  # noqa: E402
 import re  # noqa: E402
 import time  # noqa: E402
+import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import torch  # noqa: E402
@@ -4479,6 +4480,31 @@ def evaluate(model, task, dl, limit):
     return meter.compute(), crops / max(n, 1)
 
 
+@torch.no_grad()
+def regress_record(model, task, dl, a, name):
+    """--regress_out: the trained run's reference outputs. Seeded the same way before the
+    recorded batches and the full test pass, so random selectors replay."""
+    sd = torch.load(f"checkpoints/{name}.pt", map_location="cpu", weights_only=False)["model"]
+    model.load_state_dict({k: v for k, v in sd.items() if not k.startswith("task_loss_fn.")})
+    model.eval()
+    torch.manual_seed(1234)
+    batches = []
+    for i, (*x, target) in enumerate(dl):
+        if i >= a.regress_batches:
+            break
+        model.last_pick = None
+        logits, _, nc = model(*x)
+        pick = model.last_pick
+        batches.append(dict(logits=logits.float().cpu(), n_crops=nc,
+                            pick=None if pick is None else pick[0].cpu()))
+    torch.manual_seed(1234)
+    res, crops = evaluate(model, task, dl, a.limit_batches)
+    torch.save(dict(run=name, argv=sys.argv[1:], batches=batches, test=res,
+                    crops_per_sample=crops), a.regress_out)
+    print(f"REGRESS {name}: test primary {res['primary']:.4f} | {crops:.1f} crops/sample | "
+          f"{len(batches)} batches -> {a.regress_out}", flush=True)
+
+
 SWEEP_COUNTS = (0, 16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096)
 
 
@@ -4803,6 +4829,11 @@ def main():
     ap.add_argument("--fold", type=int, default=1, choices=(1, 2, 3, 4, 5),
                     help="PASTIS benchmark protocol fold (1 = the split of every earlier run: "
                          "train folds 1-3, val 4, test 5; f rotates all three by f - 1)")
+    ap.add_argument("--regress_out", default="",
+                    help="no training: load checkpoints/<run name>.pt and save the picks and "
+                         "logits of the first --regress_batches test batches plus the full test "
+                         "metrics to this .pt (the reference for the manyup.mixres port)")
+    ap.add_argument("--regress_batches", type=int, default=4)
     ap.add_argument("--limit_batches", type=int, default=0)
     ap.add_argument("--max_hours", type=float, default=None)
     a = ap.parse_args()
@@ -4911,7 +4942,8 @@ def main():
             + (f"_seed{a.seed}" if a.seed else ""))     # seed 0 keeps the original run names
     smoke = "_smoke" if a.limit_batches else ""
     state_path = Path(f"checkpoints/{name}{smoke}_state.pt")
-    if not a.flops and not a.sweep_only and state_path.exists() and torch.load(state_path, weights_only=False).get("done"):
+    if (not a.flops and not a.sweep_only and not a.regress_out and state_path.exists()
+            and torch.load(state_path, weights_only=False).get("done")):
         print(f"{state_path} says this run is finished; nothing to do")
         return
     model = InjectFT(task, a.model_size, a.inject_layer, a.selector, a.k_frac,
@@ -5054,6 +5086,9 @@ def main():
                                        P=model.crop_px, S=TILE // model.crop_px,
                                        gh=TILE // sm.lr_ps,
                                        NS=0 if ss0 is None else ss0.timestamps.shape[1]).cuda()
+    if a.regress_out:
+        regress_record(model, task, dl["test"], a, name)
+        return
     if a.sweep_only:
         model.load_state_dict(torch.load(f"checkpoints/{name}.pt", map_location="cpu",
                                          weights_only=False)["model"])
