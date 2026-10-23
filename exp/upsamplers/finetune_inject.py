@@ -164,6 +164,10 @@ from manyup.inject import (CellAttnReadout, CrossAttnSelector, EncCrossSelector,
                            sincos_2d)
 from manyup.seasonal import season_index, season_mean, seasons_used, select  # noqa: E402
 from manyup.timAnyUp import topk_mask  # noqa: E402
+from manyup.mixres.decoder import NativeSetReadout  # noqa: E402,F401  (moved there)
+from manyup.mixres.residual import ResidualScorer, listnet_loss, window_pixels  # noqa: E402,F401
+from manyup.mixres.selectors import location_grid_scores  # noqa: E402,F401
+from manyup.mixres.data import within  # noqa: E402
 
 LR_PS, LOOKUP_PS, TILE = 16, 4, 64
 SELECTORS = ("none", "random", "grid", "learned", "xattn", "oracle", "entropy", "apt",
@@ -296,221 +300,6 @@ SPARSE = ("cellattn", "cellattn_overlap") + SET
 L2_PX = {"m2": 2, "d2": 2, "m4": 4, "d4": 4, "d8": 8}   # --level2 arm -> its crops' px   # no month grid: take date crops
 
 
-class NativeSetReadout(nn.Module):
-    """--readout native_set: native_attn_logits as a per-cell SET, so any number of crops of
-    any kind (month composites, single dates, several per cell) fit without a month grid --
-    the date level's readout with overlapping tokens only.
-
-    Cell p's candidates (padded per cell):
-        season tokens   the ps16 token covering p, every used season   (NS)
-        crops           every crop whose footprint covers p, any step or date, any level,
-                        any patch size (ps4: 1 cell, ps8: 2 x 2 cells, ps16: 4 x 4)  (0 .. M)
-    Each candidate i gives
-        logits_i(px in p)   the native head: a season token its 16 x 16 block's 4 x 4 px in p,
-                            a crop its 16 x 16 map area-downsampled to its own footprint
-                            (ps4: 4 x 4 px, ps8: 8 x 8, ps16: kept at 16 x 16), then the
-                            4 x 4 px of that footprint lying in p
-        a_i                 score(f_i) + prior_i + gate_i
-                            score = Linear(LayerNorm(f)) (scalar, zero init)
-                            prior = log(present months of the season) for a season token (it
-                                    stands for that many months, as in the month grid), 0 for
-                                    a crop
-                            gate  = log sigmoid(selector score) for a gated crop, else 0
-    and out(px in p) = sum_i softmax_i(a_i) logits_i(px). No spatial term: the pool is over
-    what overlaps p. At init (score 0) a cell with no crops is the native time mean exactly.
-
-    Shape letters: B samples, NS season slots, h = w = 4 ps16 cells, H = W = 16 ps4 cells,
-    Q = H * W, N crops in the batch, M the most crops at one cell, D features, C outputs,
-    P = 64 px. forward(...) -> (B, C, P, P) logits.
-    """
-
-    def __init__(self, dim: int, lr_px: int = LR_PS, crop_px: int = LOOKUP_PS,
-                 base_px: int | None = None, mean: bool = False):
-        """mean (--readout native_mean): no score -- NO parameters. Weights = the priors alone
-        (a season token its present months, a crop 1: per month the mean of the tokens
-        covering the pixel, then the mean over months), pooled in PROBABILITY space
-        (classification: the weighted mean of each candidate's softmax; returns its log)."""
-        super().__init__()
-        self.lr_px, self.crop_px, self.mean = lr_px, crop_px, mean
-        # base_px: px side of a SEASON token (--lr_patch 8: ps8 seasons). The head still writes
-        # a lr_px x lr_px map; a smaller token's map is average-pooled to its footprint, the
-        # same rule the crops follow.
-        self.base_px = base_px or lr_px
-        self.no_base = False            # --no_seasons: the season tokens are not candidates
-        self.season_drop = 0.0          # --season_drop p: training drops each (sample, season)
-        self.score = None if mean else nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, 1))
-        if self.score is not None:
-            nn.init.zeros_(self.score[1].weight)
-            nn.init.zeros_(self.score[1].bias)
-
-    def _score(self, f):
-        return f.new_zeros(f.shape[:-1]) if self.score is None else self.score(f.float())[..., 0]
-
-    def forward(self, linear: nn.Linear, lr_F, season, present, hr, hr_idx, hr_logw=None,
-                hr_size=None, parts: bool = False, hr_px=None, hr_fp: int | None = None):
-        """
-        linear    the head, D -> C * lr_px^2
-        lr_F      (B, NS, h, w, D)  final season tokens
-        season    (B, T) long       season slot of each month (-1: none)
-        present   (B, T) bool       month is real
-        hr        (N, D)            final crop tokens (all levels)
-        hr_idx    4 x (N,) long     (sample b, step t -- unused, row y, col x) on the ps4 grid:
-                                    the top-left ps4 cell of the crop's footprint
-        hr_logw   (N,) or None      crop gate log-weight
-        hr_size   (N,) long or None footprint side in ps4 cells (1 ps4, 2 ps8, 4 ps16); None: 1
-        hr_px     2 x (N,) long or None   top-left PIXEL of each crop when crops lie off the ps4
-                                    grid (--jitter, --crop_px): a crop then covers part of
-                                    several cells, and the pool runs per PIXEL over what covers
-                                    it (wgt (B, Q, K, 16) in parts)
-        hr_fp     the off-grid crops' footprint side in px, or (N,) long per crop (--level2
-                  ps2 crops beside ps4 crops) (None: crop_px = 4; --crop_px 16:
-                  one ps16 token read at its native 16 x 16 px)
-        parts     also return (wgt (B, Q, K), candidate logits (B, Q, K, C, 16), the pooled
-                  per-cell logits (B, Q, C, 16), the crop index of each crop slot (B, Q, M),
-                  -1 empty (a ps8 crop fills 4 cells' slots), or None; the
-                  first NS of K are the season tokens) -- for --joint's leave-one-out values
-        """
-        B, NS, h, w, D = lr_F.shape
-        c, r = self.crop_px, self.lr_px // self.crop_px
-        bp = self.base_px
-        rs = bp // c                                         # ps4 cells per season-token side
-        H, W = h * rs, w * rs
-        Q, P = H * W, h * bp
-        C = linear.out_features // self.lr_px ** 2
-        dev = lr_F.device
-        # -- season candidates: (B, NS, Q, C, c*c) logits of each season token over cell q
-        s_log = linear(lr_F.float())
-        if bp < self.lr_px:
-            s_log = F.avg_pool2d(s_log.reshape(-1, C, self.lr_px, self.lr_px),
-                                 self.lr_px // bp).reshape(B, NS, h, w, C * bp * bp)
-        s_log = rearrange(s_log, "b s gh gw (k i j) -> b s k (gh i) (gw j)",
-                          k=C, i=bp, j=bp)                                     # (B, NS, C, P, P)
-        s_log = rearrange(s_log, "b s k (y i) (x j) -> b (y x) s k (i j)", i=c, j=c)  # (B,Q,NS,C,c*c)
-        n_s = (F.one_hot(season.clamp(min=0), NS).float()
-               * (present & (season >= 0)).float()[..., None]).sum(1)          # (B, NS) months
-        s_a = self._score(lr_F.float()) + n_s.clamp(min=1).log()[:, :, None, None]
-        s_a = s_a.masked_fill((n_s == 0)[:, :, None, None], float("-inf"))     # unused seasons
-        if self.no_base:                                                       # crops only
-            s_a = torch.full_like(s_a, float("-inf"))
-        elif self.training and self.season_drop:
-            # whole season tokens out of the pool (every cell), crops kept; at least one used
-            # season stays, so no cell is left without a candidate
-            used = n_s > 0                                                     # (B, NS)
-            drop = (torch.rand_like(n_s) < self.season_drop) & used
-            keep = torch.multinomial(used.float() + 1e-6, 1)                   # (B, 1)
-            rescue = (drop == used).all(1, keepdim=True)                       # all dropped
-            drop = drop & ~(torch.zeros_like(drop).scatter(1, keep, True) & rescue)
-            s_a = s_a.masked_fill(drop[:, :, None, None], float("-inf"))
-        s_a = (s_a.repeat_interleave(rs, 2).repeat_interleave(rs, 3)          # (B, NS, H, W)
-               .flatten(2).transpose(1, 2))                                    # (B, Q, NS)
-        logs, acts = [s_log], [s_a]
-        # -- crop candidates: one ENTRY per (crop, ps4 cell of its footprint), padded per
-        #    cell to M
-        b, _, y, x = hr_idx
-        N = len(b)
-        cover = None
-        if N and hr_px is not None:        # off-grid ps4 crops: entries per overlapped cell
-            # footprint side in px: one for all crops, or per crop (--level2 ps2 + ps4 crops)
-            fps = (hr_fp if torch.is_tensor(hr_fp)
-                   else torch.full((N,), hr_fp or c, dtype=torch.long, device=dev))
-            c_a_tok = self._score(hr.float())
-            if hr_logw is not None:
-                c_a_tok = c_a_tok + hr_logw.float()
-            py_all, px_all = hr_px
-            ar_c = torch.arange(c, device=dev)
-            e_log, e_cov, e_cell, e_crop = [], [], [], []
-            for fp in fps.unique().tolist():
-                ar_n = (fps == fp).nonzero(as_tuple=True)[0]                  # crops of size fp
-                py, px, bg = py_all[ar_n], px_all[ar_n], b[ar_n]
-                maps = linear(hr[ar_n].float()).view(-1, C, self.lr_px, self.lr_px)
-                maps = F.avg_pool2d(maps, self.lr_px // fp) if fp < self.lr_px else maps
-                ar_l = torch.arange(len(ar_n), device=dev)
-                for da in range(fp // c + 1):
-                    for db in range(fp // c + 1):
-                        cy, cx = py // c + da, px // c + db
-                        ui = cy[:, None] * c + ar_c[None] - py[:, None]        # (n, c) crop row
-                        uj = cx[:, None] * c + ar_c[None] - px[:, None]
-                        cov = (((ui >= 0) & (ui < fp))[:, :, None]
-                               & ((uj >= 0) & (uj < fp))[:, None, :]
-                               & ((cy < H) & (cx < W) & (cy >= 0) & (cx >= 0))[:, None, None])
-                        keep = cov.flatten(1).any(1)
-                        g = maps[ar_l[:, None, None], :, ui.clamp(0, fp - 1)[:, :, None],
-                                 uj.clamp(0, fp - 1)[:, None, :]]                # (n, c, c, C)
-                        e_log.append(g.permute(0, 3, 1, 2).flatten(2)[keep])    # (n, C, c*c)
-                        e_cov.append(cov.flatten(1)[keep])
-                        e_cell.append((bg * Q + cy * W + cx)[keep])  # (kept: inside the tile)
-                        e_crop.append(ar_n[keep])
-            crop, cov_e = torch.cat(e_log), torch.cat(e_cov)
-            cell, ecrop = torch.cat(e_cell), torch.cat(e_crop)
-            c_a = c_a_tok[ecrop]
-            N = len(cell)
-            order = torch.argsort(cell, stable=True)
-            cell_s = cell[order]
-            count = torch.bincount(cell_s, minlength=B * Q)
-            M = int(count.max())
-            slot = torch.arange(N, device=dev) - (torch.cumsum(count, 0) - count)[cell_s]
-            idx = torch.full((B * Q, M), -1, dtype=torch.long, device=dev)
-            idx[cell_s, slot] = order
-            idx = idx.view(B, Q, M)
-            ok = idx >= 0
-            safe = idx.clamp(min=0)
-            logs.append(crop[safe] * ok[..., None, None])
-            acts.append(c_a[safe].masked_fill(~ok, float("-inf")))
-            cover = torch.cat([torch.ones(B, Q, NS, c * c, dtype=torch.bool, device=dev),
-                               cov_e[safe] & ok[..., None]], 2)                  # (B, Q, K, c*c)
-        elif N:
-            size = hr_size if hr_size is not None else torch.ones_like(b)
-            maps = linear(hr.float()).view(N, C, self.lr_px, self.lr_px)       # (N, C, 16, 16)
-            c_a_tok = self._score(hr.float())                                   # (N,)
-            if hr_logw is not None:
-                c_a_tok = c_a_tok + hr_logw.float()
-            e_log, e_a, e_b, e_y, e_x, e_crop = [], [], [], [], [], []
-            for sz in size.unique().tolist():                  # 1, 2, 4 cells per side
-                sel = (size == sz).nonzero(as_tuple=True)[0]
-                m = F.avg_pool2d(maps[sel], r // sz) if sz < r else maps[sel]   # (n, C, c*sz, c*sz)
-                m = rearrange(m, "n k (i u) (j v) -> n (i j) k (u v)", u=c, v=c)  # (n, sz*sz, C, c*c)
-                ii, jj = torch.meshgrid(torch.arange(sz, device=dev), torch.arange(sz, device=dev),
-                                        indexing="ij")
-                e_log.append(m.flatten(0, 1))
-                e_a.append(c_a_tok[sel].repeat_interleave(sz * sz))
-                e_b.append(b[sel].repeat_interleave(sz * sz))
-                e_crop.append(sel.repeat_interleave(sz * sz))                   # entry -> crop
-                e_y.append((y[sel][:, None] + ii.flatten()[None]).flatten())
-                e_x.append((x[sel][:, None] + jj.flatten()[None]).flatten())
-            crop, c_a = torch.cat(e_log), torch.cat(e_a)                       # (E, C, c*c), (E,)
-            eb, ey, ex, ecrop = torch.cat(e_b), torch.cat(e_y), torch.cat(e_x), torch.cat(e_crop)
-            N = len(eb)                                                         # entries
-            cell = eb * Q + ey * W + ex                                         # (E,)
-            order = torch.argsort(cell, stable=True)
-            cell_s = cell[order]
-            count = torch.bincount(cell_s, minlength=B * Q)
-            M = int(count.max())
-            slot = torch.arange(N, device=dev) - (torch.cumsum(count, 0) - count)[cell_s]
-            idx = torch.full((B * Q, M), -1, dtype=torch.long, device=dev)
-            idx[cell_s, slot] = order
-            idx = idx.view(B, Q, M)
-            ok = idx >= 0
-            safe = idx.clamp(min=0)
-            logs.append(crop[safe])                                             # (B, Q, M, C, c*c)
-            acts.append(c_a[safe].masked_fill(~ok, float("-inf")))              # (B, Q, M)
-        a = torch.cat(acts, 2)                                                  # (B, Q, K)
-        cand = torch.cat(logs, 2)                                               # (B, Q, K, C, c*c)
-        prob = self.mean and C > 1
-        if prob:
-            cand = cand.softmax(3)
-        if cover is not None:               # per pixel, over the candidates covering it
-            wgt = torch.softmax(a[..., None].masked_fill(~cover, float("-inf")), 2).nan_to_num(0.0)
-            out = torch.einsum("bqkp,bqkcp->bqcp", wgt, cand)
-        else:
-            wgt = torch.softmax(a, 2).nan_to_num(0.0)
-            out = torch.einsum("bqk,bqkcp->bqcp", wgt, cand)                    # (B, Q, C, c*c)
-        if prob:                            # log of a distribution: cross_entropy reads it exactly
-            out = out.clamp(min=1e-8).log()
-        img = rearrange(out, "b (y x) k (i j) -> b k (y i) (x j)", y=H, x=W, i=c, j=c)
-        if parts:                                   # crop index (not entry) per crop slot
-            cid = torch.where(idx >= 0, ecrop[idx.clamp(min=0)], -1) if N else None
-            return img, (wgt, cand, out, cid)
-        return img
 
 
 def native_attn_logits(linear: nn.Linear, score: nn.Module, lr_F: torch.Tensor,
@@ -834,111 +623,10 @@ class UncHead(nn.Module):
         return var, torch.einsum("bs,bshw->bhw", w, var) + disagree
 
 
-class ResidualScorer(nn.Module):
-    """--res_mode: a learned correction r (B, S, S) to the LR-only scorer's window entropy, per
-    candidate window (stride = crop size). The last layer starts at zero: score = z(entropy) + r
-    is the plain entropy selector at the start of training. --res_arch picks the inputs:
-        conv        the frozen scorer's crop-free pass: its mean class probabilities, entropy
-                    (mean of the pixels'), top-2 margin, the pixels' disagreement (entropy of the
-                    mean - mean entropy) and its final tokens (mean over used seasons, projected
-                    to 32) -> a 1x1 / 3x3 / 1x1 conv stack
-        hr          the window's raw monthly pixels (the HR input the crops would encode): each
-                    present month's C x P x P patch -> LayerNorm -> linear -> + window position
-                    -> mean over present months -> MLP
-        xattn       hr, each (window, month) patch embedding a query cross-attending to the
-                    scorer's final season tokens (keys / values, + token position and season
-                    embeddings; unused seasons masked) -> [query, attended] -> mean over present
-                    months -> MLP
-        xattn_conv  xattn's window vector as extra channels of conv's stack"""
-
-    def __init__(self, dim: int, n_cls: int, hidden: int = 64, arch: str = "conv",
-                 C: int = 0, P: int = 0, S: int = 0, gh: int = 0, NS: int = 0, heads: int = 4):
-        super().__init__()
-        self.arch, self.heads = arch, heads
-        q_out = 0
-        if arch != "conv":
-            d = hidden
-            self.pix = nn.Sequential(nn.LayerNorm(C * P * P), nn.Linear(C * P * P, d))
-            self.qpos = nn.Parameter(torch.zeros(S * S, d))
-            nn.init.trunc_normal_(self.qpos, std=0.02)
-            q_out = d
-            if arch in ("xattn", "xattn_conv"):
-                self.kv = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, 2 * d))
-                self.kpos = nn.Parameter(torch.zeros(gh * gh, 2 * d))
-                self.ksea = nn.Parameter(torch.zeros(NS, 2 * d))
-                nn.init.trunc_normal_(self.kpos, std=0.02)
-                nn.init.trunc_normal_(self.ksea, std=0.02)
-                self.qn = nn.LayerNorm(d)
-                self.o = nn.Linear(d, d)
-                q_out = 2 * d
-        if arch in ("conv", "xattn_conv"):
-            self.tok = nn.Linear(dim, 32)
-            self.net = nn.Sequential(nn.Conv2d(n_cls + 3 + 32 + (q_out if arch != "conv" else 0),
-                                               hidden, 1), nn.GELU(),
-                                     nn.Conv2d(hidden, hidden, 3, padding=1), nn.GELU(),
-                                     nn.Conv2d(hidden, 1, 1))
-        else:
-            self.net = nn.Sequential(nn.Linear(q_out, hidden), nn.GELU(), nn.Linear(hidden, hidden),
-                                     nn.GELU(), nn.Linear(hidden, 1))
-        nn.init.zeros_(self.net[-1].weight)
-        nn.init.zeros_(self.net[-1].bias)
-
-    def window_vec(self, pix, mon, lr_F, used):
-        """pix (B, S, S, T, C*P*P) raw monthly window pixels, mon (B, T) present months, lr_F
-        (B, NS, gh, gw, D) the scorer's final tokens, used (B, NS) -> (B, S, S, q_out)."""
-        B, S, _, T, _ = pix.shape
-        q = self.pix(pix.float()) + self.qpos.view(1, S, S, 1, -1)              # (B,S,S,T,d)
-        if self.arch in ("xattn", "xattn_conv"):
-            NS, gh, gw = lr_F.shape[1:4]
-            kv = (self.kv(lr_F.float()) + self.kpos.view(1, 1, gh, gw, -1)
-                  + self.ksea.view(1, NS, 1, 1, -1)).flatten(1, 3)              # (B, NS*gh*gw, 2d)
-            k, v = kv.chunk(2, -1)
-            h = self.heads
-            qh = self.qn(q).flatten(1, 3).unflatten(-1, (h, -1)).transpose(1, 2)  # (B,h,L,dh)
-            kh = k.unflatten(-1, (h, -1)).transpose(1, 2)
-            vh = v.unflatten(-1, (h, -1)).transpose(1, 2)
-            m = used[:, None, None, :, None, None].expand(B, 1, 1, NS, gh, gw).flatten(3)
-            att = F.scaled_dot_product_attention(qh, kh, vh, attn_mask=m)
-            att = self.o(att.transpose(1, 2).flatten(2)).view(B, S, S, T, -1)
-            q = torch.cat([q, att], -1)
-        w = mon.float()[:, None, None, :, None]
-        return (q * w).sum(3) / w.sum(3).clamp(min=1)                           # (B,S,S,q_out)
-
-    def forward(self, feats, tok, pix=None, mon=None, lr_F=None, used=None):
-        """feats (B, n_cls + 3, S, S), tok (B, S, S, D); the HR arms: + window_vec's inputs
-        -> (B, S, S)."""
-        if self.arch == "conv":
-            t = self.tok(tok.float()).permute(0, 3, 1, 2)
-            return self.net(torch.cat([feats.float(), t], 1))[:, 0]
-        qv = self.window_vec(pix, mon, lr_F, used)
-        if self.arch == "xattn_conv":
-            t = self.tok(tok.float()).permute(0, 3, 1, 2)
-            return self.net(torch.cat([feats.float(), t, qv.permute(0, 3, 1, 2)], 1))[:, 0]
-        return self.net(qv)[..., 0]
 
 
-def window_pixels(ms, P_):
-    """The raw monthly pixels of every candidate window (stride = size = P_): (B, S, S, T,
-    C*P_*P_), every float band of every modality, NaN -> 0."""
-    xs = [v for k, v in ms.as_dict().items()
-          if torch.is_tensor(v) and v.ndim == 5 and "mask" not in k and v.is_floating_point()]
-    x = torch.cat(xs, -1).float().nan_to_num()                                  # (B,H,W,T,C)
-    return rearrange(x, "b (s p) (r q) t c -> b s r t (c p q)", p=P_, q=P_)
 
 
-def listnet_loss(pred, target, valid, beta=2.0):
-    """ListNet (softmax cross-entropy) between (L, N) scores and z-scored targets over the valid
-    entries of each list; lists with < 2 valid entries or constant targets are skipped."""
-    t = target.masked_fill(~valid, 0.0)
-    cnt = valid.sum(1, keepdim=True).clamp(min=1)
-    mu = t.sum(1, keepdim=True) / cnt
-    sd = (((t - mu) ** 2) * valid).sum(1, keepdim=True).div(cnt).sqrt()
-    keep = (valid.sum(1) >= 2) & (sd[:, 0] > 1e-6)
-    if not keep.any():
-        return pred.sum() * 0
-    z = ((t - mu) / sd.clamp(min=1e-6) * beta).masked_fill(~valid, float("-inf"))
-    lp = pred.masked_fill(~valid, float("-inf")).log_softmax(1)
-    return -(z.softmax(1) * lp.masked_fill(~valid, 0.0)).sum(1)[keep].mean()
 
 
 RANK_ARCHS = ("linear", "conv", "sattn", "mattn", "smattn", "unc_ent", "unc0", "unc_nll",
@@ -953,26 +641,6 @@ def make_rank_head(arch: str, dim: int, out: int, head: nn.Linear | None = None)
     return nn.Linear(dim, out) if arch == "linear" else ConvRankHead(dim, out)
 
 
-def location_grid_scores(B: int, H: int, n: int, crop_px: int, random_phase: bool,
-                         device, offset: int = 0) -> torch.Tensor:
-    """(B, H, H) location scores whose top n are a regular lattice of crop windows
-    (--selector grid --select_unit location): the tile's S x S non-overlapping crop_px windows
-    (S = TILE / crop_px), point (i, j) kept when (i + c j + phase) mod m == 0, m = S^2 / n,
-    c = round(sqrt(m)) -- n = S^2 / 2: checkerboard; / 4: staggered; / 8 (S = 8): one per row
-    and column. A point marks the ps4 cell under its window's centre (a crop is cut centred on
-    the picked cell, so a ps8 window lands 2 px off the 8 px lattice). Ties broken at random."""
-    S = TILE // crop_px
-    m = max(1, round(S * S / max(n, 1)))
-    c = max(1, round(m ** 0.5))
-    i, j = torch.meshgrid(torch.arange(S, device=device), torch.arange(S, device=device),
-                          indexing="ij")
-    phase = (torch.randint(0, m, (B, 1, 1), device=device) if random_phase
-             else torch.zeros(B, 1, 1, dtype=torch.long, device=device))
-    on = ((i + c * j)[None] + phase + offset) % m == 0                         # (B, S, S)
-    scores = torch.rand(B, H, H, device=device) * 1e-3
-    cy = (torch.arange(S, device=device) * crop_px + crop_px // 2) // (TILE // H)
-    scores[:, cy[:, None], cy[None, :]] += on.float()
-    return scores
 
 
 def grid_scores(present: torch.Tensor, H: int, k: int, mode: str,
@@ -1084,17 +752,6 @@ def shared_grid_order(present: torch.Tensor, cnt: torch.Tensor, mode: str,
         key = torch.where(member.flatten(1), s_ * N + rank, key)
         used = used + present.sum(1) * n_new
     return key.argsort(1)
-
-
-def within(t_start, t_end, s_start, s_end, idx):
-    """Fractional position of each step's midpoint inside the step it belongs to (idx, -1 =
-    none), in [-0.5, 0.5): e.g. a month inside its season, a date inside its month.
-    t_* (B, T), s_* (B, S), idx (B, T) -> (B, T) float (0 where idx < 0)."""
-    i = idx.clamp(min=0)
-    lo, hi = s_start.gather(1, i).double(), s_end.gather(1, i).double()
-    mid = (t_start + t_end).double() / 2
-    f = ((mid - lo) / (hi - lo + 1).clamp(min=1) - 0.5).float()
-    return torch.where(idx >= 0, f, torch.zeros_like(f))
 
 
 class YearGroup(TemporalPolicy):

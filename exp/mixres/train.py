@@ -30,9 +30,9 @@ from exp.common.tasks import TASKS  # noqa: E402
 from exp.olmoearth.train import (FREEZE_EPOCH_FRACTION, SCHEDULER_COOLDOWN,  # noqa: E402
                                  SCHEDULER_FACTOR, SCHEDULER_PATIENCE, UNFREEZE_LR_FACTOR,
                                  _append, _brief)
-from exp.upsamplers.finetune_inject import loader  # noqa: E402   TODO: move here
 from manyup.mixres import MixedResModel, load_legacy  # noqa: E402
 from manyup.mixres.config import RunConfig, apply_overrides, from_dict  # noqa: E402
+from manyup.mixres.data import loader  # noqa: E402
 from manyup.mixres.selectors import Context, build_selector  # noqa: E402
 
 
@@ -40,11 +40,10 @@ def n_crops(plan) -> int:
     return sum(len(p) for p in plan) if isinstance(plan, list) else len(plan)
 
 
-def step(model, selector, x):
+def step(model, selector, batch):
     """One batch -> (logits, auxiliary loss or None, crops)."""
-    ms, ss, season, present, _, extra = x
-    sel = selector(Context(model, ms, ss, season, present, extra["target"]))
-    out = model(ms, ss, season, present, sel.plan, sel.logw)
+    sel = selector(Context.from_batch(model, batch))
+    out = model(batch.ms, batch.ss, batch.season, batch.present, sel.plan, sel.logw)
     return out.logits, sel.aux, n_crops(sel.plan)
 
 
@@ -54,12 +53,12 @@ def evaluate(model, selector, task, dl, limit=0):
     for m in selector.modules():
         m.eval()
     meter, crops, n = task.meter(), 0, 0
-    for i, (*x, target) in enumerate(dl):
+    for i, batch in enumerate(dl):
         if limit and i >= limit:
             break
-        logits, _, nc = step(model, selector, x)
-        meter.update(logits, target.cuda())
-        crops, n = crops + nc, n + target.shape[0]
+        logits, _, nc = step(model, selector, batch)
+        meter.update(logits, batch.target.cuda())
+        crops, n = crops + nc, n + batch.target.shape[0]
     return meter.compute(), crops / max(n, 1)
 
 
@@ -90,7 +89,8 @@ def run(cfg: RunConfig) -> dict:
         print(f"warm start from {tc.init_ckpt} (unused keys: {len(unused)})")
     bs = tc.batch_size or task.batch_size[16]
     dl = {s: loader(task, s, bs, tc.num_workers, s == "train") for s in ("train", "val", "test")}
-    example = next(iter(dl["val"]))[:2]
+    b0 = next(iter(dl["val"]))
+    example = (b0.ms, b0.ss)
     selector = build_selector(cfg.select, model, example)
     nets = nn.ModuleList(selector.modules())
     print(f"run {name}\n  {json.dumps(cfg.to_dict())}", flush=True)
@@ -145,11 +145,11 @@ def run(cfg: RunConfig) -> dict:
         backbone.train(tuning)
         nets.train()
         loss_sum, n, crops, samples = 0.0, 0, 0, 0
-        for i, (*x, target) in enumerate(dl["train"]):
+        for i, batch in enumerate(dl["train"]):
             if tc.limit_batches and i >= tc.limit_batches:
                 break
-            target = target.cuda()
-            logits, aux, nc = step(model, selector, x)
+            target = batch.target.cuda()
+            logits, aux, nc = step(model, selector, batch)
             loss = loss_fn(logits, target)
             if aux is not None:
                 loss = loss + aux

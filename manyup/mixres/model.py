@@ -17,6 +17,7 @@ from exp.common.heads import Pa2PxHead
 from exp.common.tasks import Task
 from manyup.encoders.olmoearth import OlmoEarthEncoder, OlmoEarthInput, _to_device, crop_patches
 from manyup.inject import MixedResOE, Packed
+from manyup.mixres.decoder import NativeSetReadout
 from manyup.mixres.plan import LOOKUP_PS, TILE, Plan
 
 LR_PS = 16          # the head maps a token to a 16 x 16 px block (finer tokens: area-pooled)
@@ -43,7 +44,6 @@ class Out:
 class MixedResModel(nn.Module):
     def __init__(self, task: Task, cfg: ModelConfig, pretrained: bool = True):
         super().__init__()
-        from exp.upsamplers.finetune_inject import NativeSetReadout   # TODO: move here
         if cfg.lr_patch not in (8, 16):
             raise ValueError(f"lr_patch {cfg.lr_patch}: 16 or 8")
         self.task, self.cfg = task, cfg

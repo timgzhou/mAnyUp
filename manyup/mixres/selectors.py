@@ -22,10 +22,33 @@ from einops import rearrange
 from manyup.encoders.olmoearth import _to_device
 from manyup.mixres.model import LR_PS, MixedResModel, Out
 from manyup.mixres.plan import LOOKUP_PS, TILE, Plan
+from manyup.mixres.residual import ResidualScorer, listnet_loss, window_pixels
 from manyup.timAnyUp import topk_mask
 
 H = TILE // LOOKUP_PS       # the 16 x 16 cell grid every score map lives on
 NEG = float("-inf")
+
+
+def location_grid_scores(B: int, H: int, n: int, crop_px: int, random_phase: bool,
+                         device, offset: int = 0) -> torch.Tensor:
+    """(B, H, H) location scores whose top n are a regular lattice of crop windows
+    (--selector grid --select_unit location): the tile's S x S non-overlapping crop_px windows
+    (S = TILE / crop_px), point (i, j) kept when (i + c j + phase) mod m == 0, m = S^2 / n,
+    c = round(sqrt(m)) -- n = S^2 / 2: checkerboard; / 4: staggered; / 8 (S = 8): one per row
+    and column. A point marks the ps4 cell under its window's centre (a crop is cut centred on
+    the picked cell, so a ps8 window lands 2 px off the 8 px lattice). Ties broken at random."""
+    S = TILE // crop_px
+    m = max(1, round(S * S / max(n, 1)))
+    c = max(1, round(m ** 0.5))
+    i, j = torch.meshgrid(torch.arange(S, device=device), torch.arange(S, device=device),
+                          indexing="ij")
+    phase = (torch.randint(0, m, (B, 1, 1), device=device) if random_phase
+             else torch.zeros(B, 1, 1, dtype=torch.long, device=device))
+    on = ((i + c * j)[None] + phase + offset) % m == 0                         # (B, S, S)
+    scores = torch.rand(B, H, H, device=device) * 1e-3
+    cy = (torch.arange(S, device=device) * crop_px + crop_px // 2) // (TILE // H)
+    scores[:, cy[:, None], cy[None, :]] += on.float()
+    return scores
 
 
 # -- candidates ---------------------------------------------------------------------------
@@ -99,6 +122,11 @@ class Context:
         self.B, self.T = self.present.shape
         self.NS = self.ss.timestamps.shape[1]
         self._out0 = None
+
+    @classmethod
+    def from_batch(cls, model: MixedResModel, batch) -> "Context":
+        """manyup.mixres.data.Batch -> the context (the label included: label scorers read it)."""
+        return cls(model, batch.ms, batch.ss, batch.season, batch.present, batch.target)
 
     @property
     def out0(self) -> Out:
@@ -229,7 +257,6 @@ class Residual(Scorer):
         self.base, self.net, self.train, self.tau, self.lam = base, net, train, tau, lam
 
     def __call__(self, ctx, geo):
-        from exp.upsamplers.finetune_inject import listnet_loss, window_pixels  # TODO: move here
         b = self.base(ctx, geo)
         pooled, lr_F = b.pooled, b.lr_F
         P_ = geo.crop_px
@@ -298,7 +325,6 @@ class SeasonGrid(Scorer):
         self.n = n
 
     def __call__(self, ctx, geo):
-        from exp.upsamplers.finetune_inject import location_grid_scores   # TODO: move here
         rp = ctx.model.training
         dev = ctx.present.device
         sc = torch.stack([location_grid_scores(ctx.B, H, self.n, geo.crop_px, rp, dev, offset=s)
@@ -507,7 +533,6 @@ class Level2:
 def build_selector(cfg, model: MixedResModel, example=None):
     """manyup.mixres.config.SelectConfig -> Selector (or Level2). example: one batch's (monthly,
     season) samples, to size the HR residual arms' pixel embedding and season embedding."""
-    from exp.upsamplers.finetune_inject import ResidualScorer, window_pixels   # TODO: move here
     geo = Geometry(cfg.crop_px, cfg.loc_stride)
     if cfg.scorer == "residual":
         r = cfg.residual
