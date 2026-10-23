@@ -188,6 +188,8 @@ def run(cfg: RunConfig) -> dict:
             crops, samples = crops + nc, samples + target.shape[0]
             if i % 100 == 0:
                 extra = "" if aux is None else f" | selector aux loss {aux.item():.4f}"
+                flip = getattr(selector.scorer, "last_flip", None)
+                extra += "" if flip is None else f" | flipped {flip:.1%} of locations"
                 print(f"  step {i}/{len(dl['train'])} loss {loss.item():.4f}{extra}", flush=True)
         train_s = time.time() - e0
         val, _ = evaluate(model, selector, task, dl["val"], tc.limit_batches)

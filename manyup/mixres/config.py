@@ -12,16 +12,17 @@ from dataclasses import asdict, dataclass, field, fields
 from manyup.mixres.model import ModelConfig
 
 SCORERS = ("label", "entropy", "residual", "random", "grid", "season_grid", "season_random",
-           "none")
+           "none", "entropy_sign")
 ALLOCATORS = ("top", "pairs", "season_top", "halves", "every_location", "month_grid")
 # what each scorer produces / each allocator needs (window and / or per-season scores)
 SCORER_OUT = {"label": {"window", "season"}, "entropy": {"window", "season"},
               "residual": {"window", "season"}, "random": {"window"}, "grid": {"window"},
-              "season_grid": {"season"}, "season_random": {"season"}, "none": set()}
+              "season_grid": {"season"}, "season_random": {"season"}, "none": set(),
+              "entropy_sign": {"window", "season"}}
 ALLOC_IN = {"top": {"window"}, "pairs": {"season"}, "season_top": {"season"},
             "halves": {"window", "season"}, "every_location": {"season"}, "month_grid": set()}
 KEEPS = {"halves": ("better", "worse", "all"), "every_location": ("half", "one")}
-CLASSIFICATION_ONLY = ("entropy", "residual")
+CLASSIFICATION_ONLY = ("entropy", "residual", "entropy_sign")
 
 
 @dataclass

@@ -23,6 +23,7 @@ from manyup.encoders.olmoearth import _to_device
 from manyup.mixres.model import LR_PS, MixedResModel, Out
 from manyup.mixres.plan import LOOKUP_PS, TILE, Plan
 from manyup.mixres.residual import ResidualScorer, listnet_loss, window_pixels
+from manyup.mixres.sign import SignNet, season_spearman
 from manyup.timAnyUp import topk_mask
 
 H = TILE // LOOKUP_PS       # the 16 x 16 cell grid every score map lives on
@@ -316,6 +317,45 @@ class Residual(Scorer):
             pick = pick.clone()
             pick[:, cell[:, None], cell[None, :]] = (score + self.tau * g).detach()
         return Scores(pick, b.season, gate=out, aux=aux, pooled=pooled, lr_F=lr_F)
+
+
+class EntropySign(Scorer):
+    """Season entropy with a learned per-location flip (manyup.mixres.sign): each location's
+    seasons are scored by their window entropy, negated where the SignNet predicts the ranking
+    is inverted (p(flip) > 1/2), so the allocator's lowest-score pick becomes the
+    highest-entropy one there. While training, the net learns from the sign of each location's
+    Spearman r between season entropy and season loss (BCE; the label is read only for this).
+    Candidates must tile the tile (stride = crop), as for the residual."""
+
+    def __init__(self, net: SignNet):
+        self.net = net
+        self.last_flip = None
+
+    def __call__(self, ctx, geo, need=("season",)):
+        if ctx.model.task.kind != "classification":
+            raise ValueError(f"EntropySign: {ctx.model.task.name} is not a classification task")
+        base = Entropy()(ctx, geo, ("window", "season"))
+        cell = geo.tiling().to(base.season.device)
+        E = base.season[:, :, cell[:, None], cell[None, :]]                      # (B, NS, S, S)
+        with torch.no_grad():
+            pix = window_pixels(ctx.ms, geo.crop_px)
+        logit = self.net(E, ctx.used, base.lr_F, pix, ctx.present)               # (B, S, S)
+        flip = logit.detach() > 0
+        aux = None
+        if self.net.training:
+            if ctx.target is None:
+                raise ValueError("EntropySign training: no target in the context")
+            L = LabelLoss()(ctx, geo, ("season",)).season[:, :, cell[:, None], cell[None, :]]
+            r = season_spearman(E, L, ctx.used)
+            ok = torch.isfinite(r) & (r != 0)
+            if ok.any():
+                aux = F.binary_cross_entropy_with_logits(logit[ok], (r[ok] < 0).float())
+        self.last_flip = float(flip.float().mean())
+        f = torch.zeros(ctx.B, H, H, dtype=torch.bool, device=flip.device)
+        f[:, cell[:, None], cell[None, :]] = flip
+        sc = torch.where(f[:, None], -base.season, base.season)
+        sc = sc.masked_fill(~torch.isfinite(base.season), NEG)
+        return Scores(base.window, sc, aux=aux, pooled=base.pooled, lr_F=base.lr_F)
 
 
 class RandomWindows(Scorer):
@@ -674,7 +714,13 @@ def build_selector(cfg, model: MixedResModel, example=None):
     """manyup.mixres.config.SelectConfig -> Selector (or Level2). example: one batch's (monthly,
     season) samples, to size the HR residual arms' pixel embedding and season embedding."""
     geo = Geometry(cfg.crop_px, cfg.loc_stride)
-    if cfg.scorer == "residual":
+    if cfg.scorer == "entropy_sign":
+        if example is None:
+            raise ValueError("scorer entropy_sign: build_selector needs an example batch")
+        net = SignNet(model.mix.encoder.embedding_size, example[1].timestamps.shape[1],
+                      window_pixels(example[0], 1).shape[-1] * cfg.crop_px ** 2).to(model.device)
+        scorer = EntropySign(net)
+    elif cfg.scorer == "residual":
         r = cfg.residual
         if r.arch != "conv" and example is None:
             raise ValueError(f"residual arch {r.arch}: build_selector needs an example batch")
