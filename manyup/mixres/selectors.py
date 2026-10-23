@@ -408,8 +408,8 @@ class SeasonHalves(_SeasonBudget):
 # -- selector -----------------------------------------------------------------------------
 @dataclass
 class Selection:
-    plan: Plan
-    mask: torch.Tensor                  # (B, T, 16, 16)
+    plan: Plan | list[Plan]             # one crop group, or several (Level2)
+    mask: torch.Tensor                  # (B, T, 16, 16) the (first) group's picks
     logw: torch.Tensor | None = None    # (N,) crop gate log-weights, plan order
     aux: torch.Tensor | None = None
 
@@ -424,3 +424,72 @@ class Selector:
         plan = self.geo.plan(mask)
         logw = None if s.gate is None else F.logsigmoid(s.gate[plan.b, plan.y, plan.x].float())
         return Selection(plan, mask, logw, s.aux)
+
+
+class Level2:
+    """A second layer of finer month crops INSIDE the first layer's (legacy --level2 m4 / m2):
+    the model's own prediction with the first layer's crops (eval, no grad) picks
+        where  the n cells of the patch px grid under a first-layer crop with the highest loss
+               vs the label (pick "oracle") or random ones (pick "random")
+        when   at each, the lower-loss half of the months the first layer cropped there (a
+               month crop's own head map vs the label; random: a random half)
+    and those months' composites are cut at `patch` px. Raw-date arms (d8 / d4 / d2) need the
+    date tokenizer: not ported."""
+
+    def __init__(self, first: Selector, patch: int, n: int, pick: str = "oracle"):
+        if pick not in ("oracle", "random"):
+            raise ValueError(f"Level2 pick {pick!r}")
+        if patch >= first.geo.crop_px:
+            raise ValueError(f"Level2 patch {patch}: not finer than the first layer's "
+                             f"{first.geo.crop_px} px crops")
+        self.first, self.patch, self.n, self.pick = first, patch, n, pick
+
+    def __call__(self, ctx: Context) -> Selection:
+        s1 = self.first(ctx)
+        if s1.logw is not None or not isinstance(s1.plan, Plan):
+            raise ValueError("Level2 over a gated or multi-group first layer: not ported")
+        if ctx.target is None:
+            raise ValueError("Level2: no target in the context (both picks read the label)")
+        m, p1, tgt = ctx.model, s1.plan, ctx.target
+        P_, su = p1.patch, self.patch
+        B, T = ctx.present.shape
+        Hs = TILE // su
+        dev = ctx.present.device
+        was = m.training
+        m.eval()
+        try:
+            with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+                out1 = m(ctx.ms, ctx.ss, ctx.season, ctx.present, p1)
+                logits, v = out1.logits.float(), out1.hr
+        finally:
+            m.train(was)
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+            b, t, py, px = p1.b, p1.t, p1.py, p1.px
+            cell = F.avg_pool2d(pixel_label_loss(logits, tgt)[:, None], su)[:, 0]   # (B,Hs,Hs)
+            lin = m.head.linear
+            C = lin.out_features // LR_PS ** 2
+            maps = F.avg_pool2d(lin(v).view(-1, C, LR_PS, LR_PS), LR_PS // P_)       # (N,C,P,P)
+            ar = torch.arange(P_, device=dev)
+            ry, rx = (py[:, None] + ar)[:, :, None], (px[:, None] + ar)[:, None, :]
+            tb = tgt[b]
+            tw = (tb[torch.arange(len(b), device=dev)[:, None, None], ry, rx] if tb.ndim == 3
+                  else tb[torch.arange(len(b), device=dev)[:, None, None, None],
+                          torch.arange(tb.shape[1], device=dev)[None, :, None, None],
+                          ry[:, None], rx[:, None]])
+            ml = F.avg_pool2d(pixel_label_loss(maps, tw)[:, None], su)[:, 0]        # (N, f, f)
+            f = P_ // su
+            ML = torch.full((B, T, Hs, Hs), float("nan"), device=dev)
+            for i in range(f):
+                for j in range(f):
+                    ML[b, t, py // su + i, px // su + j] = ml[:, i, j]
+            avail = ~torch.isnan(ML)
+            cand = avail.any(1)
+            loc = cell if self.pick == "oracle" else torch.rand_like(cell)
+            loc = loc.masked_fill(~cand, NEG).flatten(1)
+            rank = loc.argsort(1, descending=True).argsort(1)
+            loc = ((rank < self.n) & torch.isfinite(loc)).view_as(cand)
+            key = ML if self.pick == "oracle" else torch.rand_like(ML)
+            r = key.masked_fill(~avail, float("inf")).argsort(1).argsort(1)    # 0 = lowest
+            half = (avail.sum(1, keepdim=True) // 2).clamp(min=1)
+            mask2 = (r < half) & avail & loc[:, None]
+        return Selection([p1, Plan.from_grid(mask2, su)], s1.mask, None, s1.aux)

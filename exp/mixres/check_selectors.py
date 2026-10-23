@@ -26,10 +26,12 @@ from exp.common.tasks import TASKS  # noqa: E402
 from exp.upsamplers import finetune_inject as fi  # noqa: E402
 from manyup.mixres import MixedResModel, ModelConfig, load_legacy  # noqa: E402
 from manyup.mixres.selectors import (Context, Entropy, Geometry, LabelLoss,  # noqa: E402
-                                     RandomWindows, Residual, SeasonGrid, SeasonHalves,
+                                     Level2, RandomWindows, Residual, SeasonGrid, SeasonHalves,
                                      SeasonPairs, Selector, TopWindows)
 
 SCORER16 = "inject_fft_pastis_tiny_none_native_set_lr0.001_ep50"
+BH16 = "inject_fft_pastis_tiny_oracle_bothalf_L0_k0.0312_loc_native_set_cpx8_st8_poscenter_lr0.001_ep50"
+BH8 = "inject_fft_pastis_tiny_oracle_bothalf_L0_k0.125_loc_native_set_poscenter_lrps8_lr0.001_ep50"
 LOC16 = "inject_fft_pastis_tiny_oracle_L0_k0.0312_loc_native_set_cpx8_st8_poscenter_lr0.001_ep50"
 S16 = ["--select_unit", "location", "--inject_layer", "0", "--readout", "native_set",
        "--crop_px", "8", "--pos", "center", "--k_frac", "0.03125"]
@@ -50,6 +52,10 @@ LEGACY = {
                               + ENT + ["--res_mode", "e2e"]),
     "yieldsat_bothalf_s16m8_n8": (["--task", "yieldsat_raw", "--epochs", "50", "--selector",
                                    "oracle_bothalf"] + S16 + ["--loc_stride", "8"]),
+    "level2_m4_s16m8_n8": (P + ["--selector", "oracle_bothalf"] + S16 + ["--loc_stride", "8"]
+                           + ["--init_ckpt", BH16, "--level2", "m4", "--l2_n", "8"]),
+    "level2_m2_s8m4_n32": (P + ["--selector", "oracle_bothalf"] + S8
+                           + ["--init_ckpt", BH8, "--level2", "m2", "--l2_n", "32"]),
 }
 # key -> (task, season patch, crop px, loc stride, scorer, allocator); scorer / allocator are
 # built once the model exists (frozen sources and learned residuals load weights)
@@ -64,6 +70,10 @@ SPECS = {
     "lrent_rese2e_s16m8_n8": ("pastis", 16, 8, 8, ("residual_e2e", SCORER16),
                               ("halves", 8, "all")),
     "yieldsat_bothalf_s16m8_n8": ("yieldsat_raw", 16, 8, 8, "label", ("halves", 8, "better")),
+    "level2_m4_s16m8_n8":    ("pastis", 16, 8, 8, "label", ("halves", 8, "better"),
+                              ("level2", 4, 8)),
+    "level2_m2_s8m4_n32":    ("pastis", 8, 4, None, "label", ("halves", 32, "better"),
+                              ("level2", 2, 32)),
 }
 
 
@@ -75,7 +85,7 @@ def frozen(task, lp, ckpt):
 
 
 def build(key, run):
-    task_name, lp, cp, stride, sc, al = SPECS[key]
+    task_name, lp, cp, stride, sc, al, *l2 = SPECS[key]
     task = TASKS[task_name]
     model = MixedResModel(task, ModelConfig(lr_patch=lp)).cuda().eval()
     unused = load_legacy(model, run)
@@ -98,7 +108,14 @@ def build(key, run):
         scorer = Residual(Entropy(src), net, train="e2e")
     allocator = {"top": lambda n: TopWindows(n), "pairs": lambda n: SeasonPairs(n),
                  "halves": lambda n, keep: SeasonHalves(n, keep)}[al[0]](*al[1:])
-    return task, model, Selector(Geometry(cp, stride), scorer, allocator), unused
+    sel = Selector(Geometry(cp, stride), scorer, allocator)
+    if l2:
+        sel = Level2(sel, patch=l2[0][1], n=l2[0][2])
+    return task, model, sel, unused
+
+
+def n_crops(plan):
+    return sum(len(p) for p in plan) if isinstance(plan, list) else len(plan)
 
 
 def legacy_reference(key, a):
@@ -139,16 +156,16 @@ def check(key, a):
         s, logits = run(i, x)
         same = bool((s.mask.cpu() == r["pick"]).all())
         d = (logits.float().cpu() - r["logits"]).abs().max().item()
-        ok &= same and d <= a.tol and len(s.plan) == r["n_crops"]
+        ok &= same and d <= a.tol and n_crops(s.plan) == r["n_crops"]
         print(f"   batch {i}: picks {'same' if same else 'DIFFERENT'} | logits max diff "
-              f"{d:.2e} | crops {len(s.plan)} vs {r['n_crops']}", flush=True)
+              f"{d:.2e} | crops {n_crops(s.plan)} vs {r['n_crops']}", flush=True)
     if a.full:
         torch.manual_seed(1234)
         meter, crops, n = task.meter(), 0, 0
         for i, (*x, target) in enumerate(dl):
             s, logits = run(i, x)
             meter.update(logits, target.cuda())
-            crops, n = crops + len(s.plan), n + target.shape[0]
+            crops, n = crops + n_crops(s.plan), n + target.shape[0]
         res = meter.compute()
         diff = max(abs(res[k] - ref["test"][k]) for k in ref["test"])
         ok &= diff <= a.metric_tol

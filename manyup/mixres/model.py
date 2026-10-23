@@ -75,25 +75,40 @@ class MixedResModel(nn.Module):
             return self.mix.head_blocks(hr, lr, plan.b)
 
     # -- encode / decode --------------------------------------------------------------------
-    def encode(self, lr: Packed, hr: Packed | None, plan: Plan | None):
-        """Blocks [L, n) with every sample's season tokens and its crops in one sequence."""
+    def encode(self, lr: Packed, crops: list[tuple[Packed, Plan]]):
+        """Blocks [L, n) with every sample's season tokens, then its crops group by group, in
+        one sequence. -> (season tokens (B, NS, h, w, D), crop tokens (N, D) in group order)."""
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            lr_x, hr_x = self.mix.tail(lr, hr, plan.b if hr is not None else None)
+            lr_x, outs = self.mix.tail_multi(lr, [(hr, p.b) for hr, p in crops])
         lr_F = lr.pooled(lr_x).float()
-        hr_F = (hr.pooled(hr_x).float()[:, 0, 0, 0] if hr is not None
-                else lr_F.new_zeros(0, lr_F.shape[-1]))
-        return lr_F, hr_F
+        hr_F = [hr.pooled(x).float()[:, 0, 0, 0] for (hr, _), x in zip(crops, outs)]
+        return lr_F, (torch.cat(hr_F) if hr_F else lr_F.new_zeros(0, lr_F.shape[-1]))
 
-    def decode(self, lr_F, hr_F, plan: Plan | None, season, present, logw=None):
+    def decode(self, lr_F, hr_F, plans: list[Plan], season, present, logw=None):
         """Every token through the head at its own patch size, pooled per pixel over the
-        tokens covering it (NativeSetReadout)."""
-        if plan is None or not len(plan):
+        tokens covering it (NativeSetReadout). plans: the non-empty crop groups, hr_F's order.
+
+        One group and several follow the legacy conventions of a plain plan and of --level2
+        respectively (footprints as ps4 cell counts, pixel positions only when a group is off
+        the ps4 grid); they are kept apart to stay bit-exact with the legacy checkpoints."""
+        if not plans:
             z = torch.zeros(0, dtype=torch.long, device=lr_F.device)
             return self.readout(self.head.linear, lr_F, season, present, hr_F, (z,) * 4)
-        return self.readout(self.head.linear, lr_F, season, present, hr_F,
-                            (plan.b, plan.t, plan.y, plan.x), logw, torch.ones_like(plan.b),
-                            hr_px=None if plan.on_grid else (plan.py, plan.px),
-                            hr_fp=plan.patch)
+        if len(plans) == 1:
+            p = plans[0]
+            return self.readout(self.head.linear, lr_F, season, present, hr_F,
+                                (p.b, p.t, p.y, p.x), logw, torch.ones_like(p.b),
+                                hr_px=None if p.on_grid else (p.py, p.px), hr_fp=p.patch)
+        if logw is not None:
+            raise ValueError("crop gates with several crop groups: not ported")
+        cat = lambda f: torch.cat([f(p) for p in plans])                         # noqa: E731
+        idx = tuple(cat(lambda p, i=i: (p.b, p.t, p.y, p.x)[i]) for i in range(4))
+        sizes = cat(lambda p: torch.full_like(p.b, p.cells))
+        off = any(p.patch < LOOKUP_PS for p in plans)
+        return self.readout(self.head.linear, lr_F, season, present, hr_F, idx, None, sizes,
+                            hr_px=(cat(lambda p: p.py), cat(lambda p: p.px)) if off else None,
+                            hr_fp=cat(lambda p: torch.full_like(p.b, p.patch)) if off
+                            else plans[0].patch)
 
     # -- passes -----------------------------------------------------------------------------
     def _inputs(self, ms, ss, season, present):
@@ -114,18 +129,20 @@ class MixedResModel(nn.Module):
         self.eval()
         try:
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                lr_F, hr_F = self.encode(self.tokenize_seasons(ss), None, None)
-                logits = self.decode(lr_F, hr_F, None, season, present).float()
+                lr_F, hr_F = self.encode(self.tokenize_seasons(ss), [])
+                logits = self.decode(lr_F, hr_F, [], season, present).float()
         finally:
             self.train(was)
         return Out(logits, lr_F, hr_F)
 
-    def forward(self, ms, ss, season, present, plan: Plan, logw=None) -> Out:
+    def forward(self, ms, ss, season, present, plan: Plan | list[Plan], logw=None) -> Out:
+        """plan: one crop group, or several (e.g. --level2: layer-1 crops, then finer ones)."""
         ms, ss, season, present = self._inputs(ms, ss, season, present)
+        plans = [p for p in ([plan] if isinstance(plan, Plan) else plan) if len(p)]
         lr = self.tokenize_seasons(ss)
-        hr = self.tokenize_crops(ms, plan, season, lr) if len(plan) else None
-        lr_F, hr_F = self.encode(lr, hr, plan if hr is not None else None)
-        return Out(self.decode(lr_F, hr_F, plan, season, present, logw), lr_F, hr_F)
+        crops = [(self.tokenize_crops(ms, p, season, lr), p) for p in plans]
+        lr_F, hr_F = self.encode(lr, crops)
+        return Out(self.decode(lr_F, hr_F, plans, season, present, logw), lr_F, hr_F)
 
 
 def load_legacy(model: MixedResModel, ckpt: str) -> list[str]:

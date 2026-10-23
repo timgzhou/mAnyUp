@@ -33,6 +33,19 @@ class Plan:
         """Windows are exactly the picked ps4 cells: the decoder pools per cell, not per pixel."""
         return self.patch == LOOKUP_PS
 
+    @property
+    def cells(self) -> int:
+        """Footprint side in ps4 cells (a ps2 crop: part of one)."""
+        return max(1, self.patch // LOOKUP_PS)
+
+    @classmethod
+    def from_grid(cls, mask: torch.Tensor, patch: int) -> "Plan":
+        """mask (B, T, 64 / patch, 64 / patch) bool on the patch's own non-overlapping grid ->
+        the plan; (y, x) = the ps4 cell under each window's top-left pixel."""
+        b, t, gy, gx = mask.nonzero(as_tuple=True)
+        py, px = gy * patch, gx * patch
+        return cls(b, t, py // LOOKUP_PS, px // LOOKUP_PS, py, px, patch)
+
     @classmethod
     def empty(cls, patch: int, device) -> "Plan":
         z = torch.zeros(0, dtype=torch.long, device=device)
