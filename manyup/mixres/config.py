@@ -11,14 +11,16 @@ from dataclasses import asdict, dataclass, field, fields
 
 from manyup.mixres.model import ModelConfig
 
-SCORERS = ("label", "entropy", "residual", "random", "grid", "season_grid", "season_random")
-ALLOCATORS = ("top", "pairs", "season_top", "halves")
+SCORERS = ("label", "entropy", "residual", "random", "grid", "season_grid", "season_random",
+           "none")
+ALLOCATORS = ("top", "pairs", "season_top", "halves", "every_location", "month_grid")
 # what each scorer produces / each allocator needs (window and / or per-season scores)
 SCORER_OUT = {"label": {"window", "season"}, "entropy": {"window", "season"},
               "residual": {"window", "season"}, "random": {"window"}, "grid": {"window"},
-              "season_grid": {"season"}, "season_random": {"season"}}
+              "season_grid": {"season"}, "season_random": {"season"}, "none": set()}
 ALLOC_IN = {"top": {"window"}, "pairs": {"season"}, "season_top": {"season"},
-            "halves": {"window", "season"}}
+            "halves": {"window", "season"}, "every_location": {"season"}, "month_grid": set()}
+KEEPS = {"halves": ("better", "worse", "all"), "every_location": ("half", "one")}
 CLASSIFICATION_ONLY = ("entropy", "residual")
 
 
@@ -42,7 +44,8 @@ class Level2Config:
 class SelectConfig:
     scorer: str = "label"
     allocator: str = "halves"
-    keep: str = "better"        # halves: better | worse | all
+    keep: str = "better"        # halves: better | worse | all; every_location: half | one
+    month_step: int = 2         # month_grid: every month_step-th month at every location
     n: int = 8                  # budget: n windows x the sample's present months
     crop_px: int = 8
     loc_stride: int | None = 8  # candidate lattice stride; None: a window centred on every cell
@@ -81,7 +84,8 @@ class RunConfig:
             d["train"].pop(k)
         h = hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()[:8]
         s = self.select
-        tag = f"{s.scorer}-{s.allocator}" + (f"-{s.keep}" if s.allocator == "halves" else "")
+        tag = (f"{s.scorer}-{s.allocator}" + (f"-{s.keep}" if s.allocator in KEEPS else "")
+               + (f"{s.month_step}" if s.allocator == "month_grid" else ""))
         if s.residual:
             tag += f"-res{s.residual.train}{s.residual.arch}"
         if s.level2:
@@ -97,6 +101,10 @@ class RunConfig:
         s = self.select
         if s.scorer not in SCORERS or s.allocator not in ALLOCATORS:
             raise ValueError(f"scorer {s.scorer!r} / allocator {s.allocator!r}")
+        if s.allocator in KEEPS and s.keep not in KEEPS[s.allocator]:
+            raise ValueError(f"allocator {s.allocator}: keep in {KEEPS[s.allocator]}, not {s.keep!r}")
+        if s.allocator == "month_grid" and s.scorer != "none":
+            raise ValueError("allocator month_grid reads no scores: select.scorer=none")
         missing = ALLOC_IN[s.allocator] - SCORER_OUT[s.scorer]
         if missing:
             raise ValueError(f"allocator {s.allocator} needs {sorted(missing)} scores; scorer "
@@ -156,7 +164,7 @@ def apply_overrides(cfg: RunConfig, overrides: list[str]) -> RunConfig:
 
 
 def _parse(raw: str, tp):
-    if raw.lower() in ("none", "null"):
+    if raw.lower() in ("none", "null") and "None" in str(tp):     # only for optional fields
         return None
     sub = _dataclass_of(tp)
     if sub is not None:

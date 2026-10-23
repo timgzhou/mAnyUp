@@ -365,6 +365,15 @@ class SeasonGrid(Scorer):
         return Scores(season=sc)
 
 
+class NoScores(Scorer):
+    """For allocators that read no scores (MonthGrid)."""
+
+    def __call__(self, ctx, geo, need=()):
+        if need:
+            raise ValueError(f"NoScores: the allocator needs {need} scores")
+        return Scores()
+
+
 class SeasonRandom(Scorer):
     """Content-blind: a uniform score per (season, window) pair."""
 
@@ -376,7 +385,7 @@ class SeasonRandom(Scorer):
 class Allocator:
     needs: tuple = ("window", "season")     # the scores it reads
 
-    def __call__(self, s: Scores, ctx: Context) -> torch.Tensor:
+    def __call__(self, s: Scores, ctx: Context, geo: Geometry) -> torch.Tensor:
         """-> (B, T, 16, 16) bool crop mask."""
         raise NotImplementedError
 
@@ -388,7 +397,7 @@ class TopWindows(Allocator):
     def __init__(self, n: int):
         self.n = n
 
-    def __call__(self, s, ctx):
+    def __call__(self, s, ctx, geo):
         if s.window is None:
             raise ValueError("TopWindows needs window scores")
         where = ctx.present[:, :, None, None].expand(ctx.B, ctx.T, H, H)
@@ -434,7 +443,7 @@ class SeasonPairs(_SeasonBudget):
     """The best (season, window) pairs, every present month of each picked season."""
     needs = ("season",)
 
-    def __call__(self, s, ctx):
+    def __call__(self, s, ctx, geo):
         sc, used, budget, cost, s_idx, valid = self._setup(s, ctx)
         B, NS = sc.shape[:2]
         pair = _take(sc.flatten(1), cost.flatten(1), budget).view(B, NS, H, H)
@@ -448,7 +457,7 @@ class SeasonTop(_SeasonBudget):
     the same window."""
     needs = ("season",)
 
-    def __call__(self, s, ctx):
+    def __call__(self, s, ctx, geo):
         sc, used, budget, cost, s_idx, valid = self._setup(s, ctx)
         B, NS = sc.shape[:2]
         flat = sc.flatten(2)                                                    # (B, NS, 256)
@@ -456,6 +465,60 @@ class SeasonTop(_SeasonBudget):
         pick = torch.zeros_like(flat, dtype=torch.bool).scatter(2, top, True)
         pair = (pick & torch.isfinite(flat)).view(B, NS, H, H) & used[:, :, None, None]
         return self._to_months(pair, s_idx, valid)
+
+
+class EveryLocation(Allocator):
+    """Time selection with space fixed: EVERY candidate location, each with its lowest-score
+    seasons (keep "half": half its used seasons, at least one -- the better-half oracle's rule;
+    "one": its single lowest), every present month of those seasons. Ties broken as
+    SeasonHalves "better", so with LabelLoss scores this is the better-half oracle at every
+    location."""
+    needs = ("season",)
+
+    def __init__(self, keep: str = "half"):
+        if keep not in ("half", "one"):
+            raise ValueError(f"EveryLocation keep {keep!r}")
+        self.keep = keep
+
+    def __call__(self, s, ctx, geo):
+        if s.season is None:
+            raise ValueError("EveryLocation needs per-season scores")
+        NS = s.season.shape[1]
+        valid, s_idx = ctx.valid, ctx.season.clamp(min=0)
+        used = (F.one_hot(s_idx, NS).bool() & valid[..., None]).any(1)        # (B, NS)
+        sc = s.season.masked_fill(~used[:, :, None, None], NEG)
+        nused = used.sum(1)[:, None, None, None]
+        k = (nused // 2).clamp(min=1) if self.keep == "half" else torch.ones_like(nused)
+        rank = sc.argsort(1, descending=True).argsort(1)    # 0 = worst; unused seasons last
+        pick = (rank >= nused - k) & (rank < nused)
+        a = geo.anchors(sc.device)
+        if a is not None:
+            pick = pick & a
+        mask = pick[torch.arange(ctx.B, device=sc.device)[:, None], s_idx]   # (B, T, 16, 16)
+        return mask & valid[:, :, None, None]
+
+
+class MonthGrid(Allocator):
+    """Content-blind time control with space fixed: every candidate location, every `step`-th
+    of the sample's PRESENT months in calendar order (so ~1 / step of them, like the season
+    arms; phase 0 at test, a random phase per sample while training)."""
+    needs = ()
+
+    def __init__(self, step: int):
+        if step < 1:
+            raise ValueError(f"MonthGrid step {step}")
+        self.step = step
+
+    def __call__(self, s, ctx, geo):
+        dev = ctx.present.device
+        phase = (torch.randint(0, self.step, (ctx.B, 1), device=dev) if ctx.model.training
+                 else torch.zeros(ctx.B, 1, dtype=torch.long, device=dev))
+        valid = ctx.valid
+        order = valid.long().cumsum(1) - 1                  # rank among the present months
+        on = ((order + phase) % self.step == 0) & valid
+        a = geo.anchors(dev)
+        cells = torch.ones(H, H, dtype=torch.bool, device=dev) if a is None else a
+        return on[:, :, None, None] & cells
 
 
 class SeasonHalves(_SeasonBudget):
@@ -469,7 +532,7 @@ class SeasonHalves(_SeasonBudget):
             raise ValueError(f"SeasonHalves keep {keep!r}")
         self.keep = keep
 
-    def __call__(self, s, ctx):
+    def __call__(self, s, ctx, geo):
         if s.window is None:
             raise ValueError("SeasonHalves needs window scores")
         sc, used, budget, cost, s_idx, valid = self._setup(s, ctx)
@@ -505,7 +568,7 @@ class Selector:
 
     def __call__(self, ctx: Context) -> Selection:
         s = self.scorer(ctx, self.geo, self.allocator.needs)
-        mask = self.allocator(s, ctx)
+        mask = self.allocator(s, ctx, self.geo)
         plan = self.geo.plan(mask)
         logw = None if s.gate is None else F.logsigmoid(s.gate[plan.b, plan.y, plan.x].float())
         return Selection(plan, mask, logw, s.aux)
@@ -624,11 +687,14 @@ def build_selector(cfg, model: MixedResModel, example=None):
                           lam=1.0 if r.train != "e2e" else 0.0)
     else:
         scorer = {"label": LabelLoss, "entropy": Entropy, "random": RandomWindows,
+                  "none": NoScores,
                   "grid": lambda: GridWindows(cfg.n),
                   "season_grid": lambda: SeasonGrid(cfg.n),
                   "season_random": SeasonRandom}[cfg.scorer]()
     allocator = {"top": lambda: TopWindows(cfg.n), "pairs": lambda: SeasonPairs(cfg.n),
                  "season_top": lambda: SeasonTop(cfg.n),
+                 "every_location": lambda: EveryLocation(cfg.keep),
+                 "month_grid": lambda: MonthGrid(cfg.month_step),
                  "halves": lambda: SeasonHalves(cfg.n, cfg.keep)}[cfg.allocator]()
     sel = Selector(geo, scorer, allocator)
     if cfg.level2:
