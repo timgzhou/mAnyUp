@@ -137,6 +137,11 @@ class Context:
         return self._out0
 
     @property
+    def seasons(self):
+        """The uniform pass's embedded season tokens if it ran, for reuse at inference."""
+        return None if self._out0 is None else self._out0.seasons
+
+    @property
     def valid(self) -> torch.Tensor:
         """(B, T) month is present and in a season."""
         return self.present & (self.season >= 0)
@@ -192,7 +197,8 @@ class Scores:
 
 
 class Scorer:
-    def __call__(self, ctx: Context, geo: Geometry) -> Scores:
+    def __call__(self, ctx: Context, geo: Geometry, need=("window", "season")) -> Scores:
+        """need: the scores the allocator reads; a scorer may skip computing the others."""
         raise NotImplementedError
 
 
@@ -200,15 +206,18 @@ class LabelLoss(Scorer):
     """The label oracle: the uniform pass's loss against the label, per window (pooled
     prediction) and per (season, window) (each season token's own map)."""
 
-    def __call__(self, ctx, geo):
+    def __call__(self, ctx, geo, need=("window", "season")):
         if ctx.target is None:
             raise ValueError("LabelLoss: no target in the context")
         out0 = ctx.out0
+        sc = None
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            s_log = season_maps(ctx.model, out0.lr_F)
-            sc = geo.window_mean(pixel_label_loss(s_log, ctx.target.repeat_interleave(ctx.NS, 0)))
+            if "season" in need:
+                s_log = season_maps(ctx.model, out0.lr_F)
+                sc = geo.window_mean(pixel_label_loss(
+                    s_log, ctx.target.repeat_interleave(ctx.NS, 0))).view(ctx.B, ctx.NS, H, H)
             win = geo.window_mean(pixel_label_loss(out0.logits, ctx.target))
-        return Scores(win, sc.view(ctx.B, ctx.NS, H, H), pooled=out0.logits, lr_F=out0.lr_F)
+        return Scores(win, sc, pooled=out0.logits, lr_F=out0.lr_F)
 
 
 class Entropy(Scorer):
@@ -220,27 +229,30 @@ class Entropy(Scorer):
     def __init__(self, source: MixedResModel | None = None):
         self.source = source
 
-    def __call__(self, ctx, geo):
+    def __call__(self, ctx, geo, need=("window", "season")):
         if ctx.model.task.kind != "classification":
             raise ValueError(f"Entropy: {ctx.model.task.name} is not a classification task")
         if self.source is None:
             out0 = ctx.out0
+            sc = None
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                s_log = season_maps(ctx.model, out0.lr_F).detach()
-                sc = geo.window_mean(pixel_entropy(s_log))
+                if "season" in need:
+                    s_log = season_maps(ctx.model, out0.lr_F).detach()
+                    sc = geo.window_mean(pixel_entropy(s_log)).view(ctx.B, ctx.NS, H, H)
                 win = geo.window_mean(pixel_entropy(out0.logits.detach()))
-            return Scores(win, sc.view(ctx.B, ctx.NS, H, H), pooled=out0.logits.detach(),
-                          lr_F=out0.lr_F.detach())
+            return Scores(win, sc, pooled=out0.logits.detach(), lr_F=out0.lr_F.detach())
         src = self.source
         with torch.no_grad():
             lr_F = src.uniform(ctx.ms, ctx.ss, ctx.season, ctx.present).lr_F
             z = torch.zeros(0, dtype=torch.long, device=lr_F.device)
             pooled = src.readout(src.head.linear, lr_F, ctx.season, ctx.present,
                                  lr_F.new_zeros(0, lr_F.shape[-1]), (z,) * 4).float()
-            mu = season_maps(src, lr_F.to(src.head.linear.weight.dtype)).float()
-        sc = geo.window_mean(pixel_entropy(mu))
+            sc = None
+            if "season" in need:
+                mu = season_maps(src, lr_F.to(src.head.linear.weight.dtype)).float()
+                sc = geo.window_mean(pixel_entropy(mu)).view(ctx.B, ctx.NS, H, H)
         win = geo.window_mean(pixel_entropy(pooled))
-        return Scores(win, sc.view(ctx.B, ctx.NS, H, H), pooled=pooled, lr_F=lr_F)
+        return Scores(win, sc, pooled=pooled, lr_F=lr_F)
 
 
 class Residual(Scorer):
@@ -258,8 +270,8 @@ class Residual(Scorer):
             raise ValueError(f"Residual train {train!r}")
         self.base, self.net, self.train, self.tau, self.lam = base, net, train, tau, lam
 
-    def __call__(self, ctx, geo):
-        b = self.base(ctx, geo)
+    def __call__(self, ctx, geo, need=("window", "season")):
+        b = self.base(ctx, geo, need)
         pooled, lr_F = b.pooled, b.lr_F
         P_ = geo.crop_px
         S = TILE // P_
@@ -310,7 +322,7 @@ class RandomWindows(Scorer):
     """Content-blind: a uniform score per (month, window), a window's score its best present
     month's (the legacy --selector random --select_unit location)."""
 
-    def __call__(self, ctx, geo):
+    def __call__(self, ctx, geo, need=("window",)):
         s = torch.rand(ctx.B, ctx.T, H, H, device=ctx.present.device)
         a = geo.anchors(s.device)
         if a is not None:
@@ -326,7 +338,7 @@ class SeasonGrid(Scorer):
     def __init__(self, n: int):
         self.n = n
 
-    def __call__(self, ctx, geo):
+    def __call__(self, ctx, geo, need=("season",)):
         rp = ctx.model.training
         dev = ctx.present.device
         sc = torch.stack([location_grid_scores(ctx.B, H, self.n, geo.crop_px, rp, dev, offset=s)
@@ -337,12 +349,14 @@ class SeasonGrid(Scorer):
 class SeasonRandom(Scorer):
     """Content-blind: a uniform score per (season, window) pair."""
 
-    def __call__(self, ctx, geo):
+    def __call__(self, ctx, geo, need=("season",)):
         return Scores(season=torch.rand(ctx.B, ctx.NS, H, H, device=ctx.present.device))
 
 
 # -- allocation ---------------------------------------------------------------------------
 class Allocator:
+    needs: tuple = ("window", "season")     # the scores it reads
+
     def __call__(self, s: Scores, ctx: Context) -> torch.Tensor:
         """-> (B, T, 16, 16) bool crop mask."""
         raise NotImplementedError
@@ -350,6 +364,7 @@ class Allocator:
 
 class TopWindows(Allocator):
     """The n best windows, every present month of each."""
+    needs = ("window",)
 
     def __init__(self, n: int):
         self.n = n
@@ -398,6 +413,7 @@ class _SeasonBudget(Allocator):
 
 class SeasonPairs(_SeasonBudget):
     """The best (season, window) pairs, every present month of each picked season."""
+    needs = ("season",)
 
     def __call__(self, s, ctx):
         sc, used, budget, cost, s_idx, valid = self._setup(s, ctx)
@@ -452,7 +468,7 @@ class Selector:
         return [net] if net is not None else []
 
     def __call__(self, ctx: Context) -> Selection:
-        s = self.scorer(ctx, self.geo)
+        s = self.scorer(ctx, self.geo, self.allocator.needs)
         mask = self.allocator(s, ctx)
         plan = self.geo.plan(mask)
         logw = None if s.gate is None else F.logsigmoid(s.gate[plan.b, plan.y, plan.x].float())

@@ -161,8 +161,9 @@ def check(key, a):
     def run(i, x):
         ms, ss, season, present, _, extra = x
         d = extra.get("dates")
-        s = sel(Context(model, ms, ss, season, present, extra["target"], d))
-        return s, model(ms, ss, season, present, s.plan, s.logw, d).logits
+        ctx = Context(model, ms, ss, season, present, extra["target"], d)
+        s = sel(ctx)
+        return s, model(ms, ss, season, present, s.plan, s.logw, d, ctx.seasons).logits
 
     torch.manual_seed(1234)
     for i, (*x, _) in enumerate(dl):

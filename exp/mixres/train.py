@@ -42,9 +42,11 @@ def n_crops(plan) -> int:
 
 def step(model, selector, batch):
     """One batch -> (logits, auxiliary loss or None, crops)."""
-    sel = selector(Context.from_batch(model, batch))
+    ctx = Context.from_batch(model, batch)
+    sel = selector(ctx)
+    reuse = not model.training and not torch.is_grad_enabled()     # inference: embed once
     out = model(batch.ms, batch.ss, batch.season, batch.present, sel.plan, sel.logw,
-                batch.dates)
+                batch.dates, ctx.seasons if reuse else None)
     return out.logits, sel.aux, n_crops(sel.plan)
 
 
@@ -61,6 +63,29 @@ def evaluate(model, selector, task, dl, limit=0):
         meter.update(logits, batch.target.cuda())
         crops, n = crops + nc, n + batch.target.shape[0]
     return meter.compute(), crops / max(n, 1)
+
+
+@torch.no_grad()
+def measure_compute(model, selector, dl, batches: int) -> dict:
+    """Inference cost per sample over the first `batches` batches of dl, everything the arm runs
+    at test time (the selector's passes, the crops, the decoder): exp.bench.flop_trace."""
+    from exp.bench.flop_trace import count_macs
+    model.eval()
+    for m in selector.modules():
+        m.eval()
+    n_samples = crops = 0
+    with count_macs() as count:
+        for i, batch in enumerate(dl):
+            if i >= batches:
+                break
+            crops += step(model, selector, batch)[2]
+            n_samples += batch.target.shape[0]
+    n_blocks = len(model.mix.encoder.blocks)
+    return {"gmacs": round(count.total / n_samples / 1e9, 3),
+            "gmacs_attention": round(count.attn / n_samples / 1e9, 3),
+            "tokens_per_block": round(count.token_blocks / n_samples / n_blocks, 1),
+            "longest_sequence": count.max_seq, "compute_samples": n_samples,
+            "compute_crops_per_sample": round(crops / n_samples, 1)}
 
 
 def flat(d: dict, pre: str = "") -> dict:
@@ -192,19 +217,21 @@ def run(cfg: RunConfig) -> dict:
     nets.load_state_dict(best_state["selector"])
     test, test_crops = evaluate(model, selector, task, dl["test"], tc.limit_batches)
     hours = hours_before + (time.time() - t_start) / 3600
+    cost = measure_compute(model, selector, dl["val"], tc.compute_batches)
     print(f"TEST {name} (best val epoch {best_epoch}, val {best:.4f}): {_brief(test)} | "
-          f"{test_crops:.0f} crops/sample", flush=True)
+          f"{test_crops:.0f} crops/sample | {cost['gmacs']:.2f} GMACs/sample "
+          f"({cost['tokens_per_block']:.0f} tokens/block)", flush=True)
     if not tc.limit_batches:
         torch.save({"config": cfg.to_dict(), "model": best_state["model"],
                     "selector": best_state["selector"]}, f"checkpoints/{name}.pt")
     _append(Path(f"results/{cfg.task}/mixres{smoke}.csv"), {
         "job": os.environ.get("SLURM_JOB_ID", ""), "run": name, **flat(cfg.to_dict()),
         "batch_size": bs, "best_epoch": best_epoch, "hours": round(hours, 2),
-        "test_crops_per_sample": round(test_crops, 1),
+        "test_crops_per_sample": round(test_crops, 1), **cost,
         **{f"val_{k}": round(v, 5) for k, v in best_val.items()},
         **{f"test_{k}": round(v, 5) for k, v in test.items()}})
     torch.save({"done": True}, state_path)
-    return {"val": best_val, "test": test, "crops": test_crops, "name": name}
+    return {"val": best_val, "test": test, "crops": test_crops, "name": name, "cost": cost}
 
 
 def main(argv=None):

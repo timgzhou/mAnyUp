@@ -36,10 +36,12 @@ class Out:
     """One encode + decode.
     logits  (B, C, 64, 64)
     lr_F    (B, NS, h, w, D) final season tokens
-    hr      (N, D) final crop tokens, in plan order (N = 0 for the uniform pass)"""
+    hr      (N, D) final crop tokens, in plan order (N = 0 for the uniform pass)
+    seasons the embedded season tokens it started from (the uniform pass; see forward)"""
     logits: torch.Tensor
     lr_F: torch.Tensor
     hr: torch.Tensor
+    seasons: Packed | None = None
 
 
 class MixedResModel(nn.Module):
@@ -142,19 +144,24 @@ class MixedResModel(nn.Module):
         self.eval()
         try:
             with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-                lr_F, hr_F = self.encode(self.tokenize_seasons(ss), [])
+                lr = self.tokenize_seasons(ss)
+                lr_F, hr_F = self.encode(lr, [])
                 logits = self.decode(lr_F, hr_F, [], season, present).float()
         finally:
             self.train(was)
-        return Out(logits, lr_F, hr_F)
+        return Out(logits, lr_F, hr_F, lr)
 
     def forward(self, ms, ss, season, present, plan: Plan | list[Plan], logw=None,
-                dates=None) -> Out:
+                dates=None, seasons: Packed | None = None) -> Out:
         """plan: one crop group, or several (e.g. Level2: layer-1 crops, then finer ones).
-        dates: the batch's raw acquisitions, for date crop groups."""
+        dates: the batch's raw acquisitions, for date crop groups. seasons: the uniform pass's
+        embedded season tokens, reused at inference (they carry no gradient: never in
+        training)."""
+        if seasons is not None and (self.training or torch.is_grad_enabled()):
+            raise ValueError("forward(seasons=...) reuses no-grad tokens: inference only")
         ms, ss, season, present = self._inputs(ms, ss, season, present)
         plans = [p for p in ([plan] if isinstance(plan, Plan) else plan) if len(p)]
-        lr = self.tokenize_seasons(ss)
+        lr = self.tokenize_seasons(ss) if seasons is None else seasons
         crops = [(self.tokenize_crops(ms, p, season, lr, dates), p) for p in plans]
         lr_F, hr_F = self.encode(lr, crops)
         return Out(self.decode(lr_F, hr_F, plans, season, present, logw), lr_F, hr_F)

@@ -59,6 +59,7 @@ class TrainConfig:
     num_workers: int = 8
     max_hours: float | None = None     # stop before an epoch that would end past this; rerun resumes
     limit_batches: int = 0             # smoke test: a few batches, nothing written to results
+    compute_batches: int = 4           # val batches the reported GMACs/sample are traced on
 
 
 @dataclass
@@ -75,7 +76,7 @@ class RunConfig:
         """A readable tag + a hash of everything that defines the run (not num_workers,
         max_hours, limit_batches)."""
         d = self.to_dict()
-        for k in ("num_workers", "max_hours", "limit_batches"):
+        for k in ("num_workers", "max_hours", "limit_batches", "compute_batches"):
             d["train"].pop(k)
         h = hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()[:8]
         s = self.select
