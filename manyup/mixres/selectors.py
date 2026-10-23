@@ -113,8 +113,9 @@ class Context:
     model being trained, computed once on first use; target only exists while training or for
     a label oracle."""
 
-    def __init__(self, model: MixedResModel, ms, ss, season, present, target=None):
+    def __init__(self, model: MixedResModel, ms, ss, season, present, target=None, dates=None):
         dev = model.device
+        self.dates = dates
         self.model = model
         self.ms, self.ss = _to_device(ms, dev, torch.bfloat16), _to_device(ss, dev, torch.bfloat16)
         self.season, self.present = season.to(dev), present.to(dev)
@@ -126,7 +127,8 @@ class Context:
     @classmethod
     def from_batch(cls, model: MixedResModel, batch) -> "Context":
         """manyup.mixres.data.Batch -> the context (the label included: label scorers read it)."""
-        return cls(model, batch.ms, batch.ss, batch.season, batch.present, batch.target)
+        return cls(model, batch.ms, batch.ss, batch.season, batch.present, batch.target,
+                   batch.dates)
 
     @property
     def out0(self) -> Out:
@@ -464,15 +466,20 @@ class Level2:
                vs the label (pick "oracle") or random ones (pick "random")
         when   at each, the lower-loss half of the months the first layer cropped there (a
                month crop's own head map vs the label; random: a random half)
-    and those months' composites are cut at `patch` px. Raw-date arms (d8 / d4 / d2) need the
-    date tokenizer: not ported."""
+    and those months are cut at `patch` px: their composites (source "months", legacy m4 / m2)
+    or every raw acquisition in them, each modality on its own dates (source "dates", legacy
+    d8 / d4 / d2; n counts cells of the patch grid, so legacy d8 at l2_n is n = l2_n / 4)."""
 
-    def __init__(self, first: Selector, patch: int, n: int, pick: str = "oracle"):
+    def __init__(self, first: Selector, patch: int, n: int, pick: str = "oracle",
+                 source: str = "months"):
         if pick not in ("oracle", "random"):
             raise ValueError(f"Level2 pick {pick!r}")
-        if patch >= first.geo.crop_px:
-            raise ValueError(f"Level2 patch {patch}: not finer than the first layer's "
-                             f"{first.geo.crop_px} px crops")
+        if source not in ("months", "dates"):
+            raise ValueError(f"Level2 source {source!r}")
+        self.source = source
+        if patch > first.geo.crop_px or (patch == first.geo.crop_px and source == "months"):
+            raise ValueError(f"Level2 {source} at {patch} px: not finer than the first layer's "
+                             f"{first.geo.crop_px} px month crops")
         self.first, self.patch, self.n, self.pick = first, patch, n, pick
         self.geo, self.scorer = first.geo, first.scorer
 
@@ -527,7 +534,23 @@ class Level2:
             r = key.masked_fill(~avail, float("inf")).argsort(1).argsort(1)    # 0 = lowest
             half = (avail.sum(1, keepdim=True) // 2).clamp(min=1)
             mask2 = (r < half) & avail & loc[:, None]
-        return Selection([p1, Plan.from_grid(mask2, su)], s1.mask, None, s1.aux)
+        if self.source == "months":
+            return Selection([p1, Plan.from_grid(mask2, su)], s1.mask, None, s1.aux)
+        if ctx.dates is None:
+            raise ValueError("Level2 source dates: the batch has no dates (loader dates=True)")
+        plans, bidx = [p1], torch.arange(B, device=dev)[:, None]
+        for mod, (_, d_valid, d_month, d_frac) in ctx.dates.items():
+            d_valid, d_month, d_frac = d_valid.to(dev), d_month.to(dev), d_frac.to(dev)
+            ok = d_valid & (d_month >= 0) & ctx.present.gather(1, d_month.clamp(min=0))
+            c = ok[:, :, None, None] & mask2[bidx, d_month.clamp(min=0)]       # (B,Td,Hs,Hs)
+            bb, dd, yy, xx = c.nonzero(as_tuple=True)
+            if not len(bb):
+                continue
+            mo = d_month[bb, dd]
+            py, px = yy * su, xx * su
+            plans.append(Plan(bb, mo, py // LOOKUP_PS, px // LOOKUP_PS, py, px, su, src=mod,
+                              src_t=dd, slot=ctx.season[bb, mo].float() + d_frac[bb, dd]))
+        return Selection(plans, s1.mask, None, s1.aux)
 
 
 def build_selector(cfg, model: MixedResModel, example=None):
@@ -555,5 +578,5 @@ def build_selector(cfg, model: MixedResModel, example=None):
                  "halves": lambda: SeasonHalves(cfg.n, cfg.keep)}[cfg.allocator]()
     sel = Selector(geo, scorer, allocator)
     if cfg.level2:
-        sel = Level2(sel, cfg.level2.patch, cfg.level2.n, cfg.level2.pick)
+        sel = Level2(sel, cfg.level2.patch, cfg.level2.n, cfg.level2.pick, cfg.level2.source)
     return sel

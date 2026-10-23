@@ -10,12 +10,17 @@ TILE = 64
 
 @dataclass
 class Plan:
-    """N crops, each one month of one sample at `patch` px.
+    """N crops, each one month (or one raw acquisition) of one sample at `patch` px.
 
-    b, t      (N,) long   sample, month slot
+    b, t      (N,) long   sample, month slot (the decoder routes by it)
     y, x      (N,) long   the picked cell on the 16 x 16 ps4 grid (the decoder routes by it)
     py, px    (N,) long   top-left pixel of the window actually cropped
     patch     int         window side in px (every crop of a plan shares it)
+    src       "months": cut from the monthly composites; else a modality name: cut from that
+              modality's raw acquisitions (Batch.dates), tokens marked with the model's
+              date_type embedding
+    src_t     (N,) long   the step cropped in the source (None: t)
+    slot      (N,) float  time slot of each crop (None: its month's season slot)
     """
     b: torch.Tensor
     t: torch.Tensor
@@ -24,6 +29,9 @@ class Plan:
     py: torch.Tensor
     px: torch.Tensor
     patch: int
+    src: str = "months"
+    src_t: torch.Tensor | None = None
+    slot: torch.Tensor | None = None
 
     def __len__(self) -> int:
         return len(self.b)

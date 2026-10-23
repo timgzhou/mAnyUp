@@ -34,6 +34,7 @@ class Level2Config:
     patch: int = 4              # finer month crops inside the first layer's (4 or 2 px)
     n: int = 8                  # cells of the patch grid
     pick: str = "oracle"        # oracle | random
+    source: str = "months"      # months: composites | dates: every raw acquisition in them
 
 
 @dataclass
@@ -82,7 +83,8 @@ class RunConfig:
         if s.residual:
             tag += f"-res{s.residual.train}{s.residual.arch}"
         if s.level2:
-            tag += f"-l2m{s.level2.patch}n{s.level2.n}{'' if s.level2.pick == 'oracle' else 'r'}"
+            tag += (f"-l2{s.level2.source[0]}{s.level2.patch}n{s.level2.n}"
+                    f"{'' if s.level2.pick == 'oracle' else 'r'}")
         geo = f"c{s.crop_px}" + (f"s{s.loc_stride}" if s.loc_stride else "")
         warm = "_warm" if self.train.init_ckpt else ""
         return (f"mixres_{self.task}_ps{self.model.lr_patch}_{tag}_n{s.n}_{geo}{warm}"
@@ -101,8 +103,12 @@ class RunConfig:
             raise ValueError(f"scorer {s.scorer}: classification tasks only")
         if (s.scorer == "residual") != (s.residual is not None):
             raise ValueError("select.residual is set exactly when select.scorer = residual")
-        if s.level2 and s.level2.patch >= s.crop_px:
+        if s.level2 and s.level2.patch >= s.crop_px and s.level2.source == "months":
             raise ValueError(f"level2 patch {s.level2.patch} not finer than crop_px {s.crop_px}")
+        if s.level2 and s.level2.patch > s.crop_px:
+            raise ValueError(f"level2 patch {s.level2.patch} larger than crop_px {s.crop_px}")
+        if (s.level2 is not None and s.level2.source == "dates") != self.model.date_tokens:
+            raise ValueError("model.date_tokens is set exactly when level2.source = dates")
 
 
 def from_dict(cls, d: dict):

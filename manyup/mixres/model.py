@@ -28,6 +28,7 @@ class ModelConfig:
     model_size: str = "tiny"
     lr_patch: int = 16          # season token patch size (16 or 8)
     inject_layer: int = 0       # crops join the season tokens before this block
+    date_tokens: bool = False   # a learned embedding marking raw-acquisition crops (date_type)
 
 
 @dataclass
@@ -54,6 +55,7 @@ class MixedResModel(nn.Module):
         D = oe.encoder.embedding_size
         self.head = Pa2PxHead(task.reduction, D, task.num_outputs, LR_PS)
         self.readout = NativeSetReadout(D, base_px=cfg.lr_patch)
+        self.date_type = nn.Parameter(torch.zeros(D)) if cfg.date_tokens else None
 
     @property
     def device(self):
@@ -65,13 +67,24 @@ class MixedResModel(nn.Module):
         with torch.autocast("cuda", dtype=torch.bfloat16):
             return self.mix.head_blocks(self.mix.embed(ss, self.cfg.lr_patch))
 
-    def tokenize_crops(self, ms, plan: Plan, season, lr: Packed) -> Packed:
-        """The plan's windows of the monthly images, one single-patch sequence each, placed at
-        their pixel position and their month's season slot; blocks [0, L) applied."""
-        crops = crop_patches(ms, plan.b, plan.t, plan.py, plan.px, plan.patch, pixels=True)
+    def tokenize_crops(self, ms, plan: Plan, season, lr: Packed, dates=None) -> Packed:
+        """The plan's windows (of the monthly images, or of one modality's raw acquisitions),
+        one single-patch sequence each, placed at their pixel position and time slot; blocks
+        [0, L) applied."""
+        if plan.src == "months":
+            src = ms
+        else:
+            if dates is None or self.date_type is None:
+                raise ValueError(f"date crops ({plan.src}): need the batch's dates and a model "
+                                 "with date_tokens")
+            src = _to_device(dates[plan.src][0], self.device, torch.bfloat16)
+        st = plan.t if plan.src_t is None else plan.src_t
+        crops = crop_patches(src, plan.b, st, plan.py, plan.px, plan.patch, pixels=True)
+        slot = season[plan.b, plan.t] if plan.slot is None else plan.slot
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            hr = self.mix.embed(crops, plan.patch, slot=season[plan.b, plan.t],
-                                py=plan.py, px=plan.px)
+            hr = self.mix.embed(crops, plan.patch, slot=slot, py=plan.py, px=plan.px)
+            if plan.src != "months":
+                hr.x = (hr.x + self.date_type).to(hr.x.dtype)
             return self.mix.head_blocks(hr, lr, plan.b)
 
     # -- encode / decode --------------------------------------------------------------------
@@ -135,12 +148,14 @@ class MixedResModel(nn.Module):
             self.train(was)
         return Out(logits, lr_F, hr_F)
 
-    def forward(self, ms, ss, season, present, plan: Plan | list[Plan], logw=None) -> Out:
-        """plan: one crop group, or several (e.g. --level2: layer-1 crops, then finer ones)."""
+    def forward(self, ms, ss, season, present, plan: Plan | list[Plan], logw=None,
+                dates=None) -> Out:
+        """plan: one crop group, or several (e.g. Level2: layer-1 crops, then finer ones).
+        dates: the batch's raw acquisitions, for date crop groups."""
         ms, ss, season, present = self._inputs(ms, ss, season, present)
         plans = [p for p in ([plan] if isinstance(plan, Plan) else plan) if len(p)]
         lr = self.tokenize_seasons(ss)
-        crops = [(self.tokenize_crops(ms, p, season, lr), p) for p in plans]
+        crops = [(self.tokenize_crops(ms, p, season, lr, dates), p) for p in plans]
         lr_F, hr_F = self.encode(lr, crops)
         return Out(self.decode(lr_F, hr_F, plans, season, present, logw), lr_F, hr_F)
 

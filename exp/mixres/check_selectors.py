@@ -56,6 +56,12 @@ LEGACY = {
                            + ["--init_ckpt", BH16, "--level2", "m4", "--l2_n", "8"]),
     "level2_m2_s8m4_n32": (P + ["--selector", "oracle_bothalf"] + S8
                            + ["--init_ckpt", BH8, "--level2", "m2", "--l2_n", "32"]),
+    "level2_d4_s16m8_n8": (P + ["--selector", "oracle_bothalf"] + S16 + ["--loc_stride", "8"]
+                           + ["--init_ckpt", BH16, "--level2", "d4", "--l2_n", "8"]),
+    "level2_d8_s16m8_n8": (P + ["--selector", "oracle_bothalf"] + S16 + ["--loc_stride", "8"]
+                           + ["--init_ckpt", BH16, "--level2", "d8", "--l2_n", "8"]),
+    "level2_d2_s8m4_n32": (P + ["--selector", "oracle_bothalf"] + S8
+                           + ["--init_ckpt", BH8, "--level2", "d2", "--l2_n", "32"]),
 }
 # key -> (task, season patch, crop px, loc stride, scorer, allocator); scorer / allocator are
 # built once the model exists (frozen sources and learned residuals load weights)
@@ -74,6 +80,12 @@ SPECS = {
                               ("level2", 4, 8)),
     "level2_m2_s8m4_n32":    ("pastis", 8, 4, None, "label", ("halves", 32, "better"),
                               ("level2", 2, 32)),
+    "level2_d4_s16m8_n8":    ("pastis", 16, 8, 8, "label", ("halves", 8, "better"),
+                              ("level2", 4, 8, "dates")),
+    "level2_d8_s16m8_n8":    ("pastis", 16, 8, 8, "label", ("halves", 8, "better"),
+                              ("level2", 8, 2, "dates")),         # legacy l2_n 8 = 2 ps8 windows
+    "level2_d2_s8m4_n32":    ("pastis", 8, 4, None, "label", ("halves", 32, "better"),
+                              ("level2", 2, 32, "dates")),
 }
 
 
@@ -87,7 +99,8 @@ def frozen(task, lp, ckpt):
 def build(key, run):
     task_name, lp, cp, stride, sc, al, *l2 = SPECS[key]
     task = TASKS[task_name]
-    model = MixedResModel(task, ModelConfig(lr_patch=lp)).cuda().eval()
+    dates = bool(l2) and len(l2[0]) > 3 and l2[0][3] == "dates"
+    model = MixedResModel(task, ModelConfig(lr_patch=lp, date_tokens=dates)).cuda().eval()
     unused = load_legacy(model, run)
     if sc == "label":
         scorer = LabelLoss()
@@ -110,7 +123,8 @@ def build(key, run):
                  "halves": lambda n, keep: SeasonHalves(n, keep)}[al[0]](*al[1:])
     sel = Selector(Geometry(cp, stride), scorer, allocator)
     if l2:
-        sel = Level2(sel, patch=l2[0][1], n=l2[0][2])
+        sel = Level2(sel, patch=l2[0][1], n=l2[0][2],
+                     source=l2[0][3] if len(l2[0]) > 3 else "months")
     return task, model, sel, unused
 
 
@@ -140,13 +154,15 @@ def check(key, a):
     ref = legacy_reference(key, a)
     task, model, sel, unused = build(key, ref["run"])
     print(f"== {key}  ({ref['run']})\n   legacy keys unused: {unused}", flush=True)
-    dl = fi.loader(task, "test", task.batch_size[16], 8, False)
+    dates = model.date_type is not None
+    dl = fi.loader(task, "test", task.batch_size[16], 8, False, dates=dates)
     ok = True
 
     def run(i, x):
         ms, ss, season, present, _, extra = x
-        s = sel(Context(model, ms, ss, season, present, extra["target"]))
-        return s, model(ms, ss, season, present, s.plan, s.logw).logits
+        d = extra.get("dates")
+        s = sel(Context(model, ms, ss, season, present, extra["target"], d))
+        return s, model(ms, ss, season, present, s.plan, s.logw, d).logits
 
     torch.manual_seed(1234)
     for i, (*x, _) in enumerate(dl):

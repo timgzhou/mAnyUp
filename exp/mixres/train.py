@@ -43,7 +43,8 @@ def n_crops(plan) -> int:
 def step(model, selector, batch):
     """One batch -> (logits, auxiliary loss or None, crops)."""
     sel = selector(Context.from_batch(model, batch))
-    out = model(batch.ms, batch.ss, batch.season, batch.present, sel.plan, sel.logw)
+    out = model(batch.ms, batch.ss, batch.season, batch.present, sel.plan, sel.logw,
+                batch.dates)
     return out.logits, sel.aux, n_crops(sel.plan)
 
 
@@ -88,7 +89,9 @@ def run(cfg: RunConfig) -> dict:
         unused = load_legacy(model, tc.init_ckpt)
         print(f"warm start from {tc.init_ckpt} (unused keys: {len(unused)})")
     bs = tc.batch_size or task.batch_size[16]
-    dl = {s: loader(task, s, bs, tc.num_workers, s == "train") for s in ("train", "val", "test")}
+    dates = cfg.select.level2 is not None and cfg.select.level2.source == "dates"
+    dl = {s: loader(task, s, bs, tc.num_workers, s == "train", dates)
+          for s in ("train", "val", "test")}
     b0 = next(iter(dl["val"]))
     example = (b0.ms, b0.ss)
     selector = build_selector(cfg.select, model, example)
