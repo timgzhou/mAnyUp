@@ -145,3 +145,27 @@ would come back as a mask policy argument to `encode`, not as a second encoder.
 - Config system: plain dataclasses + a small CLI
 - Do the YieldSAT / BioMassters regression paths (entropy is classification-only) need their own
   scorer later, for now implement the things that make sense (for example, the oracle loss map based selection is still valid) and leave the others empty (dont fall back to an arbitrary decision, if things are called with wrong composition, throw error.)
+
+## Progress (2026-10-22, branch `mixres-restructure`)
+
+| step | state |
+|---|---|
+| 1 git | the repo existed; snapshot `eea740c`, tag `legacy-finetune-inject` |
+| 2 freeze | `finetune_inject.py` kept in place (queued jobs import it); the tag is the frozen reference |
+| 3 regression set | `scripts/slurm/regress_record.sh` -> `cache/regress/` (9 runs) |
+| 4 model | `manyup/mixres/{plan,model}.py`; `exp.mixres.check_equiv`: bit-exact |
+| 5 selectors | `manyup/mixres/selectors.py` incl. `Level2` (m4 / m2); `exp.mixres.check_selectors`: 10 runs bit-exact (picks, logits, full-test metrics) |
+| 6 config + training | `manyup/mixres/config.py`, `exp/mixres/train.py`; `exp.mixres.check_step`: first update within legacy run-to-run noise; end-to-end runs `scripts/slurm/mixres_validate.sh` |
+
+Findings on the way:
+- The legacy forward is not reproducible across processes: its bf16 numerics land in one of two
+  states per process (same picks with logits ±0.08, or near-tied oracle windows flipping). Within
+  a process it is stable, so the checks record the legacy reference in the same process.
+- Training is not reproducible even within a process (backward nondeterminism): the same legacy
+  run twice ends at val .396 vs .422 after 6 steps. Training equivalence is therefore checked
+  against that noise floor, not bit for bit.
+
+Still to do: raw-date level-2 arms (d8 / d4 / d2); moving `NativeSetReadout`, `ResidualScorer`,
+`listnet_loss`, `window_pixels`, `location_grid_scores`, `loader` out of the legacy file; GMAC
+measurement in `exp.mixres.train`; switching the experiment scripts over.
+
