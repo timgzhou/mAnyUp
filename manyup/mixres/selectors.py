@@ -418,6 +418,11 @@ class Selector:
     def __init__(self, geometry: Geometry, scorer: Scorer, allocator: Allocator):
         self.geo, self.scorer, self.allocator = geometry, scorer, allocator
 
+    def modules(self) -> list:
+        """The selector's trainable nn.Modules (a residual's network)."""
+        net = getattr(self.scorer, "net", None)
+        return [net] if net is not None else []
+
     def __call__(self, ctx: Context) -> Selection:
         s = self.scorer(ctx, self.geo)
         mask = self.allocator(s, ctx)
@@ -443,6 +448,10 @@ class Level2:
             raise ValueError(f"Level2 patch {patch}: not finer than the first layer's "
                              f"{first.geo.crop_px} px crops")
         self.first, self.patch, self.n, self.pick = first, patch, n, pick
+        self.geo, self.scorer = first.geo, first.scorer
+
+    def modules(self) -> list:
+        return self.first.modules()
 
     def __call__(self, ctx: Context) -> Selection:
         s1 = self.first(ctx)
@@ -493,3 +502,33 @@ class Level2:
             half = (avail.sum(1, keepdim=True) // 2).clamp(min=1)
             mask2 = (r < half) & avail & loc[:, None]
         return Selection([p1, Plan.from_grid(mask2, su)], s1.mask, None, s1.aux)
+
+
+def build_selector(cfg, model: MixedResModel, example=None):
+    """manyup.mixres.config.SelectConfig -> Selector (or Level2). example: one batch's (monthly,
+    season) samples, to size the HR residual arms' pixel embedding and season embedding."""
+    from exp.upsamplers.finetune_inject import ResidualScorer, window_pixels   # TODO: move here
+    geo = Geometry(cfg.crop_px, cfg.loc_stride)
+    if cfg.scorer == "residual":
+        r = cfg.residual
+        if r.arch != "conv" and example is None:
+            raise ValueError(f"residual arch {r.arch}: build_selector needs an example batch")
+        C = 0 if r.arch == "conv" else window_pixels(example[0], 1).shape[-1]
+        D = model.mix.encoder.embedding_size
+        net = ResidualScorer(D, model.head.linear.out_features // LR_PS ** 2, arch=r.arch, C=C,
+                             P=cfg.crop_px, S=TILE // cfg.crop_px,
+                             gh=TILE // model.cfg.lr_patch,
+                             NS=0 if r.arch == "conv"
+                             else example[1].timestamps.shape[1]).to(model.device)
+        scorer = Residual(Entropy(), net, train=r.train, tau=r.tau,
+                          lam=1.0 if r.train != "e2e" else 0.0)
+    else:
+        scorer = {"label": LabelLoss, "entropy": Entropy, "random": RandomWindows,
+                  "season_grid": lambda: SeasonGrid(cfg.n),
+                  "season_random": SeasonRandom}[cfg.scorer]()
+    allocator = {"top": lambda: TopWindows(cfg.n), "pairs": lambda: SeasonPairs(cfg.n),
+                 "halves": lambda: SeasonHalves(cfg.n, cfg.keep)}[cfg.allocator]()
+    sel = Selector(geo, scorer, allocator)
+    if cfg.level2:
+        sel = Level2(sel, cfg.level2.patch, cfg.level2.n, cfg.level2.pick)
+    return sel

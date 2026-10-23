@@ -128,7 +128,7 @@ class MixedResModel(nn.Module):
         was = self.training
         self.eval()
         try:
-            with torch.autocast("cuda", dtype=torch.bfloat16):
+            with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
                 lr_F, hr_F = self.encode(self.tokenize_seasons(ss), [])
                 logits = self.decode(lr_F, hr_F, [], season, present).float()
         finally:
