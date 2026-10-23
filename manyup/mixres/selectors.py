@@ -469,16 +469,18 @@ class SeasonTop(_SeasonBudget):
 
 class EveryLocation(Allocator):
     """Time selection with space fixed: EVERY candidate location, each with its lowest-score
-    seasons (keep "half": half its used seasons, at least one -- the better-half oracle's rule;
-    "one": its single lowest), every present month of those seasons. Ties broken as
-    SeasonHalves "better", so with LabelLoss scores this is the better-half oracle at every
-    location."""
+    seasons (order "low"; "high": its highest-score seasons) -- keep "half": half its used
+    seasons, at least one (the better- / worse-half oracles' rule), "one": a single season --
+    every present month of those seasons. Ties broken as SeasonHalves "better" / "worse", so
+    with LabelLoss scores this is the better- / worse-half oracle at every location."""
     needs = ("season",)
 
-    def __init__(self, keep: str = "half"):
+    def __init__(self, keep: str = "half", order: str = "low"):
         if keep not in ("half", "one"):
             raise ValueError(f"EveryLocation keep {keep!r}")
-        self.keep = keep
+        if order not in ("low", "high"):
+            raise ValueError(f"EveryLocation order {order!r}")
+        self.keep, self.order = keep, order
 
     def __call__(self, s, ctx, geo):
         if s.season is None:
@@ -489,8 +491,8 @@ class EveryLocation(Allocator):
         sc = s.season.masked_fill(~used[:, :, None, None], NEG)
         nused = used.sum(1)[:, None, None, None]
         k = (nused // 2).clamp(min=1) if self.keep == "half" else torch.ones_like(nused)
-        rank = sc.argsort(1, descending=True).argsort(1)    # 0 = worst; unused seasons last
-        pick = (rank >= nused - k) & (rank < nused)
+        rank = sc.argsort(1, descending=True).argsort(1)    # 0 = highest; unused seasons last
+        pick = ((rank >= nused - k) if self.order == "low" else (rank < k)) & (rank < nused)
         a = geo.anchors(sc.device)
         if a is not None:
             pick = pick & a
@@ -693,7 +695,7 @@ def build_selector(cfg, model: MixedResModel, example=None):
                   "season_random": SeasonRandom}[cfg.scorer]()
     allocator = {"top": lambda: TopWindows(cfg.n), "pairs": lambda: SeasonPairs(cfg.n),
                  "season_top": lambda: SeasonTop(cfg.n),
-                 "every_location": lambda: EveryLocation(cfg.keep),
+                 "every_location": lambda: EveryLocation(cfg.keep, cfg.season_order),
                  "month_grid": lambda: MonthGrid(cfg.month_step),
                  "halves": lambda: SeasonHalves(cfg.n, cfg.keep)}[cfg.allocator]()
     sel = Selector(geo, scorer, allocator)

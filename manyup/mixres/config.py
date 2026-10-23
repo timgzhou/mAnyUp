@@ -46,6 +46,7 @@ class SelectConfig:
     allocator: str = "halves"
     keep: str = "better"        # halves: better | worse | all; every_location: half | one
     month_step: int = 2         # month_grid: every month_step-th month at every location
+    season_order: str = "low"   # every_location: the lowest-score seasons (low) or highest (high)
     n: int = 8                  # budget: n windows x the sample's present months
     crop_px: int = 8
     loc_stride: int | None = 8  # candidate lattice stride; None: a window centred on every cell
@@ -85,7 +86,8 @@ class RunConfig:
         h = hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()[:8]
         s = self.select
         tag = (f"{s.scorer}-{s.allocator}" + (f"-{s.keep}" if s.allocator in KEEPS else "")
-               + (f"{s.month_step}" if s.allocator == "month_grid" else ""))
+               + (f"{s.month_step}" if s.allocator == "month_grid" else "")
+               + ("-high" if s.season_order == "high" else ""))
         if s.residual:
             tag += f"-res{s.residual.train}{s.residual.arch}"
         if s.level2:
@@ -103,6 +105,10 @@ class RunConfig:
             raise ValueError(f"scorer {s.scorer!r} / allocator {s.allocator!r}")
         if s.allocator in KEEPS and s.keep not in KEEPS[s.allocator]:
             raise ValueError(f"allocator {s.allocator}: keep in {KEEPS[s.allocator]}, not {s.keep!r}")
+        if s.season_order not in ("low", "high"):
+            raise ValueError(f"select.season_order {s.season_order!r}: low | high")
+        if s.season_order == "high" and s.allocator != "every_location":
+            raise ValueError("select.season_order=high: allocator every_location only")
         if s.allocator == "month_grid" and s.scorer != "none":
             raise ValueError("allocator month_grid reads no scores: select.scorer=none")
         missing = ALLOC_IN[s.allocator] - SCORER_OUT[s.scorer]
