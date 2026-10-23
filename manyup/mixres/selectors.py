@@ -331,6 +331,25 @@ class RandomWindows(Scorer):
         return Scores(window=s.masked_fill(~where, NEG).amax(1))
 
 
+class GridWindows(Scorer):
+    """Content-blind: a regular lattice of n crop windows (location_grid_scores; random phase
+    while training, fixed at test), each window scored by it for every present month (the legacy
+    --selector grid --select_unit location). The lattice marks the cell under each window's
+    centre, so the candidates must be centred windows (no loc_stride)."""
+
+    def __init__(self, n: int):
+        self.n = n
+
+    def __call__(self, ctx, geo, need=("window",)):
+        if geo.loc_px is not None:
+            raise ValueError("GridWindows: the lattice is of centred windows; set no loc_stride")
+        g = location_grid_scores(ctx.B, H, max(1, self.n), geo.crop_px, ctx.model.training,
+                                 ctx.present.device)
+        s = g[:, None].expand(ctx.B, ctx.T, H, H)
+        where = ctx.present[:, :, None, None].expand_as(s)
+        return Scores(window=s.masked_fill(~where, NEG).amax(1))
+
+
 class SeasonGrid(Scorer):
     """Content-blind: in every season a lattice of n windows, shifted one coset per season
     (random phase while training, fixed at test)."""
@@ -419,6 +438,23 @@ class SeasonPairs(_SeasonBudget):
         sc, used, budget, cost, s_idx, valid = self._setup(s, ctx)
         B, NS = sc.shape[:2]
         pair = _take(sc.flatten(1), cost.flatten(1), budget).view(B, NS, H, H)
+        return self._to_months(pair, s_idx, valid)
+
+
+class SeasonTop(_SeasonBudget):
+    """In every used season its own n best windows by the season scores, every present month
+    of that season in each: the season grid's allocation (n windows per season, the same
+    budget of n windows x present months) with the windows chosen by score. Seasons may pick
+    the same window."""
+    needs = ("season",)
+
+    def __call__(self, s, ctx):
+        sc, used, budget, cost, s_idx, valid = self._setup(s, ctx)
+        B, NS = sc.shape[:2]
+        flat = sc.flatten(2)                                                    # (B, NS, 256)
+        top = flat.topk(min(self.n, flat.shape[2]), dim=2).indices
+        pick = torch.zeros_like(flat, dtype=torch.bool).scatter(2, top, True)
+        pair = (pick & torch.isfinite(flat)).view(B, NS, H, H) & used[:, :, None, None]
         return self._to_months(pair, s_idx, valid)
 
 
@@ -588,9 +624,11 @@ def build_selector(cfg, model: MixedResModel, example=None):
                           lam=1.0 if r.train != "e2e" else 0.0)
     else:
         scorer = {"label": LabelLoss, "entropy": Entropy, "random": RandomWindows,
+                  "grid": lambda: GridWindows(cfg.n),
                   "season_grid": lambda: SeasonGrid(cfg.n),
                   "season_random": SeasonRandom}[cfg.scorer]()
     allocator = {"top": lambda: TopWindows(cfg.n), "pairs": lambda: SeasonPairs(cfg.n),
+                 "season_top": lambda: SeasonTop(cfg.n),
                  "halves": lambda: SeasonHalves(cfg.n, cfg.keep)}[cfg.allocator]()
     sel = Selector(geo, scorer, allocator)
     if cfg.level2:

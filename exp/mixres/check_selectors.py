@@ -25,8 +25,8 @@ import torch  # noqa: E402
 from exp.common.tasks import TASKS  # noqa: E402
 from exp.upsamplers import finetune_inject as fi  # noqa: E402
 from manyup.mixres import MixedResModel, ModelConfig, load_legacy  # noqa: E402
-from manyup.mixres.selectors import (Context, Entropy, Geometry, LabelLoss,  # noqa: E402
-                                     Level2, RandomWindows, Residual, SeasonGrid, SeasonHalves,
+from manyup.mixres.selectors import (Context, Entropy, Geometry, GridWindows,  # noqa: E402
+                                     LabelLoss, Level2, RandomWindows, Residual, SeasonGrid, SeasonHalves,
                                      SeasonPairs, Selector, TopWindows)
 
 SCORER16 = "inject_fft_pastis_tiny_none_native_set_lr0.001_ep50"
@@ -47,6 +47,8 @@ LEGACY = {
     "bothalf_s8m4_n32": P + ["--selector", "oracle_bothalf"] + S8,
     "season_grid_s16m8_n8": P + ["--selector", "season_grid"] + S16,
     "random_s8m4_n32": P + ["--selector", "random"] + S8,
+    "grid_s16m8_n8": P + ["--selector", "grid"] + S16,
+    "grid_s8m4_n32": P + ["--selector", "grid"] + S8,
     "lrent_all_s16m8_n8": P + ["--selector", "oracle_bothalf"] + S16 + ["--loc_stride", "8"] + ENT,
     "lrent_rese2e_s16m8_n8": (P + ["--selector", "oracle_bothalf"] + S16 + ["--loc_stride", "8"]
                               + ENT + ["--res_mode", "e2e"]),
@@ -71,6 +73,8 @@ SPECS = {
     "bothalf_s8m4_n32":      ("pastis", 8, 4, None, "label", ("halves", 32, "better")),
     "season_grid_s16m8_n8":  ("pastis", 16, 8, None, ("season_grid", 8), ("pairs", 8)),
     "random_s8m4_n32":       ("pastis", 8, 4, None, "random", ("top", 32)),
+    "grid_s16m8_n8":         ("pastis", 16, 8, None, ("grid", 8), ("top", 8)),
+    "grid_s8m4_n32":         ("pastis", 8, 4, None, ("grid", 32), ("top", 32)),
     "lrent_all_s16m8_n8":    ("pastis", 16, 8, 8, ("frozen_entropy", SCORER16),
                               ("halves", 8, "all")),
     "lrent_rese2e_s16m8_n8": ("pastis", 16, 8, 8, ("residual_e2e", SCORER16),
@@ -106,6 +110,8 @@ def build(key, run):
         scorer = LabelLoss()
     elif sc == "random":
         scorer = RandomWindows()
+    elif sc[0] == "grid":
+        scorer = GridWindows(sc[1])
     elif sc[0] == "season_grid":
         scorer = SeasonGrid(sc[1])
     elif sc[0] == "frozen_entropy":
