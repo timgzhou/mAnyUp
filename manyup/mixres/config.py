@@ -78,10 +78,10 @@ class RunConfig:
 
     def name(self) -> str:
         """A readable tag + a hash of everything that defines the run (not num_workers,
-        max_hours, limit_batches)."""
-        d = self.to_dict()
-        for k in ("num_workers", "max_hours", "limit_batches", "compute_batches"):
-            d["train"].pop(k)
+        max_hours, limit_batches, compute_batches). Only HASHED fields always enter the hash; a
+        field added later enters it only when set away from its default, so adding a field never
+        renames existing runs (a chain's later links must find its state file)."""
+        d = _hashable(self.to_dict(), _defaults())
         h = hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()[:8]
         s = self.select
         tag = (f"{s.scorer}-{s.allocator}" + (f"-{s.keep}" if s.allocator in KEEPS else "")
@@ -121,6 +121,39 @@ class RunConfig:
             raise ValueError(f"level2 patch {s.level2.patch} larger than crop_px {s.crop_px}")
         if (s.level2 is not None and s.level2.source == "dates") != self.model.date_tokens:
             raise ValueError("model.date_tokens is set exactly when level2.source = dates")
+
+
+# the config fields as of 2026-10-23: always hashed (run names of everything launched until then)
+HASHED = {
+    "task", "model.model_size", "model.lr_patch", "model.inject_layer", "model.date_tokens",
+    "select.scorer", "select.allocator", "select.keep", "select.month_step", "select.n",
+    "select.crop_px", "select.loc_stride", "select.residual", "select.residual.arch",
+    "select.residual.train", "select.residual.tau", "select.residual.decay", "select.level2",
+    "select.level2.patch", "select.level2.n", "select.level2.pick", "select.level2.source",
+    "train.epochs", "train.lr", "train.batch_size", "train.seed", "train.init_ckpt"}
+NOT_HASHED = {"train.num_workers", "train.max_hours", "train.limit_batches",
+              "train.compute_batches"}
+
+
+def _defaults() -> dict:
+    d = asdict(RunConfig())
+    d["select"]["residual"] = asdict(ResidualConfig())
+    d["select"]["level2"] = asdict(Level2Config())
+    return d
+
+
+def _hashable(d: dict, dflt: dict, pre: str = "") -> dict:
+    out = {}
+    for k, v in d.items():
+        p = pre + k
+        if p in NOT_HASHED:
+            continue
+        dv = dflt.get(k) if isinstance(dflt, dict) else None
+        if isinstance(v, dict):
+            out[k] = _hashable(v, dv if isinstance(dv, dict) else {}, p + ".")
+        elif p in HASHED or v != dv:
+            out[k] = v
+    return out
 
 
 def from_dict(cls, d: dict):
