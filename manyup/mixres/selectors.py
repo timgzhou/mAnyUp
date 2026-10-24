@@ -22,7 +22,7 @@ from einops import rearrange
 from manyup.encoders.olmoearth import _to_device
 from manyup.mixres.model import LR_PS, MixedResModel, Out
 from manyup.mixres.plan import LOOKUP_PS, TILE, Plan
-from manyup.mixres.residual import ResidualScorer, listnet_loss, window_pixels
+from manyup.mixres.residual import ResidualScorer, SeasonResidual, listnet_loss, window_pixels
 from manyup.mixres.sign import SignNet, season_spearman
 from manyup.timAnyUp import topk_mask
 
@@ -187,11 +187,13 @@ class Scores:
     window   (B, 16, 16)       where to crop (higher first)
     season   (B, NS, 16, 16)   per (season, window) pair, for the season allocators
     gate     (B, 16, 16)       a crop's decoder log-weight is logsigmoid(gate[b, y, x])
+    season_gate (B, NS, 16, 16) ... or the log-weight itself at its (season, cell)
     aux      scalar loss to add while training (e.g. the residual's ranking loss)
     pooled, lr_F               the prediction and season tokens the scores came from"""
     window: torch.Tensor | None = None
     season: torch.Tensor | None = None
     gate: torch.Tensor | None = None
+    season_gate: torch.Tensor | None = None
     aux: torch.Tensor | None = None
     pooled: torch.Tensor | None = None
     lr_F: torch.Tensor | None = None
@@ -356,6 +358,76 @@ class EntropySign(Scorer):
         sc = torch.where(f[:, None], -base.season, base.season)
         sc = sc.masked_fill(~torch.isfinite(base.season), NEG)
         return Scores(base.window, sc, aux=aux, pooled=base.pooled, lr_F=base.lr_F)
+
+
+class SeasonResidualScorer(Scorer):
+    """Time selection: season score = z(the season's window entropy over the location's used
+    seasons) + r, r a learned SeasonResidual per (season, location) (last layer zero: exactly
+    the lowest-entropy ranking at the start); the allocator keeps each location's lowest.
+        train  "e2e"     r learns from the task loss through each picked crop's decoder weight
+                         logsigmoid(-r) - logsigmoid(0) (0 at the start: the decoder too starts
+                         as the plain entropy arm); Gumbel(tau) exploration on the picks
+               "oracle"  r learns from a ListNet ranking of each location's seasons by their
+                         loss (the lowest first), no gate
+               "both"    both; the oracle weight `lam` is set from outside (decayed)
+    Candidates must tile the tile (stride = crop)."""
+
+    def __init__(self, net: SeasonResidual, train: str = "e2e", tau: float = 0.5,
+                 lam: float = 1.0):
+        if train not in ("e2e", "oracle", "both"):
+            raise ValueError(f"SeasonResidualScorer train {train!r}")
+        self.net, self.train, self.tau, self.lam = net, train, tau, lam
+
+    def __call__(self, ctx, geo, need=("season",)):
+        if ctx.model.task.kind != "classification":
+            raise ValueError(f"SeasonResidual: {ctx.model.task.name} is not a classification task")
+        out0, P_ = ctx.out0, geo.crop_px
+        cell = geo.tiling().to(ctx.present.device)
+        S, B, NS = len(cell), ctx.B, ctx.NS
+        with torch.no_grad():
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                s_log = season_maps(ctx.model, out0.lr_F).detach()
+                E = geo.window_mean(pixel_entropy(s_log))                       # as Entropy
+            E = E.view(B, NS, H, H)[:, :, cell[:, None], cell[None, :]].float()   # (B,NS,S,S)
+            lp = s_log.float().log_softmax(1)
+            p = lp.exp()
+            ent = F.avg_pool2d((-(p * lp).sum(1))[:, None], P_)
+            top2 = p.topk(2, dim=1).values
+            margin = F.avg_pool2d(top2[:, :1] - top2[:, 1:], P_)
+            pbar = F.avg_pool2d(p, P_)
+            js = -(pbar * pbar.clamp(min=1e-8).log()).sum(1, keepdim=True) - ent
+            feats = torch.cat([pbar, ent, margin, js], 1).view(B, NS, -1, S, S)
+            u = ctx.used[:, :, None, None].float()
+            n = u.sum(1, keepdim=True).clamp(min=1)
+            mu = (E * u).sum(1, keepdim=True) / n
+            sd = (((E - mu) ** 2) * u).sum(1, keepdim=True).div(n).sqrt().clamp(min=1e-6)
+            z = (E - mu) / sd
+        hr_in = {}
+        if self.net.arch != "conv":
+            hr_in = dict(pix=window_pixels(ctx.ms, P_), season=ctx.season, valid=ctx.valid)
+        r = self.net(feats, out0.lr_F.detach(), ctx.used, **hr_in)               # (B,NS,S,S)
+        score = z + r
+        aux = None
+        if self.net.training and self.train in ("oracle", "both") and self.lam > 0:
+            if ctx.target is None:
+                raise ValueError("SeasonResidual oracle loss: no target in the context")
+            L = LabelLoss()(ctx, geo, ("season",)).season[:, :, cell[:, None], cell[None, :]]
+            ok = ctx.used[:, :, None, None].expand_as(L) & torch.isfinite(L)
+            aux = self.lam * listnet_loss((-score).permute(0, 2, 3, 1).flatten(0, 2),
+                                          (-L).masked_fill(~ok, 0).permute(0, 2, 3, 1).flatten(0, 2),
+                                          ok.permute(0, 2, 3, 1).flatten(0, 2))
+        pick = score.detach()
+        if self.net.training and self.train != "oracle" and self.tau > 0:
+            g = -torch.log(-torch.log(torch.rand_like(pick).clamp(1e-9, 1 - 1e-9)))
+            pick = pick - self.tau * g                                      # lowest is picked
+        sc = pick.new_full((B, NS, H, H), NEG)
+        sc[:, :, cell[:, None], cell[None, :]] = pick
+        gate = None
+        if self.train != "oracle":
+            gate = r.new_zeros((B, NS, H, H))
+            gate[:, :, cell[:, None], cell[None, :]] = (F.logsigmoid(-r)
+                                                          - F.logsigmoid(r.new_zeros(())))
+        return Scores(None, sc, season_gate=gate, aux=aux, pooled=out0.logits, lr_F=out0.lr_F)
 
 
 class RandomWindows(Scorer):
@@ -613,6 +685,8 @@ class Selector:
         mask = self.allocator(s, ctx, self.geo)
         plan = self.geo.plan(mask)
         logw = None if s.gate is None else F.logsigmoid(s.gate[plan.b, plan.y, plan.x].float())
+        if s.season_gate is not None:
+            logw = s.season_gate[plan.b, ctx.season[plan.b, plan.t], plan.y, plan.x].float()
         return Selection(plan, mask, logw, s.aux)
 
 
@@ -714,7 +788,19 @@ def build_selector(cfg, model: MixedResModel, example=None):
     """manyup.mixres.config.SelectConfig -> Selector (or Level2). example: one batch's (monthly,
     season) samples, to size the HR residual arms' pixel embedding and season embedding."""
     geo = Geometry(cfg.crop_px, cfg.loc_stride)
-    if cfg.scorer == "entropy_sign":
+    if cfg.scorer == "season_residual":
+        r = cfg.residual
+        if r.arch != "conv" and example is None:
+            raise ValueError(f"season residual arch {r.arch}: build_selector needs an example")
+        net = SeasonResidual(model.mix.encoder.embedding_size,
+                             model.head.linear.out_features // LR_PS ** 2, arch=r.arch,
+                             C=0 if r.arch == "conv" else window_pixels(example[0], 1).shape[-1],
+                             P=cfg.crop_px, S=TILE // cfg.crop_px, gh=TILE // model.cfg.lr_patch,
+                             NS=0 if r.arch == "conv" else example[1].timestamps.shape[1]
+                             ).to(model.device)
+        scorer = SeasonResidualScorer(net, train=r.train, tau=r.tau,
+                                      lam=1.0 if r.train != "e2e" else 0.0)
+    elif cfg.scorer == "entropy_sign":
         if example is None:
             raise ValueError("scorer entropy_sign: build_selector needs an example batch")
         net = SignNet(model.mix.encoder.embedding_size, example[1].timestamps.shape[1],

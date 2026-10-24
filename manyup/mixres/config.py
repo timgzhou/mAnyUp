@@ -12,17 +12,17 @@ from dataclasses import asdict, dataclass, field, fields
 from manyup.mixres.model import ModelConfig
 
 SCORERS = ("label", "entropy", "residual", "random", "grid", "season_grid", "season_random",
-           "none", "entropy_sign")
+           "none", "entropy_sign", "season_residual")
 ALLOCATORS = ("top", "pairs", "season_top", "halves", "every_location", "month_grid")
 # what each scorer produces / each allocator needs (window and / or per-season scores)
 SCORER_OUT = {"label": {"window", "season"}, "entropy": {"window", "season"},
               "residual": {"window", "season"}, "random": {"window"}, "grid": {"window"},
               "season_grid": {"season"}, "season_random": {"season"}, "none": set(),
-              "entropy_sign": {"window", "season"}}
+              "entropy_sign": {"window", "season"}, "season_residual": {"season"}}
 ALLOC_IN = {"top": {"window"}, "pairs": {"season"}, "season_top": {"season"},
             "halves": {"window", "season"}, "every_location": {"season"}, "month_grid": set()}
 KEEPS = {"halves": ("better", "worse", "all"), "every_location": ("half", "one")}
-CLASSIFICATION_ONLY = ("entropy", "residual", "entropy_sign")
+CLASSIFICATION_ONLY = ("entropy", "residual", "entropy_sign", "season_residual")
 
 
 @dataclass
@@ -120,8 +120,9 @@ class RunConfig:
             raise ValueError(f"scorer {s.scorer}: classification tasks only")
         if s.scorer == "grid" and s.loc_stride is not None:
             raise ValueError("scorer grid: a lattice of centred windows; set select.loc_stride=none")
-        if (s.scorer == "residual") != (s.residual is not None):
-            raise ValueError("select.residual is set exactly when select.scorer = residual")
+        if (s.scorer in ("residual", "season_residual")) != (s.residual is not None):
+            raise ValueError("select.residual is set exactly when select.scorer = residual or "
+                             "season_residual")
         if s.level2 and s.level2.patch >= s.crop_px and s.level2.source == "months":
             raise ValueError(f"level2 patch {s.level2.patch} not finer than crop_px {s.crop_px}")
         if s.level2 and s.level2.patch > s.crop_px:
