@@ -50,10 +50,21 @@ class MacCount:
         self.traced = 0.0        # MACs FlopCounterMode saw (linear / conv / einsum / SDPA)
         self.token_blocks = 0    # query tokens summed over every FlashAttention call
         self.max_seq = 0         # longest key sequence any FlashAttention call saw
+        self.analytic = 0.0      # MACs reported by add_macs (elementwise kernels, see there)
 
     @property
     def total(self) -> float:
-        return self.attn + self.traced
+        return self.attn + self.traced + self.analytic
+
+
+_ACTIVE = None      # the count_macs in progress
+
+
+def add_macs(n: float) -> None:
+    """Report MACs the tracer cannot see, computed by the caller: elementwise arithmetic that IS
+    the method (Upsample Anything's per-image fit). No-op outside count_macs."""
+    if _ACTIVE is not None:
+        _ACTIVE.analytic += n
 
 
 @contextmanager
@@ -61,7 +72,8 @@ def count_macs():
     """with count_macs() as c: model(batch)  ->  c.total MACs for that batch."""
     import flash_attn
 
-    count = MacCount()
+    global _ACTIVE
+    count = _ACTIVE = MacCount()
     real_varlen, real_dense = flash_attn.flash_attn_varlen_func, flash_attn.flash_attn_func
 
     def varlen(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, *args, **kw):
@@ -92,6 +104,7 @@ def count_macs():
             yield count
     finally:
         flash_attn.flash_attn_varlen_func, flash_attn.flash_attn_func = real_varlen, real_dense
+        _ACTIVE = None
         count.traced = float(counter.get_total_flops()) / 2.0     # FLOPs -> MACs
 
 

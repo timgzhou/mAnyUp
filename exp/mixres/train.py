@@ -32,12 +32,13 @@ from exp.common.tasks import TASKS  # noqa: E402
 from exp.olmoearth.train import (FREEZE_EPOCH_FRACTION, SCHEDULER_COOLDOWN,  # noqa: E402
                                  SCHEDULER_FACTOR, SCHEDULER_PATIENCE, UNFREEZE_LR_FACTOR,
                                  _append, _brief)
-from manyup.mixres import MixedResModel, load_legacy  # noqa: E402
+from manyup.mixres import load_legacy  # noqa: E402
+from manyup.mixres.baselines import build_model, build_selector_for  # noqa: E402
 from manyup.mixres.config import RunConfig, apply_overrides, from_dict  # noqa: E402
 from manyup.mixres.data import loader  # noqa: E402
 from manyup.mixres.selectors import (Context, Quadrant, SeasonTemperature,  # noqa: E402
-                                     build_selector, pixel_entropy, season_maps)
-from manyup.mixres.steps import StepThreshold, build_step_selector  # noqa: E402
+                                     build_selector, season_maps)
+from manyup.mixres.steps import StepThreshold  # noqa: E402
 
 
 def n_crops(plan) -> int:
@@ -147,6 +148,7 @@ def measure_compute(model, selector, dl, batches: int) -> dict:
     n_blocks = len(model.mix.encoder.blocks)
     return {"gmacs": round(count.total / n_samples / 1e9, 3),
             "gmacs_attention": round(count.attn / n_samples / 1e9, 3),
+            "gmacs_analytic": round(count.analytic / n_samples / 1e9, 3),
             "tokens_per_block": round(count.token_blocks / n_samples / n_blocks, 1),
             "longest_sequence": count.max_seq, "compute_samples": n_samples,
             "compute_crops_per_sample": round(crops / n_samples, 1)}
@@ -188,7 +190,7 @@ def run(cfg: RunConfig) -> dict:
         print(f"{state_path} says this run is finished; nothing to do")
         return {}
     torch.manual_seed(tc.seed)
-    model = MixedResModel(task, cfg.model).cuda()
+    model = build_model(task, cfg).cuda()
     if tc.init_ckpt:
         unused = load_legacy(model, tc.init_ckpt)
         print(f"warm start from {tc.init_ckpt} (unused keys: {len(unused)})")
@@ -205,8 +207,7 @@ def run(cfg: RunConfig) -> dict:
           for s in ("train", "val", "test")}
     b0 = next(iter(dl["val"]))
     example = (b0.ms, b0.ss)
-    build = build_step_selector if task.per_step else build_selector
-    selector = build(cfg.select, model, example)
+    selector = build_selector_for(task, cfg, model, example)
     nets = nn.ModuleList(selector.modules())
     if tc.init_selector:
         nets.load_state_dict(torch.load(f"checkpoints/{tc.init_selector}.pt", map_location="cpu",
@@ -239,7 +240,7 @@ def run(cfg: RunConfig) -> dict:
                                       factor=SCHEDULER_FACTOR, patience=SCHEDULER_PATIENCE,
                                       cooldown=SCHEDULER_COOLDOWN)
 
-    freeze_epochs = (0 if tc.init_ckpt
+    freeze_epochs = (tc.epochs if tc.head_only else 0 if tc.init_ckpt
                      else math.ceil(FREEZE_EPOCH_FRACTION * (S1 or tc.epochs)))
     loss_fn = task.loss().cuda()
     backbone = model.mix.encoder
@@ -253,7 +254,7 @@ def run(cfg: RunConfig) -> dict:
     if state_path.exists():
         st = torch.load(state_path, map_location="cpu", weights_only=False)
         start = st["epoch"]
-    opt, sched = make_opt(bool(tc.init_ckpt) or bool(S1 and start > S1))   # (= S1: the loop restarts it)
+    opt, sched = make_opt((bool(tc.init_ckpt) and not tc.head_only) or bool(S1 and start > S1))   # (= S1: the loop restarts it)
     set_attn(model, stage_attn(start))
     if state_path.exists():
         model.load_state_dict(st["model"]["model"])
@@ -290,7 +291,7 @@ def run(cfg: RunConfig) -> dict:
                                  else tc.oracle_p)
             print(f"epoch {epoch + 1}: oracle mix {tc.oracle_mix} p {selector.oracle_p:.3f}",
                   flush=True)
-        if epoch == freeze_epochs and not tc.init_ckpt:
+        if epoch == freeze_epochs and not tc.init_ckpt:  # (never under head_only)
             for g in opt.param_groups:
                 g["lr"] = tc.lr * UNFREEZE_LR_FACTOR
             print(f"epoch {epoch + 1}: backbone unfrozen, lr -> {tc.lr * UNFREEZE_LR_FACTOR:g}")
@@ -358,7 +359,7 @@ def run(cfg: RunConfig) -> dict:
         best_state["selector"] = {k: v.detach().cpu().clone() for k, v in nets.state_dict().items()}
     test, test_crops = evaluate(model, selector, task, dl["test"], tc.limit_batches)
     hours = hours_before + (time.time() - t_start) / 3600
-    cost = measure_compute(model, selector, dl["val"], tc.compute_batches)
+    cost = measure_compute(model, selector, dl[tc.compute_split], tc.compute_batches)
     print(f"TEST {name} (best val epoch {best_epoch}, val {best:.4f}): {_brief(test)} | "
           f"{test_crops:.0f} crops/sample | {cost['gmacs']:.2f} GMACs/sample "
           f"({cost['tokens_per_block']:.0f} tokens/block)", flush=True)

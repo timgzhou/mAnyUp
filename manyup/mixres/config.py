@@ -107,6 +107,17 @@ class SelectConfig:
 
 
 @dataclass
+class BaselineConfig:
+    """A published method to compare with, in place of the selector (manyup.mixres.baselines).
+    Its tokens: model.lr_patch at `tokens`; APT: lr_patch patches split to select.crop_px."""
+    method: str = "upsample"    # upsample | tldr | apt
+    tokens: str = "seasons"     # seasons | months: what one token sequence step is
+    upsampler: str = "anyup"    # upsample: bilinear | anyup | upa
+    r: str = "0.25,0.085,0.043"     # tldr: tokens merged per block, shares of the input tokens
+    keep: float = 0.5           # apt: share of coarse cells kept coarse (results/<task>/apt.json)
+
+
+@dataclass
 class TrainConfig:
     epochs: int = 50
     lr: float = 1e-3
@@ -133,6 +144,10 @@ class TrainConfig:
     #                                    training forward's season tokens (reaches the backbone)
     season_loss_detach: bool = False   # the per-season loss stops at model.season_heads (detached
     #                                    season tokens): the backbone learns from the task alone
+    head_only: bool = False            # backbone frozen, everything else at train.lr (a linear
+    #                                    probe on the init_ckpt model: the upsampler baselines)
+    compute_split: str = "val"         # the split GMACs are traced on (test: adaptive baselines
+    #                                    whose token count differs between val and test)
     freeze_model: bool = False         # train only the selector's networks on the init_ckpt
     #                                    model (frozen, eval mode); epochs=0: evaluate only
     epoch_samples: int = 0             # > 0: each epoch a random subset of that many training
@@ -154,6 +169,7 @@ class RunConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     select: SelectConfig = field(default_factory=SelectConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
+    baseline: BaselineConfig | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -166,6 +182,15 @@ class RunConfig:
         d = _hashable(self.to_dict(), _defaults())
         h = hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()[:8]
         s = self.select
+        if self.baseline is not None:
+            b = self.baseline
+            tag = (f"{b.method}-{b.tokens}" + {"upsample": f"-{b.upsampler}" + ("-lp" if self.train.head_only else ""),
+                                               "tldr": f"-r{b.r}", "apt": f"-keep{b.keep:g}"}[b.method])
+            geo = f"c{s.crop_px}" if b.method == "apt" else "c0"
+            warm = "_warm" if self.train.init_ckpt else ""
+            return (f"mixres_{self.task}_ps{self.model.lr_patch}_{tag}_n{s.n}_{geo}{warm}"
+                    f"_seed{self.train.seed}_{h}")
+
         def part(sc, al):
             return (f"{sc}-{al}" + (f"-{s.keep}" if al in KEEPS else "")
                     + (f"{s.month_step}" if al == "month_grid" else "")
@@ -222,6 +247,22 @@ class RunConfig:
     def check(self, task_kind: str):
         """Raise on a composition that cannot run."""
         s = self.select
+        if self.baseline is not None:
+            b = self.baseline
+            if (b.method not in ("upsample", "tldr", "apt") or b.tokens not in ("seasons", "months")
+                    or b.upsampler not in ("bilinear", "anyup", "upa")
+                    or s.quadrant or s.level2 or s.residual or s.time_allocator
+                    or self.model.attn != "joint" or self.model.inject_layer):
+                raise ValueError(f"baseline {b}: no selector options, attn joint, inject_layer 0")
+            if not self.train.init_ckpt:
+                raise ValueError("baseline: train.init_ckpt, the fixed-resolution model it starts from")
+            if self.train.compute_split not in ("val", "test"):
+                raise ValueError(f"train.compute_split {self.train.compute_split!r}: val | test")
+            if b.method == "tldr" and (self.train.epochs or not self.train.freeze_model):
+                raise ValueError("baseline tldr is training-free: train.epochs=0 train.freeze_model=1")
+            if b.method == "apt" and 2 * s.crop_px != self.model.lr_patch:
+                raise ValueError("baseline apt: select.crop_px = model.lr_patch / 2 (two scales)")
+            return
         cp = self.model.crop_patch
         if cp and (cp >= s.crop_px or s.crop_px % cp or s.level2):
             raise ValueError("model.crop_patch: a divisor of select.crop_px, finer, no level2")
@@ -360,7 +401,7 @@ LATE_DEFAULTS = {"select.quadrant.hs_ht": "all", "select.quadrant.hs_lt": "one",
                  "select.quadrant.space": "cell", "select.quadrant.rank": "weight",
                  "select.quadrant.unc": "entropy", "select.quadrant.offgrid": False}
 NOT_HASHED = {"train.num_workers", "train.max_hours", "train.limit_batches",
-              "train.compute_batches"}
+              "train.compute_batches", "train.compute_split"}
 
 
 def _defaults() -> dict:
@@ -399,7 +440,7 @@ def from_dict(cls, d: dict):
 def _dataclass_of(tp):
     """The dataclass in a field annotation like `Level2Config | None`, else None."""
     for c in (ResidualConfig, Level2Config, QuadrantConfig, SelectConfig, TrainConfig,
-              ModelConfig):
+              ModelConfig, BaselineConfig):
         if tp is c or (isinstance(tp, str) and c.__name__ in tp) or c in getattr(tp, "__args__", ()):
             return c
     return None

@@ -103,6 +103,8 @@ class ExitHead(nn.Module):
 
 
 class MixedResModel(nn.Module):
+    new_modules: tuple[str, ...] = ()     # state keys load_legacy may not find (a baseline's own)
+
     def __init__(self, task: Task, cfg: ModelConfig, pretrained: bool = True):
         super().__init__()
         if cfg.independent_steps and not task.per_step:
@@ -377,12 +379,13 @@ def load_legacy(model: MixedResModel, ckpt: str) -> list[str]:
     own = model.state_dict()
     missing = [k for k in own if k not in sd]
     exit_new = any(k.startswith("exit.") for k in missing)
-    missing = [k for k in missing if not k.startswith("exit.")]
+    extra = [k for k in missing if model.new_modules and k.startswith(model.new_modules)]
+    missing = [k for k in missing if not k.startswith("exit.") and k not in extra]
     new_heads = all(k.startswith("season_head.") for k in missing) and missing
     if missing and not new_heads:
         raise KeyError(f"{ckpt}: missing {missing[:5]}")
     model.load_state_dict({k: sd[k] for k in own if k in sd},
-                          strict=not (new_heads or exit_new))
+                          strict=not (new_heads or exit_new or extra))
     if new_heads:                       # per-season heads start as copies of the shared head
         for lin in model.season_head:
             lin.load_state_dict(model.head.linear.state_dict())
