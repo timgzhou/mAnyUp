@@ -113,6 +113,8 @@ class BaselineConfig:
     method: str = "upsample"    # upsample | tldr | apt
     tokens: str = "seasons"     # seasons | months: what one token sequence step is
     upsampler: str = "anyup"    # upsample: bilinear | anyup | upa
+    space: str = "features"     # upsample: features | predictions (the fixed model's probabilities
+    #                             on the token grid; bilinear, upa; training-free)
     r: str = "0.25,0.085,0.043"     # tldr: tokens merged per block, shares of the input tokens
     keep: float = 0.5           # apt: share of coarse cells kept coarse (results/<task>/apt.json)
 
@@ -184,7 +186,8 @@ class RunConfig:
         s = self.select
         if self.baseline is not None:
             b = self.baseline
-            tag = (f"{b.method}-{b.tokens}" + {"upsample": f"-{b.upsampler}" + ("-lp" if self.train.head_only else ""),
+            tag = (f"{b.method}-{b.tokens}" + {"upsample": f"-{b.upsampler}" + ("-pred" if b.space == "predictions" else "")
+                                               + ("-lp" if self.train.head_only else ""),
                                                "tldr": f"-r{b.r}", "apt": f"-keep{b.keep:g}"}[b.method])
             geo = f"c{s.crop_px}" if b.method == "apt" else "c0"
             warm = "_warm" if self.train.init_ckpt else ""
@@ -251,6 +254,8 @@ class RunConfig:
             b = self.baseline
             if (b.method not in ("upsample", "tldr", "apt") or b.tokens not in ("seasons", "months")
                     or b.upsampler not in ("bilinear", "anyup", "upa")
+                    or b.space not in ("features", "predictions")
+                    or (b.space == "predictions" and b.upsampler == "anyup")
                     or s.quadrant or s.level2 or s.residual or s.time_allocator
                     or self.model.attn != "joint" or self.model.inject_layer):
                 raise ValueError(f"baseline {b}: no selector options, attn joint, inject_layer 0")
@@ -258,8 +263,9 @@ class RunConfig:
                 raise ValueError("baseline: train.init_ckpt, the fixed-resolution model it starts from")
             if self.train.compute_split not in ("val", "test"):
                 raise ValueError(f"train.compute_split {self.train.compute_split!r}: val | test")
-            if b.method == "tldr" and (self.train.epochs or not self.train.freeze_model):
-                raise ValueError("baseline tldr is training-free: train.epochs=0 train.freeze_model=1")
+            if ((b.method == "tldr" or b.space == "predictions")
+                    and (self.train.epochs or not self.train.freeze_model)):
+                raise ValueError("training-free baseline: train.epochs=0 train.freeze_model=1")
             if b.method == "apt" and 2 * s.crop_px != self.model.lr_patch:
                 raise ValueError("baseline apt: select.crop_px = model.lr_patch / 2 (two scales)")
             return

@@ -229,9 +229,13 @@ def run(cfg: RunConfig) -> dict:
             opt = torch.optim.AdamW(list(nets.parameters()) or [torch.zeros(1)],
                                     lr=tc.lr)
         elif warm:          # loaded weights at the fine-tune rate, new modules at the full rate
-            groups = [{"params": list(model.parameters()), "lr": tc.lr * UNFREEZE_LR_FACTOR}]
-            if any(True for _ in nets.parameters()):
-                groups.append({"params": list(nets.parameters()), "lr": tc.lr})
+            own = [p for k, p in model.named_parameters()   # a baseline's new modules
+                   if model.new_modules and k.startswith(model.new_modules)]
+            ids = {id(p) for p in own}
+            groups = [{"params": [p for p in model.parameters() if id(p) not in ids],
+                       "lr": tc.lr * UNFREEZE_LR_FACTOR}]
+            if own or any(True for _ in nets.parameters()):
+                groups.append({"params": own + list(nets.parameters()), "lr": tc.lr})
             opt = torch.optim.AdamW(groups)
         else:
             opt = torch.optim.AdamW(list(model.parameters()) + list(nets.parameters()),

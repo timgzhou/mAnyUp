@@ -26,14 +26,17 @@ tiles and loaders. Models, thresholds and learning rates are chosen on val only.
 **AnyUp.** The multi-backbone checkpoint without NATTEN, as published. Each step upsamples alone
 with its own RGB composite, to image resolution; a per-pixel linear head and the fixed model's
 time attention follow. Guidance is percentile-stretched instead of min-max (PASTIS nodata frames
-reach -10000), then ImageNet-standardized. Also run with the backbone fine-tuned through it.
+reach -10000), then ImageNet-standardized. Also run with the backbone and head fine-tuned through the frozen
+AnyUp weights (the backbone at lr x 0.1, the new head at lr).
 
 **Upsample Anything.** The code's settings, where code and paper disagree: bicubic, Adam 1e-1,
 51 updates. Range term summed over the 3 channels (`JBU(range_sum=True)`; the legacy UPA/UPMA
 runs average). RGB in [0, 1] comes from the percentile stretch rather than 8-bit images. Fitted at
 test time on the bilinear run's head. Output tokens are convex combinations for both, so the head
 transfers. The fit is elementwise arithmetic the tracer cannot see: `upsample.fit_macs` adds it
-(column `gmacs_analytic`, part of `gmacs`).
+(column `gmacs_analytic`, part of `gmacs`). `baseline.space=predictions` upsamples the fixed
+model's probabilities instead (upstream's `prob_upsample` cookbook): pooled to the token grid, one
+pass guided by the mean RGB, no training; bilinear is its control.
 
 **vid-TLDR.** One sequence over the months in (t, row, col) order. `get_objective_score`, `merging`
 and the size weighting are upstream's; `exp.baselines.check` compares them. r is a share of the

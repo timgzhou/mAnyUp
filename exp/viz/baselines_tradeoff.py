@@ -17,9 +17,12 @@ from exp.viz import datasets_tradeoff as dt  # noqa: E402
 TASKS = (("pastis", "PASTIS (crop types)", "test mIoU", False),
          ("biomassters", "BioMassters (biomass)", "test RMSE", True))
 ARM = re.compile(r"^mixres_\w+?_ps(?P<ps>\d+)_(?P<tag>(?:upsample|tldr|apt)-[^_]*(?:_lr)?)_n\d+_")
-LABEL = (("upsample-seasons-bilinear", "bilinear (seasons)", "0.6", "o"),
+LABEL = (("upsample-seasons-bilinear-pred", "bilinear, predictions", "0.3", "v"),
+         ("upsample-seasons-upa-pred", "Upsample Anything, predictions", "C2", "v"),
+         ("upsample-seasons-anyup-lp", "AnyUp, head only", "C0", "o"),
+         ("upsample-seasons-bilinear", "bilinear (seasons)", "0.6", "o"),
          ("upsample-months-bilinear", "bilinear (months)", "0.6", "s"),
-         ("upsample-seasons-anyup", "AnyUp (seasons)", "C0", "o"),
+         ("upsample-seasons-anyup", "AnyUp, joint fine-tune", "C9", "o"),
          ("upsample-months-anyup", "AnyUp (months)", "C0", "s"),
          ("upsample-seasons-upa", "Upsample Anything", "C2", "o"),
          ("tldr-months", "vid-TLDR", "C3", "^"),

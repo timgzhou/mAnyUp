@@ -13,6 +13,10 @@ readout score. Guidance: per-frame 2-98 percentile stretch, not AnyUp's usual mi
 Upsample Anything's kernels depend on the guidance alone, so its output is a convex combination
 of the tokens, like bilinear's: it can take a bilinear run's head and fit at test time only.
 
+baseline.space predictions (upstream's prob_upsample cookbook; training-free): the fixed model's
+own output as probabilities (regression: values), area-pooled to the token grid, upsampled in one
+pass guided by the sample's mean RGB over its used steps. Logs of the result are the logits.
+
 Upsample Anything's fit is elementwise arithmetic the MAC tracer does not see: fit_macs.
 """
 import torch
@@ -65,11 +69,30 @@ class UpsampleModel(BaselineModel):
         self._guide = rgb_frames(self.task, ss, self.cfg.lr_patch)
         return ms, ss, season, present
 
+    def _predictions(self, lr_F, hr_F, plans, season, present, months):
+        """The fixed model's prediction -> token grid -> upsampled (B, C, 64, 64)."""
+        z = super().decode(lr_F, hr_F, plans, season, present).float()
+        B, C = z.shape[:2]
+        P, lo = self._guide.shape[-1], self.lo
+        cls = self.task.kind == "classification"
+        z = F.pad(z.softmax(1) if cls else z, (lo,) * 4, mode="replicate")
+        low = F.avg_pool2d(z, self.cfg.lr_patch)
+        w = (months > 0).float()[:, :, None, None, None]
+        guide = percentile_per_image((self._guide * w).sum(1) / w.sum(1))
+        if self.run_cfg.baseline.upsampler == "upa":
+            add_macs(fit_macs(B, P, C))
+        up = self.upsampler.upsample_frames(low, guide, (P, P))[..., lo:P - lo, lo:P - lo]
+        return up.clamp(min=1e-8).log() if cls else up
+
     def decode(self, lr_F, hr_F, plans, season, present, logw=None):
         if plans:
             raise ValueError("upsample baseline: no crops")
         B, S, h, w, D = lr_F.shape
         P = self._guide.shape[-1]
+        if self.run_cfg.baseline.space == "predictions":
+            months = (F.one_hot(season.clamp(min=0), S).float()
+                      * (present & (season >= 0)).float()[..., None]).sum(1)
+            return self._predictions(lr_F, hr_F, plans, season, present, months)
         months = (F.one_hot(season.clamp(min=0), S).float()
                   * (present & (season >= 0)).float()[..., None]).sum(1)         # (B, S)
         used = months > 0
