@@ -1,0 +1,9 @@
+job,setup,run,q_s,q_t,quadrant,share,pooled_loss,season_spread,attn_saved
+6721961,s16m8,mixres_pastis_ps16_entropy-top+season_residual-every_location-one-resoraclexattn_conv-noneprior_n16_c8s8_warm_seed0_b90b0ab1,0.25,0.5,hs_ht,0.10834,0.96756,1.03171,0.71754
+6721961,s16m8,mixres_pastis_ps16_entropy-top+season_residual-every_location-one-resoraclexattn_conv-noneprior_n16_c8s8_warm_seed0_b90b0ab1,0.25,0.5,hs_lt,0.14166,1.06556,1.32403,0.78837
+6721961,s16m8,mixres_pastis_ps16_entropy-top+season_residual-every_location-one-resoraclexattn_conv-noneprior_n16_c8s8_warm_seed0_b90b0ab1,0.25,0.5,ls_ht,0.39166,0.61497,0.70015,0.67038
+6721961,s16m8,mixres_pastis_ps16_entropy-top+season_residual-every_location-one-resoraclexattn_conv-noneprior_n16_c8s8_warm_seed0_b90b0ab1,0.25,0.5,ls_lt,0.35834,0.6527,1.1852,0.81427
+6721962,s8m4,mixres_pastis_ps8_entropy-top+season_residual-every_location-one-resoraclexattn_conv-noneprior_n64_c4_warm_seed0_74793e23,0.25,0.5,hs_ht,0.11312,0.94371,0.65659,0.2691
+6721962,s8m4,mixres_pastis_ps8_entropy-top+season_residual-every_location-one-resoraclexattn_conv-noneprior_n64_c4_warm_seed0_74793e23,0.25,0.5,hs_lt,0.13688,0.9756,0.90662,0.54583
+6721962,s8m4,mixres_pastis_ps8_entropy-top+season_residual-every_location-one-resoraclexattn_conv-noneprior_n64_c4_warm_seed0_74793e23,0.25,0.5,ls_ht,0.38688,0.52725,0.32531,0.21714
+6721962,s8m4,mixres_pastis_ps8_entropy-top+season_residual-every_location-one-resoraclexattn_conv-noneprior_n64_c4_warm_seed0_74793e23,0.25,0.5,ls_lt,0.36312,0.50147,0.60827,0.60015

@@ -23,3 +23,8 @@ job,run,task,model_size,samples_traced,gmacs,gmacs_attention,gmacs_other,tokens_
 5962795,ps4ts32_ts,biomassters,tiny,8,168.36,114.832,53.529,9984.0,2496,,3.66,0.19
 5962794,ps16ts16_pd,biomassters,tiny,8,3.364,0.011,3.353,624.0,4,,3.77,0.07
 5962795,ps16ts32_ts,biomassters,tiny,8,3.795,0.449,3.346,624.0,156,,3.66,0.06
+6822440,ps14ts70_ts,biomassters,tiny,8,9.609,4.38,5.228,975.0,975,,5.43,0.07
+6827139,ps14ts70_ts,biomassters,tiny,8,9.609,4.38,5.228,975.0,975,,5.57,0.07
+6827139,ps12ts72_ts,biomassters,tiny,8,16.612,9.083,7.528,1404.0,1404,,5.61,0.07
+6827139,ps10ts70_ts,biomassters,tiny,8,27.075,16.828,10.247,1911.0,1911,,5.17,0.08
+6827139,ps6ts66_ts,biomassters,tiny,8,127.916,102.615,25.301,4719.0,4719,,5.62,0.12

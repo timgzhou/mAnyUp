@@ -36,6 +36,13 @@ zero-init linear map: harmonics 1 .. n / 2 of the year, so one day turns the top
              same depth (a prefix: lr never reads crops, crops never read each other)
     overlap  oneway, lr keys limited to the tokens of the lr cell under the crop's centre
              (every lr step and band set of that cell)
+    cross    the lr sequence on its own; every crop token reads ONLY its sample's lr tokens at
+             the same depth (cross-attention, crops as queries, lr as keys / values: not even
+             its own crop's other band sets)
+    cross_hr cross, + every crop token of its sample as keys / values (crops read lr and all
+             of the sample's crops; lr never reads crops)
+    (oneway / cross / cross_hr: the lr tokens are the crop-free pass's, so inference can reuse
+    that pass and pay only for the crop tokens: tail_multi(lr_enc=...))
 
 `head_attn` (what a crop reads in blocks [0, L), before it joins the lr sequence; needs L > 0):
     alone    its own tokens only (the above)
@@ -60,7 +67,7 @@ from olmoearth_pretrain.nn.flexi_vit import PositionEncoding
 from olmoearth_pretrain.nn.utils import get_cumulative_sequence_lengths
 from torch import nn
 
-from manyup.encoders.olmoearth import pool_timestep
+from manyup.encoders.olmoearth import _pad_space, _spatial_size, pool_timestep
 
 
 @dataclass
@@ -123,7 +130,7 @@ def sincos_2d(py: torch.Tensor, px: torch.Tensor, dim: int) -> torch.Tensor:
 
 
 POS = ("corner", "center", "box")
-ATTN = ("joint", "oneway", "overlap")
+ATTN = ("joint", "oneway", "overlap", "cross", "cross_hr")
 HEAD_ATTN = ("alone", "oneway", "overlap")
 MAX_SEQS = 32768            # sequences per FlashAttention varlen call (see MixedResOE.blocks)
 
@@ -173,6 +180,17 @@ class MixedResOE(nn.Module):
         `slot` (S,) replaces time slot 0 and (py, px) (S,) top-left pixel positions replace
         (0, 0) (moved to the crop's centre in the lr frame under pos "center")."""
         enc = self.encoder
+        if slot is None and _spatial_size(sample) % patch_size:   # ps12 seasons on 64 px: the
+            hs = _spatial_size(sample)                            # tile padded (readout out_px)
+            sample = _pad_space(sample, -(-hs // patch_size) * patch_size)
+        if hasattr(enc, "mixres_embed"):    # a non-OlmoEarth backbone tokenizes itself, tokens
+            # placed at their centres (manyup.encoders.prithvi)
+            if self.pos != "center" or self.use_doy:
+                raise ValueError(f"{type(enc).__name__}: pos center, no doy")
+            x, mask, dims, masks = enc.mixres_embed(sample, patch_size, slot, py, px)
+            keep = mask == MaskValue.ONLINE_ENCODER.value
+            yx = (torch.stack([py, px], 1).float() + patch_size / 2) if slot is not None else None
+            return Packed(x[keep], keep.sum(1), keep, dims, masks, yx)
         x = enc.patch_embeddings.forward(sample, patch_size)
         tokens, masks, dims = enc.split_tokens_masks_and_dims(x)
         tokens = enc.composite_encodings.forward(tokens, sample.timestamps, patch_size, BASE_GSD)
@@ -284,18 +302,22 @@ class MixedResOE(nn.Module):
         lr_x, (hr_x,) = self.tail_multi(lr, [(hr, owner)])
         return lr_x, hr_x
 
-    def tail_multi(self, lr: Packed, crop_sets: list[tuple[Packed, torch.Tensor]]
+    def tail_multi(self, lr: Packed, crop_sets: list[tuple[Packed, torch.Tensor]],
+                   lr_enc: tuple[list[torch.Tensor], torch.Tensor] | None = None
                    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """tail with several crop sets (e.g. month crops, S2 date crops, S1 date crops), each
         (Packed, owner (N_set,)); every lr sequence is joined by the crops of every set it
-        owns. -> (lr tokens (N_lr, D), [tokens of each set])."""
+        owns. -> (lr tokens (N_lr, D), [tokens of each set]). lr_enc: lr_trace(lr) of the
+        crop-free pass, reused by the attn modes where lr never reads crops."""
         S = len(lr.seqlens)
         crop_sets = [(p, o) for p, o in crop_sets if o is not None and len(o)]
         if not crop_sets:
+            if lr_enc is not None and self.attn != "joint":     # the crop-free pass itself
+                return lr_enc[1], []
             return self.encoder.norm(self.blocks(lr.x, lr.seqlens, self.L,
                                                  len(self.encoder.blocks))), []
         if self.attn != "joint":
-            return self._tail_oneway(lr, crop_sets)
+            return self._tail_oneway(lr, crop_sets, lr_enc)
         dev = lr.x.device
         seq = torch.cat([torch.repeat_interleave(torch.arange(S, device=dev), lr.seqlens)]
                         + [torch.repeat_interleave(o.to(dev), p.seqlens) for p, o in crop_sets])
@@ -323,13 +345,64 @@ class MixedResOE(nn.Module):
                 cells.append(torch.full((n,), -1, device=lr.x.device))
         return torch.cat(cells).expand(len(lr.seqlens), -1)[lr.keep]
 
-    def _tail_oneway(self, lr: Packed, crop_sets: list[tuple[Packed, torch.Tensor]]
+    def lr_trace(self, lr: Packed) -> tuple[list[torch.Tensor], torch.Tensor]:
+        """blocks [L, n) + norm on the lr sequences alone -> (their tokens entering each block,
+        the normed output): what tail_multi(lr_enc=...) reuses."""
+        trace, x = self._lr_trace(lr.x, lr.seqlens, self.L, len(self.encoder.blocks))
+        return trace, self.encoder.norm(x)
+
+    def _tail_oneway(self, lr: Packed, crop_sets: list[tuple[Packed, torch.Tensor]],
+                     lr_enc: tuple[list[torch.Tensor], torch.Tensor] | None = None
                      ) -> tuple[torch.Tensor, list[torch.Tensor]]:
-        """tail_multi for attn "oneway" / "overlap": the lr sequence on its own, the crops
-        reading it."""
-        trace, x_lr = self._lr_trace(lr.x, lr.seqlens, self.L, len(self.encoder.blocks))
-        outs = self._crop_blocks(lr, trace, crop_sets, self.L, self.attn == "overlap")
-        return self.encoder.norm(x_lr), [self.encoder.norm(o) for o in outs]
+        """tail_multi for attn "oneway" / "overlap" / "cross" / "cross_hr": the lr sequence on
+        its own (or lr_enc, its earlier run), the crops reading it."""
+        trace, x_lr = self.lr_trace(lr) if lr_enc is None else lr_enc
+        if self.attn in ("cross", "cross_hr"):
+            outs = self._cross_blocks(lr, trace, crop_sets, self.L, self.attn == "cross_hr")
+        else:
+            outs = self._crop_blocks(lr, trace, crop_sets, self.L, self.attn == "overlap")
+        return x_lr, [self.encoder.norm(o) for o in outs]
+
+    def _cross_blocks(self, lr: Packed, trace: list[torch.Tensor],
+                      crop_sets: list[tuple[Packed, torch.Tensor]], lo: int, with_hr: bool
+                      ) -> list[torch.Tensor]:
+        """Blocks lo, lo + 1, .. (one per entry of trace = the lr tokens entering that block)
+        on the crop tokens alone, with the blocks' own weights: varlen FlashAttention with the
+        crop tokens of each sample as queries and, as keys / values, that sample's lr tokens
+        (with_hr: + all of its crop tokens). -> each set's tokens."""
+        import flash_attn                   # (looked up per call: exp.bench.flop_trace wraps it)
+        S, dev = len(lr.seqlens), lr.x.device
+        x_c = torch.cat([self._typed(p, lr.x.dtype) for p, _ in crop_sets])
+        crop_len = torch.cat([p.seqlens for p, _ in crop_sets])                # (C,)
+        owner = torch.cat([o.to(dev) for _, o in crop_sets])                   # (C,)
+        t_s = torch.repeat_interleave(owner, crop_len)                         # token -> sample
+        order = torch.argsort(t_s, stable=True)                                # queries by sample
+        n_q = torch.bincount(t_s, minlength=S)
+        n_k = lr.seqlens + (n_q if with_hr else 0)
+        cu_q, cu_k = (get_cumulative_sequence_lengths(n) for n in (n_q, n_k))
+        if with_hr:                         # keys: each sample's lr tokens, then its crop tokens
+            k_seq = torch.cat([torch.repeat_interleave(torch.arange(S, device=dev), lr.seqlens),
+                               t_s[order]])
+            k_order = torch.argsort(k_seq, stable=True)
+        max_q, max_k = int(n_q.max()), int(n_k.max())     # (once: a GPU -> CPU sync each)
+        for blk, x_lr in zip(self.encoder.blocks[lo:], trace):
+            a = blk.attn
+            if a.attn_drop.p or PositionEncoding.is_rope(a.position_encoding):
+                raise ValueError("cross attention: no attention dropout, absolute positions")
+            heads = lambda v: v.view(len(v), a.num_heads, -1)                  # noqa: E731
+            n_lr, n_c = blk.norm1(x_lr), blk.norm1(x_c[order])
+            q = a.q_norm(heads(a.q(n_c)))
+            k, v = a.k_norm(heads(a.k(n_lr))), heads(a.v(n_lr))
+            if with_hr:
+                k = torch.cat([k, a.k_norm(heads(a.k(n_c)))])[k_order]
+                v = torch.cat([v, heads(a.v(n_c))])[k_order]
+            out = flash_attn.flash_attn_varlen_func(
+                q, k.to(q.dtype), v.to(q.dtype), cu_q, cu_k, max_q, max_k, softmax_scale=a.scale)
+            y = torch.empty_like(x_c)
+            y[order] = blk.ls1(a.proj_drop(a.proj(out.reshape(len(out), -1)))).to(x_c.dtype)
+            x_c = x_c + blk.drop_path(y)
+            x_c = x_c + blk.drop_path(blk.ls2(blk.mlp(blk.norm2(x_c))))
+        return list(torch.split(x_c, [len(p.x) for p, _ in crop_sets]))
 
     def _crop_blocks(self, lr: Packed, trace: list[torch.Tensor],
                      crop_sets: list[tuple[Packed, torch.Tensor]], lo: int, overlap: bool

@@ -9,7 +9,7 @@ exp.mixres.check_data checks the two give identical batches.
 from dataclasses import dataclass, replace
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, RandomSampler
 from torch.utils.data._utils.pin_memory import pin_memory as _pin
 
 from exp.common.tasks import Task
@@ -117,8 +117,14 @@ class Collate:
 
 
 def loader(task: Task, split: str, batch_size: int, num_workers: int, shuffle: bool,
-           dates: bool = False) -> DataLoader:
-    return DataLoader(Paired(task, split, dates), batch_size=batch_size, shuffle=shuffle,
+           dates: bool = False, epoch_samples: int = 0) -> DataLoader:
+    """epoch_samples > 0 (shuffled splits): each pass draws that many samples without
+    replacement (a fresh random subset per epoch)."""
+    ds = Paired(task, split, dates)
+    sampler = (RandomSampler(ds, num_samples=epoch_samples)
+               if shuffle and 0 < epoch_samples < len(ds) else None)
+    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle and sampler is None,
+                      sampler=sampler,
                       num_workers=num_workers, collate_fn=Collate(task, dates),
                       # dates: a batch holds ~1.4 GB of raw frames of changing length; pinned,
                       # the CUDA host allocator kept ~29 GB of blocks (legacy, 2026-10-04)

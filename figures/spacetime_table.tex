@@ -1,0 +1,33 @@
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lcccccc}
+\toprule
+ & \multicolumn{3}{c}{ps16 sea + ps8 mon} & \multicolumn{3}{c}{ps8 sea + ps4 mon} \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-7}
+$n$ & 8 & 16 & 32 & 32 & 64 & 128 \\
+\midrule
+No crops & \multicolumn{3}{c}{0.431} & \multicolumn{3}{c}{0.523} \\
+\midrule
+\multicolumn{7}{l}{\emph{one season}} \\
+Grid & 0.447 {\scriptsize(2.5)} & 0.453 {\scriptsize(3.4)} & 0.468 {\scriptsize(5.5)} & 0.541 {\scriptsize(17.0)} & 0.536 {\scriptsize(24.8)} & 0.543 {\scriptsize(44.5)} \\
+Random & 0.445 {\scriptsize(2.5)} & 0.453 {\scriptsize(3.3)} & 0.468 {\scriptsize(5.1)} & 0.543 {\scriptsize(16.4)} & 0.536 {\scriptsize(23.4)} & 0.554 {\scriptsize(40.9)} \\
+Entropy + learned & 0.466 {\scriptsize(4.4)} & 0.488 {\scriptsize(5.3)} & 0.505 {\scriptsize(7.3)} & 0.551 {\scriptsize(27.9)} & 0.548 {\scriptsize(34.9)} & 0.559 {\scriptsize(54.6)} \\
+Entropy + attention & 0.469 {\scriptsize(4.3)} & 0.487 {\scriptsize(5.1)} & 0.518 {\scriptsize(7.2)} & 0.559 {\scriptsize(27.5)} & 0.552 {\scriptsize(34.4)} & 0.571 {\scriptsize(54.9)} \\
+\quad global threshold & 0.475 {\scriptsize(4.5)} & \textbf{0.498} {\scriptsize(5.6)} & \textbf{0.525} {\scriptsize(7.6)} & \textbf{0.562} {\scriptsize(30.3)} & \textbf{0.554} {\scriptsize(39.1)} & \textbf{0.578} {\scriptsize(60.3)} \\
+\quad\quad cross attention & \textbf{0.480} {\scriptsize(3.0)} & 0.497 {\scriptsize(3.8)} & 0.517 {\scriptsize(5.8)} & 0.560 {\scriptsize(18.4)} & 0.552 {\scriptsize(24.2)} & 0.569 {\scriptsize(41.8)} \\
+\midrule
+\multicolumn{7}{l}{\emph{two seasons}} \\
+Grid & 0.451 {\scriptsize(3.4)} & 0.467 {\scriptsize(5.5)} & 0.503 {\scriptsize(10.6)} & 0.548 {\scriptsize(24.8)} & 0.547 {\scriptsize(44.5)} & 0.565 {\scriptsize(100.2)} \\
+Random & 0.450 {\scriptsize(3.3)} & 0.467 {\scriptsize(5.1)} & 0.489 {\scriptsize(9.6)} & 0.543 {\scriptsize(23.4)} & 0.547 {\scriptsize(40.8)} & 0.566 {\scriptsize(89.4)} \\
+Entropy + learned & 0.471 {\scriptsize(5.2)} & 0.493 {\scriptsize(7.3)} & 0.528 {\scriptsize(12.0)} & 0.557 {\scriptsize(35.4)} & 0.556 {\scriptsize(52.6)} & 0.579 {\scriptsize(107.7)} \\
+Entropy + attention & 0.471 {\scriptsize(5.1)} & 0.492 {\scriptsize(7.2)} & 0.533 {\scriptsize(12.0)} & 0.561 {\scriptsize(35.1)} & 0.555 {\scriptsize(51.6)} & 0.580 {\scriptsize(107.4)} \\
+\quad global threshold & \textbf{0.485} {\scriptsize(5.8)} & \textbf{0.506} {\scriptsize(8.4)} & 0.539 {\scriptsize(13.6)} & 0.564 {\scriptsize(42.5)} & \textbf{0.564} {\scriptsize(64.9)} & 0.580 {\scriptsize(126.7)} \\
+\quad\quad cross attention & 0.480 {\scriptsize(4.1)} & 0.504 {\scriptsize(6.2)} & \textbf{0.541} {\scriptsize(11.0)} & \textbf{0.566} {\scriptsize(28.4)} & 0.563 {\scriptsize(45.2)} & \textbf{0.581} {\scriptsize(94.9)} \\
+\cmidrule(lr){1-7}
+Entropy, all months & 0.486 {\scriptsize(6.8)} & 0.516 {\scriptsize(11.3)} & 0.537 {\scriptsize(23.8)} & 0.568 {\scriptsize(51.3)} & 0.580 {\scriptsize(99.9)} & 0.590 {\scriptsize(251.8)} \\
+\bottomrule
+\end{tabular}
+\caption{PASTIS test mIoU (GMACs per sample in parentheses) when choosing both \emph{where} and \emph{when}: each method picks $n$ spatial locations and, at each, one or two seasons of monthly crops ($\approx n \times \frac{12}{4} \times M$ or $n \times \frac{12}{2} \times M$ additional tokens, $M$ modalities). Grid: a regular lattice of locations, every 4th / 2nd month. Random: random locations and seasons. Entropy + learned: the highest-entropy locations of the model's own crop-free pass, each with the seasons of lowest learned score (trained on the true per-season loss ranking; no labels at test). Entropy + attention: the same locations, each with the seasons the readout attends to most in the crop-free pass (no trained scorer). Entropy, all months: the same locations with every month (space only, for reference). Global threshold: the same, but a location is picked when its entropy exceeds the validation split's $(1 - n / N)$ quantile ($N$ candidate windows), so each tile gets as many crops as it needs; the GMACs are the test-set average. Every row uses full self-attention over season and crop tokens except cross attention: crop tokens attend to the season tokens and to the tile's other crops, season tokens never to crops, so the crop-free pass is reused and only the crop tokens are computed again. Entropy GMACs include the crop-free pass. Fixed-resolution references: S16 seasonal .429 (1.7), S16 monthly .462 (6.3), S8 seasonal .525 (10.6), S8 monthly .572 (53.7), S4 seasonal .570 (100.2), S4 monthly .614 (673.2).}
+\label{tab:spacetime}
+\end{table}

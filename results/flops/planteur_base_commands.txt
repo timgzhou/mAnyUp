@@ -1,0 +1,6 @@
+exp.upsamplers.finetune_inject --task planteur --epochs 50 --selector none --readout native_set --lr_patch 16 --num_workers 2 --batch_size 2 --flops 4
+exp.upsamplers.finetune_inject --task planteur --epochs 50 --selector none --readout native_set --lr_steps all --lr_patch 16 --num_workers 2 --batch_size 2 --flops 4
+exp.upsamplers.finetune_inject --task planteur --epochs 50 --selector none --readout native_set --lr_patch 8 --num_workers 2 --batch_size 2 --flops 4
+exp.upsamplers.finetune_inject --task planteur --epochs 50 --selector none --readout native_set --lr_steps all --lr_patch 8 --num_workers 2 --batch_size 2 --flops 4
+exp.upsamplers.finetune_inject --task planteur --epochs 50 --selector none --readout native_set --lr_patch 4 --num_workers 2 --batch_size 2 --flops 4
+exp.upsamplers.finetune_inject --task planteur --epochs 50 --selector none --readout native_set --lr_steps all --lr_patch 4 --num_workers 2 --batch_size 2 --flops 4

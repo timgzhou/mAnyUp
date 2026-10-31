@@ -254,3 +254,92 @@ class YieldMeter:
             out[f"group_mean_{k}"] = sum(v) / len(v) if v else float("nan")
         out["primary"] = out.get("rmse", float("nan"))
         return out
+
+
+class StepMeter:
+    """Binary segmentation with a label at EVERY step (EuroMineNet's annual mine masks):
+    logits (B, T, 2, H, W), target (B, T, H, W) in {0, 1, IGNORE}. Counts are pooled over
+    every (pixel, step) of the split (the paper averages over sites weighted by pixels).
+
+      of1               F1 of the positive class over every (pixel, step): the paper's OF1;
+                        primary
+      f1_<year>         the same per step
+      miou, iou_<name>  2-class IoU over every (pixel, step)
+      lca_tiou          change-aware temporal IoU (the paper's Eq. 3-4): for a step pair
+      gca_tiou          (i, j), |P_i & P_j & U| / |(P_i | P_j) & U| with U the pixels whose
+                        label is the same at i and j, pooled over the split; lca averages it
+                        over consecutive pairs, gca over every pair
+      cf1_<k>y, cf1     post-classification change F1: change = label (prediction) differs
+                        between steps i < j; per interval k = j - i, and pooled over every pair
+      dyn_f1            F1 at the pixels whose label changes at some step (where time matters)
+    """
+    higher_is_better = True
+
+    def __init__(self, steps: tuple[str, ...], names: tuple[str, str] = ("background", "positive"),
+                 ignore_label: int = IGNORE_LABEL):
+        self.steps, self.names, self.ignore = steps, names, ignore_label
+        T = len(steps)
+        self.pairs = [(i, j) for i in range(T) for j in range(i + 1, T)]
+        self.conf = torch.zeros(T, 2, 2, dtype=torch.float64)      # per step, true x pred
+        self.ti = torch.zeros(len(self.pairs), 2, dtype=torch.float64)   # (inter, union) in U
+        self.cd = torch.zeros(len(self.pairs), 3, dtype=torch.float64)   # change tp, fp, fn
+        self.dyn = torch.zeros(3, dtype=torch.float64)                   # tp, fp, fn
+
+    def update(self, logits: torch.Tensor, target: torch.Tensor) -> None:
+        pred = logits.argmax(2)                                          # (B, T, H, W)
+        tgt = target.to(pred.device).long()
+        ok = tgt != self.ignore
+        p, g = pred.bool(), tgt == 1
+        T = len(self.steps)
+        for t in range(T):
+            o = ok[:, t]
+            for a in (0, 1):
+                for b in (0, 1):
+                    self.conf[t, a, b] += float((o & (g[:, t] == a) & (p[:, t] == b)).sum())
+        i, j = (torch.tensor(v, device=pred.device) for v in zip(*self.pairs))
+        o = ok[:, i] & ok[:, j]                                          # (B, n_pairs, H, W)
+        U = o & (g[:, i] == g[:, j])
+        self.ti[:, 0] += (p[:, i] & p[:, j] & U).sum((0, 2, 3)).double().cpu()
+        self.ti[:, 1] += ((p[:, i] | p[:, j]) & U).sum((0, 2, 3)).double().cpu()
+        gc, pc = (g[:, i] != g[:, j]) & o, (p[:, i] != p[:, j]) & o
+        self.cd[:, 0] += (gc & pc).sum((0, 2, 3)).double().cpu()
+        self.cd[:, 1] += (~gc & pc).sum((0, 2, 3)).double().cpu()
+        self.cd[:, 2] += (gc & ~pc).sum((0, 2, 3)).double().cpu()
+        dyn = (gc.any(1))[:, None] & ok                                  # (B, T, H, W)
+        self.dyn[0] += float((dyn & g & p).sum())
+        self.dyn[1] += float((dyn & ~g & p).sum())
+        self.dyn[2] += float((dyn & g & ~p).sum())
+
+    def merge(self, other: "StepMeter") -> "StepMeter":
+        for k in ("conf", "ti", "cd", "dyn"):
+            setattr(self, k, getattr(self, k) + getattr(other, k))
+        return self
+
+    @staticmethod
+    def _f1(tp, fp, fn):
+        d = 2 * tp + fp + fn
+        return float(2 * tp / d) if d > 0 else float("nan")
+
+    def compute(self) -> dict[str, float]:
+        c = self.conf.sum(0)
+        tp, fp, fn = c[1, 1], c[0, 1], c[1, 0]
+        tn = c[0, 0]
+        iou = [float(tn / (tn + fp + fn)) if tn + fp + fn > 0 else float("nan"),
+               float(tp / (tp + fp + fn)) if tp + fp + fn > 0 else float("nan")]
+        out = {"of1": self._f1(tp, fp, fn), "miou": sum(iou) / 2,
+               "overall_acc": float((tp + tn) / c.sum().clamp(min=1))}
+        for n, v in zip(self.names, iou):
+            out[f"iou_{n}"] = v
+        for t, s in enumerate(self.steps):
+            out[f"f1_{s}"] = self._f1(self.conf[t, 1, 1], self.conf[t, 0, 1], self.conf[t, 1, 0])
+        r = self.ti[:, 0] / self.ti[:, 1].clamp(min=1)
+        cons = torch.tensor([j - i == 1 for i, j in self.pairs])
+        out["lca_tiou"], out["gca_tiou"] = float(r[cons].mean()), float(r.mean())
+        k = torch.tensor([j - i for i, j in self.pairs])
+        for d in range(1, len(self.steps)):
+            s = self.cd[k == d].sum(0)
+            out[f"cf1_{d}y"] = self._f1(*s)
+        out["cf1"] = self._f1(*self.cd.sum(0))
+        out["dyn_f1"] = self._f1(*self.dyn)
+        out["primary"] = out["of1"]
+        return out

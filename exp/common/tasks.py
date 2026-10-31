@@ -35,10 +35,14 @@ from dataclasses import dataclass, field
 import torch
 from torch import nn
 
-from exp.common.metrics import RegMeter, SegMeter, YieldMeter
+from exp.common.metrics import RegMeter, SegMeter, StepMeter, YieldMeter
 from exp.common.paths import TILESTORE
 from manyup.data import All, MTMMBatch, MTMMDataset, Pool, PoolYears, TemporalPolicy, Tiling
 from manyup.data.datasets.biomassters import PLACEHOLDER_YEAR, BiomasstersDataset
+from manyup.data.datasets.euromine import BANDS as EUROMINE_BANDS
+from manyup.data.datasets.euromine import LABEL_QUARTERS as EUROMINE_LABEL_QUARTERS
+from manyup.data.datasets.euromine import YEARS as EUROMINE_YEARS
+from manyup.data.datasets.euromine import EuroMineDataset, decode_years
 from manyup.data.datasets.geoidflood import ChipSelection, GeoidFloodDataset
 from manyup.data.datasets.pastis import AGRI_YEAR, CLASS_NAMES, PastisDataset
 from manyup.data.datasets.planteur import CLASS_NAMES as PLANTEUR_CLASSES
@@ -90,6 +94,8 @@ class Task:
     # seasonal timAnyUp (manyup/seasonal.py): steps per season of the low-res input
     # (GroupSteps after policies()): 3 months, or GEOID's pre/post pair as one step
     season: int
+    # a label at every step (target (B, T, H, W)): manyup.mixres decodes one map per step
+    per_step: bool = False
 
     def policies(self) -> dict[str, TemporalPolicy]:
         """The time setup OlmoEarth sees, per modality."""
@@ -240,6 +246,13 @@ class PastisS2(Pastis):
 
     def policies(self):
         return {"S2": Pool("month", "mean", window=AGRI_YEAR)}
+
+
+class PastisS2Months(PastisS2):
+    """pastis_s2 whose low-res steps are the months themselves (manyup.mixres's uniform pass with
+    no crops = the fixed monthly model at model.lr_patch, through the same readout)."""
+    name = "pastis_s2_mon"
+    season = 1
 
 
 # ---- PLANTEUR --------------------------------------------------------------------------------
@@ -468,6 +481,16 @@ class GeoidSeriesFlood(GeoidSeries):
         return SegMeter(2, ("not_flood", "flood"), headline=(1,))     # primary = flood IoU
 
 
+class GeoidSeriesFloodDates(GeoidSeriesFlood):
+    """geoidseries_flood with every acquisition date its own low-res step (no month pooling):
+    the fixed-resolution per-date models (manyup.mixres, no crops) next to the mixed ones, whose
+    crops are single dates."""
+    name = "geoidseries_flood_dates"
+
+    def lr_policy(self):
+        return All()
+
+
 # ---- YieldSAT ----------------------------------------------------------------------------------
 # Pixel yield (t/ha) of 2,173 field-seasons, 4 countries x 4 crops, ONE model for all of them
 # (manyup/data/datasets/yieldsat.py; store built by exp/yieldsat/prepare.py). The target
@@ -552,6 +575,119 @@ class YieldSatRaw(_YieldSat):
         return {"S2": PoolYears(2, "mean")}    # the same 24 slots, clear-pixel monthly means
 
 
-TASKS: dict[str, Task] = {t.name: t for t in (Pastis(), PastisS2(), Planteur(), PlanteurS2(),
+# ---- EuroMineNet -------------------------------------------------------------------------------
+# Annual mine-footprint masks of 133 EU mine sites, 2015-2024 (manyup/data/datasets/euromine.py;
+# packed by exp/euromine/prepare.py): one S2 L2A image and one binary mask PER YEAR, so the label
+# changes along the series. 64 px tiles of the site rasters; splits by site (the release's lists).
+# The model predicts every year (per_step); one low-res step per year (season = 1). Plain
+# cross-entropy as the paper; primary = the paper's OF1 (mine F1 over every pixel-year).
+class EuroMine(Task):
+    name, kind, num_outputs, reduction = "euromine", "classification", 2, "time_mean"
+    per_step = True
+    olmoearth = OlmoEarthSetup({"S2": "sentinel2_l2a"}, {"S2": S2_IMPUTE})
+    utae = UTAESetup(("S2",), None, None, batch_size=16)
+    # ps16 tile64: 16 x 10 years x 3 S2 band groups = 480 tokens (PASTIS 768); ps4: 7680
+    batch_size = {4: 8, 8: 16, 16: 32}
+    stored_modalities = ("S2",)
+    store_name = ""                       # no tile store: read from the packed memmaps
+    guidance = {"S2": EUROMINE_BANDS}
+    rgb = {"S2": S2_RGB}
+    season = 1
+    tile = 64
+    series = "annual"             # EuroMineDataset series: the release's yearly images
+    label_steps = None            # the output steps the yearly labels belong to (None: all)
+
+    def policies(self):
+        return {"S2": All()}
+
+    def raw(self, split, policies):
+        return EuroMineDataset(split, policies, tile=self.tile, series=self.series)
+
+    def open(self, split, policies):
+        return self.raw(split, policies)
+
+    def target(self, batch):
+        return decode_years(batch.target)                     # (B, T, H, W) in {0, 1}
+
+    def loss(self):
+        return _StepCE(self.label_steps)
+
+    def meter(self):
+        m = StepMeter(tuple(str(y) for y in EUROMINE_YEARS), ("background", "mine"))
+        return m if self.label_steps is None else _LabelSteps(m, self.label_steps)
+
+
+class EuroMine128(EuroMine):
+    """128 px tiles (1.28 km of context; the 64 px tiles' errors are mostly whole regions far
+    from any label edge). ps8 / 16 / 32 here = the token counts of ps4 / 8 / 16 at 64 px."""
+    name, tile = "euromine_t128", 128
+    batch_size = {8: 8, 16: 16, 32: 32}
+
+
+class EuroMine256(EuroMine):
+    """256 px tiles (2.56 km); ps16 = 7680 tokens a sample, ps32 = 1920."""
+    name, tile = "euromine_t256", 256
+    batch_size = {16: 8, 32: 16}
+
+
+class EuroMineSeasonal(EuroMine):
+    """Our 38 quarterly L2A composites (2015 Q3 .. 2024 Q4) instead of the release's 10 yearly
+    images: the model predicts every quarter, year t's label is scored on its Jul-Sep quarter
+    (the release images are August summer mosaics); the other quarters are context.
+    ps16: 16 x 38 x 3 = 1824 tokens (~ the annual ps8's 1920); ps8: 7296."""
+    name, series = "euromine_seasonal", "seasonal"
+    label_steps = EUROMINE_LABEL_QUARTERS
+    batch_size = {8: 8, 16: 32}
+    # 38 frames a tile read as windows of the site arrays: ~8 samples/s on the network disk;
+    # the tile store keeps each tile's frames contiguous (target bitmask < 2^11 -> int16)
+    store_name, store_dtypes, store_shard = ("euromine_seasonal_tile64",
+                                             {"S2": "uint16", "target": "int16"}, 64)
+
+    def open(self, split, policies):
+        return Task.open(self, split, policies)
+
+
+class EuroMineQ3(EuroMine):
+    """Only the 10 Jul-Sep composites of EuroMineSeasonal, one per label year: the annual task
+    on our L2A composites, so seasonal vs q3 isolates the extra quarters."""
+    name, series = "euromine_q3", "q3"
+
+
+class _StepCE(nn.Module):
+    """Cross-entropy over every (pixel, step): logits (B, T, C, H, W), target (B, T', H, W);
+    steps: the T' output steps the target's steps belong to (None: all, T' = T)."""
+
+    def __init__(self, steps=None):
+        super().__init__()
+        self.steps = None if steps is None else list(steps)
+
+    def forward(self, logits, target):
+        if self.steps is not None:
+            logits = logits[:, self.steps]
+        return nn.functional.cross_entropy(logits.flatten(0, 1).float(), target.flatten(0, 1),
+                                           ignore_index=IGNORE)
+
+
+class _LabelSteps:
+    """A meter that scores only the output steps holding labels."""
+
+    def __init__(self, meter, steps):
+        self.meter, self.steps = meter, list(steps)
+        self.higher_is_better = meter.higher_is_better
+
+    def update(self, logits, target):
+        self.meter.update(logits[:, self.steps], target)
+
+    def merge(self, other):
+        self.meter.merge(other.meter)
+        return self
+
+    def compute(self):
+        return self.meter.compute()
+
+
+TASKS: dict[str, Task] = {t.name: t for t in (Pastis(), PastisS2(), PastisS2Months(), Planteur(), PlanteurS2(),
                                               Biomassters(), GeoidFlood(), GeoidSeries(),
-                                              GeoidSeriesFlood(), YieldSatML24(), YieldSatRaw())}
+                                              GeoidSeriesFlood(), GeoidSeriesFloodDates(), YieldSatML24(), YieldSatRaw(),
+                                              EuroMine(), EuroMine128(), EuroMine256(),
+                                              EuroMineSeasonal(), EuroMineQ3())}

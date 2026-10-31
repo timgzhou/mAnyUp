@@ -43,3 +43,8 @@ cache
 *.pdf
 *.png
 results/pastis/conf/
+# upstream baselines, read-only clones (pinned commits in docs/baselines.md)
+/references/
+# large scratch outputs and CSV locks
+figures/**/*.pt
+*.lock

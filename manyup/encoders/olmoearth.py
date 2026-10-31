@@ -158,9 +158,16 @@ class OlmoEarthEncoder(Encoder):
             raise ValueError(f"temporal_mode {temporal_mode!r} not in {self.TEMPORAL_MODES}")
         self.inputs.check(dataset)
         size = dataset.tiling.size if dataset.tiling else min(dataset.SPEC.native_shape)
-        if size % self.tile_size or self.tile_size % self.patch_size:
+        if self.tile_size % self.patch_size or (size % self.tile_size
+                                                 and not self._pads(size)):
             raise ValueError(f"sample {size}, tile {self.tile_size}, patch {self.patch_size} "
-                             "must nest")
+                             "must nest (or the tile is the sample padded to whole patches)")
+
+    def _pads(self, size: int) -> bool:
+        """A patch size that does not divide the sample (ps12 on 64 px): the tile is the sample
+        replicate-padded, centred, to the next multiple of the patch (72), one tile; the head
+        crops its map back (Pa2PxHead out_px)."""
+        return size < self.tile_size == -(-size // self.patch_size) * self.patch_size
 
     def load_finetuned(self, ckpt_path: str) -> None:
         """Replace the pretrained weights with the backbone of an exp.pastis.finetune_olmoearth
@@ -208,6 +215,10 @@ class OlmoEarthEncoder(Encoder):
     def _encode_tiled(self, sample: MaskedOlmoEarthSample, temporal_mode: str) -> torch.Tensor:
         B, Hs = sample.timestamps.shape[0], _spatial_size(sample)
         ts, p = self.tile_size, self.patch_size
+        if Hs % ts:
+            if not self._pads(Hs):
+                raise ValueError(f"sample {Hs} px does not nest into tile {ts}, patch {p}")
+            sample, Hs = _pad_space(sample, ts), ts
         n, tg, grid = Hs // ts, ts // p, Hs // p
         tiles = [(i, j) for i in range(n) for j in range(n)]
         T = sample.timestamps.shape[1]
@@ -340,6 +351,18 @@ def _to_device(sample, device, dtype):
 
 def _slice_space(sample, h0, h1, w0, w1):
     return _map(sample, lambda k, v: v if k == "timestamps" else v[:, h0:h1, w0:w1])
+
+
+def _pad_space(sample, size):
+    """Replicate-pad every spatial tensor (masks included), centred, to size x size px."""
+    H = _spatial_size(sample)
+    lo = (size - H) // 2
+    def pad(k, v):
+        if k == "timestamps":
+            return v
+        i = (torch.arange(size, device=v.device) - lo).clamp(0, H - 1)
+        return v[:, i][:, :, i]
+    return _map(sample, pad)
 
 
 def _slice_time(sample, t):

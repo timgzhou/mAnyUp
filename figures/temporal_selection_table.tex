@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+ & \multicolumn{2}{c}{ps16 sea + ps8 mon} & \multicolumn{2}{c}{ps8 sea + ps4 mon} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5}
+\# seasons & one & two & one & two \\
+\midrule
+no crops & .431 & .431 & .523 & .523 \\
+random & .498 & .529 & .572 & \textbf{.585} \\
+grid & .500 & .534 & .558 & .584 \\
+entropy (lowest) & .505 & .532 & .565 & .583 \\
+attention & \textbf{.528} & \textbf{.554} & \textbf{.577} & .584 \\
+\midrule
+\textcolor{gray}{label oracle} & \textcolor{gray}{.577} & \textcolor{gray}{.584} & \textcolor{gray}{.672} & \textcolor{gray}{.676} \\
+\bottomrule
+\end{tabular}
+\end{table}

@@ -303,6 +303,49 @@ Landsat (OlmoEarth `landsat` = B8 pan 10 m + 10 bands 20 m, Level-1 DN like the 
 a future `planteur_ls` task), season controls (sctl_*), fully random per-month curves (dedr_*),
 GMACs (exp.bench.oracle_flops), the base-model sweep.
 
+## EuroMineNet: annual mine footprints, a label per year
+
+Code: `manyup/data/datasets/euromine.py`, `exp/euromine/prepare.py`, `exp/common/tasks.py`
+(`euromine`), `exp/common/metrics.py` (`StepMeter`), `manyup/mixres/steps.py`, per-step decode in
+`manyup/mixres/model.py` · Launchers: `scripts/slurm/euromine/{fetch,mixres}.sh` · Tests:
+`tests/test_euromine.py`
+
+EuroMineNet (Yu et al. 2025, arXiv 2510.14661, <https://doi.org/10.14278/rodare.4656>): 133 EU
+mine sites, one cloud-free S2 L2A image (10 bands, 20 m bands resampled to 10 m, int16) and one
+expert binary mine mask PER YEAR 2015-2024. The release's site split (train / val / test = 101 /
+14 / 17 sites; Greece_3 is in no list and left out) -> 20011 / 3235 / 5852 tiles of 64 px (edge
+tiles snapped to the raster edge, the paper's cropping rule). Mine = 19 % of pixel-years; 5-8 %
+of pixels change label at some year. No acquisition dates: every image is dated 1 July.
+
+The target is the 10 yearly masks as one int16 bitmask per pixel (decoded by `task.target`); the
+model decodes one map per year (`Task.per_step`): each (sample, year) is one NativeSetReadout
+sample with that year's low-res token + that year's crops. One low-res step per year
+(`season = 1`), so every (year, window) pair has its own label and its own entropy -- the point
+of the dataset here. Metrics: OF1 (primary), per-year F1, LCA/GCA-TIoU (the paper's), post-
+classification change F1 per year interval (`cf1_<k>y`), F1 at pixels whose label ever changes
+(`dyn_f1`).
+
+```shell
+bash scripts/slurm/euromine/fetch.sh               # 18.4 GB zip, ~15 min + 5 min unzip / pack
+python -m pytest -q tests/test_euromine.py
+bash scripts/slurm/euromine/mixres.sh              # DRY=1: 149 jobs in 65 chains -> results/euromine/mixres.csv
+```
+
+`mixres.sh` (submitted 2026-10-25): fixed ps16 / ps8 / ps4 (no crops, 30 ep cold) + their
+20-epoch continuations; s16m8 (n = 8/16/32 ps8 windows) and s8m4 (n = 32/64/128 ps4 cells), warm
+from the fixed ps16 / ps8 run, 20 ep: pairs (n x 10 (year, window) crops: entropy /
+season_random / season_grid / label), top (s16m8: n windows x every year: entropy / random /
+label), time (every window, keep one / half of its years: entropy high / low, label high / low,
+season_random, month_grid).
+
+More context and a real time series (2026-10-26): `euromine_t128` / `euromine_t256` (bigger tiles,
+ps8 / 16 / 32; `scripts/slurm/euromine/tiles.sh`), and our own quarterly S2 L2A composites
+(`exp.euromine.fetch_seasonal`, `scripts/slurm/euromine/fetch_seasonal.sh`, then
+`python -m exp.euromine.prepare pack_seasonal`): `euromine_seasonal` (38 quarters 2015 Q3 ..
+2024 Q4, each year's label on its Jul-Sep output; tile store `euromine_seasonal_tile64`) and
+`euromine_q3` (the Jul-Sep composites alone), `scripts/slurm/euromine/seasonal.sh`. The release
+images are top-of-atmosphere August-dominated mosaics, not L2A, and carry no dates.
+
 ---
 
 ## UTAE baseline (PASTIS)

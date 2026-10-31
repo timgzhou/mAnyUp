@@ -1,0 +1,37 @@
+{
+ "tile": "40220@r0c64",
+ "run": "mixres_pastis_ps16_quadg-skip-qs0.25-qt0.5-hhone-crop-score-xhr-s1o50xhr_n0_c8_seed0_a11df7da",
+ "windows": 17,
+ "crops": 51,
+ "windows_per_season": {
+  "Oct-Dec": 0,
+  "Jan-Mar": 5,
+  "Apr-Jun": 12,
+  "Jul-Sep": 0
+ },
+ "months_with_picks": [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun"
+ ],
+ "months_present": [
+  "Oct",
+  "Nov",
+  "Dec",
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep"
+ ],
+ "pixel_acc_lr_pass": 0.7960608327100474,
+ "pixel_acc_final": 0.8833208676140614,
+ "pca": "3 principal components of this tile's season tokens + crop tokens"
+}

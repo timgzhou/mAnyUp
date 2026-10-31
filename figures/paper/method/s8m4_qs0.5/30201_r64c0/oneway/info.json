@@ -1,0 +1,23 @@
+{
+ "tile": "30201@r64c0",
+ "run": "mixres_pastis_ps8_quadg-skip-qs0.5-qt0.5-hhone-crop-score-xhr-s1o50xhr_n0_c4_seed0_a736def1",
+ "layers": [
+  0,
+  1,
+  12
+ ],
+ "crops": 414,
+ "blocks": 12,
+ "months_with_picks": [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep"
+ ],
+ "pca": "3 principal components of one layer's season + crop tokens, per layer; before the final layer each row is centred on its own mean, equal weight"
+}

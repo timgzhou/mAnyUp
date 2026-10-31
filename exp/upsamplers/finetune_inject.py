@@ -1132,8 +1132,8 @@ class InjectFT(nn.Module):
                               LR_PS, TILE, name=model_size, pretrained=pretrained)
         self.mix = MixedResOE(oe.encoder, inject_layer, pos, lr_patch, doy, attn, head_attn)
         self.lr_ps = lr_patch
-        if lr_patch not in (4, 8, 16):
-            raise ValueError("lr_patch must be 16, 8 or 4")
+        if lr_patch not in (2, 4, 6, 8, 10, 12, 14, 16):
+            raise ValueError("lr_patch must be 16, 14, 12, 10, 8, 6, 4 or 2")
         D = oe.encoder.embedding_size
         # date crops are single acquisitions, month crops composites: tell them apart
         self.date_type = (nn.Parameter(torch.zeros(D))
@@ -1329,7 +1329,10 @@ class InjectFT(nn.Module):
             self.recon_splat = TimeSetReadout(D, "gauss")
         self.readout = (TimeSetReadout(D, "gauss" if "splat" in readout else "query")
                         if readout in TIME else
-                        NativeSetReadout(D, base_px=lr_patch, mean=readout == "native_mean")
+                        NativeSetReadout(D, base_px=lr_patch, mean=readout == "native_mean",
+                                         # 2 px cells when ps4 cells do not tile the token
+                                         **({"crop_px": 2} if lr_patch % 4 else {}),
+                                         out_px=TILE if TILE % lr_patch else None)
                         if readout in SET else
                         None if readout in ("bilinear",) + NATIVE else
                         CellAttnReadout(D, overlap=readout == "cellattn_overlap")
@@ -3513,7 +3516,7 @@ class InjectFT(nn.Module):
                             lr.dims, lr.masks, None)
             self._lr = lr                       # crops read it in blocks [0, L) (--head_attn)
             if (self.lr_tile == TILE and lr.keep.shape[1]
-                    and lr.dims[next(iter(lr.dims))][1] * self.lr_ps != TILE):
+                    and lr.dims[next(iter(lr.dims))][1] != -(-TILE // self.lr_ps)):
                 raise ValueError("InjectFT expects one 64 px tile per sample")
             k = round(self.k_frac * T * H * H) if self.sel_name != "none" else 0
             if self.crop_free and self.n_crops:
@@ -4220,7 +4223,7 @@ def main():
                          "year / raw: --selector none only")
     ap.add_argument("--epoch_samples", type=int, default=0,
                     help="train chips per epoch, drawn afresh (0 = the whole split)")
-    ap.add_argument("--lr_patch", type=int, default=16, choices=(16, 8, 4))
+    ap.add_argument("--lr_patch", type=int, default=16, choices=(16, 14, 12, 10, 8, 6, 4, 2))
     ap.add_argument("--lr_tile", type=int, default=64, choices=(64, 4),
                     help="reference only: encode each lr_tile px tile as its own sequence")
     ap.add_argument("--selector_hidden", type=int, default=64)
@@ -4658,7 +4661,7 @@ def main():
     elif a.n_crops or a.vary_crops or a.no_seasons:
         raise SystemExit("--n_crops / --vary_crops / --no_seasons need --crop_free")
     # (ps8 months through the bilinear head, no crops: the plain series fine-tune, a reference)
-    if (a.lr_patch == 8 or a.lr_patch == 4 and a.readout == "native_set") and not (
+    if (a.lr_patch == 8 or a.lr_patch not in (16, 8) and a.readout == "native_set") and not (
             a.readout == "native_set"
             and (a.crop_free or a.selector == "none"
                  or a.lr_patch == 8 and a.select_unit == "location"
@@ -4666,6 +4669,9 @@ def main():
             a.lr_patch == 8 and a.readout == "bilinear" and a.selector == "none"):
         raise SystemExit("--lr_patch 8, or 4 with native_set (ps8 / ps4 seasons): --readout "
                          "native_set with --crop_free crops or --selector none")
+    if a.lr_patch not in (16, 8, 4) and (a.readout, a.selector) != ("native_set", "none"):
+        raise SystemExit(f"--lr_patch {a.lr_patch}: fixed-resolution seasons only (--selector "
+                         "none --readout native_set)")
     if a.acq_pool != "none":
         if a.inject_layer == 0 or not (a.frac_slot or a.doy) or a.date_level != "none":
             raise SystemExit("--acq_pool: --inject_layer > 0 (the acquisitions are pooled after "

@@ -9,7 +9,10 @@ scalars per candidate window under each season token:
     season channel     per season; trained to rank a window's seasons like their per-season
                        loss (the lowest half is picked, as oracle_bothalf does)
 Loss: ListNet (softmax cross-entropy) over each sample's windows and each window's seasons,
-targets z-scored per list. Targets are the frozen checkpoint's own losses on the train split.
+targets z-scored per list. Targets are the frozen checkpoint's own losses on the train split
+(--fit_split train), or on the val split (--fit_split val: the model errs on held-out tiles as it
+will on test, not as on the tiles it was fitted to): the even val batches fit the head, the odd
+ones pick its epoch (head file and CSV rows tagged fitval).
 
 Test-time scoring of the same weights (--score_src), one row each in
 results/<task>/learned_select.csv:
@@ -193,6 +196,21 @@ def pick_recall(m, dl, limit, src):
     return hit / max(tot, 1.0)
 
 
+class Every:
+    """Every other batch of a loader (offset 0 or 1): one half of a split, never held in memory."""
+
+    def __init__(self, dl, offset):
+        self.dl, self.offset = dl, offset
+
+    def __iter__(self):
+        for i, b in enumerate(self.dl):
+            if i % 2 == self.offset:
+                yield b
+
+    def __len__(self):
+        return (len(self.dl) + 1 - self.offset) // 2
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", required=True, choices=list(EPOCHS))
@@ -210,13 +228,20 @@ def main():
     ap.add_argument("--batch_size", type=int, default=32)
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--limit_batches", type=int, default=0, help="smoke test: no CSV, no save")
+    ap.add_argument("--fit_split", default="train", choices=["train", "val"])
     a = ap.parse_args()
     task = TASKS[a.task]
     m = build(a.task, a.setup, a.n, a.arch)
     name = run_name(a.task, a.setup, a.n)
-    head_path = Path(f"checkpoints/{name}_rankhead{'' if a.arch == 'linear' else '_' + a.arch}.pt")
+    fitval = a.fit_split == "val"
+    head_path = Path(f"checkpoints/{name}_rankhead{'' if a.arch == 'linear' else '_' + a.arch}"
+                     f"{'_fitval' if fitval else ''}.pt")
     dl = {s: fi.loader(task, s, a.batch_size, a.num_workers, s == "train") for s in ("train", "val", "test")}
     vb = a.limit_batches or a.val_batches
+    fit_dl, pick_dl = dl["train"], dl["val"]
+    if fitval:                          # fixed halves of the (unshuffled) val split, streamed
+        fit_dl, pick_dl = Every(dl["val"], 0), Every(dl["val"], 1)
+        vb = a.limit_batches or len(pick_dl)
 
     if head_path.exists() and not a.limit_batches:
         m.rank_head.load_state_dict(torch.load(head_path, map_location="cpu"))
@@ -229,7 +254,7 @@ def main():
         best, best_state, step, t0 = -1.0, None, 0, time.time()
         for ep in range(a.epochs):
             m.rank_head.train()
-            for i, (*x, _) in enumerate(dl["train"]):
+            for i, (*x, _) in enumerate(fit_dl):
                 if (a.limit_batches and i >= a.limit_batches) or step >= a.max_steps:
                     break
                 rb = collect(m, x)
@@ -249,7 +274,7 @@ def main():
                     print(f"  step {step} loc(+nll) {l_loc.item():.4f} season {l_sea.item():.4f}",
                           flush=True)
             m.rank_head.eval()
-            r = recall(m, dl["val"], vb)
+            r = recall(m, pick_dl, vb)
             print(f"epoch {ep + 1}: val pick recall {r:.3f} ({(time.time() - t0) / 60:.1f} min)",
                   flush=True)
             if r > best:
@@ -271,7 +296,8 @@ def main():
         import csv
         with open(out_csv) as fh:
             done = {r["score_src"] for r in csv.DictReader(fh)
-                    if r["run"] == name and (r.get("arch") or "linear") == a.arch}
+                    if r["run"] == name and (r.get("arch") or "linear") == a.arch
+                    and (r.get("fit_split") or "train") == a.fit_split}
     for src in srcs:
         if src in done:
             print(f"TEST {src}: already in {out_csv}")
@@ -290,7 +316,7 @@ def main():
             continue
         _append(out_csv, {
             "job": os.environ.get("SLURM_JOB_ID", ""), "run": name, "setup": a.setup, "n": a.n,
-            "score_src": src, "arch": a.arch, "pick_recall": round(rec, 4), "crops_per_sample": round(crops, 1),
+            "score_src": src, "arch": a.arch, "fit_split": a.fit_split, "pick_recall": round(rec, 4), "crops_per_sample": round(crops, 1),
             **{f"test_{k}": round(v, 5) for k, v in res.items()}})
 
 

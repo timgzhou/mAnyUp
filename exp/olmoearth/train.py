@@ -108,7 +108,8 @@ def run_name(a) -> str:
             # _nopre: random init; _wuN: N warmup epochs; _foldF: benchmark protocol fold
             f"{'_nopre' if a.no_pretrain else ''}"
             f"{f'_wu{a.warmup_epochs}' if a.warmup_epochs else ''}"
-            f"{f'_fold{a.fold}' if a.fold != 1 else ''}_ep{a.epochs}")
+            f"{f'_fold{a.fold}' if a.fold != 1 else ''}_ep{a.epochs}"
+            f"{f'_seed{a.seed}' if a.seed else ''}")   # seed repeats (seed 0: no suffix)
 
 
 class Arm:
@@ -230,10 +231,13 @@ def main():
         print(f"{state_path} says this run is finished; nothing to do")
         return
 
+    ds = task.dataset("train")              # a padded tile (ps12 ts72 on 64 px): crop back
+    size = ds.tiling.size if ds.tiling else min(ds.SPEC.native_shape)
+    out_px = size if a.tile_size > size else None
     arms = []
     for lr in lrs:
         head = Pa2PxHead(reduction, embed_dim, task.num_outputs, a.patch_size,
-                         norm=a.head_norm).cuda()
+                         norm=a.head_norm, out_px=out_px).cuda()
         # fft: the encoder is in the (single) optimizer from the start; it has no gradients,
         # so AdamW leaves it alone, until it is unfrozen
         params = list(head.parameters()) + (list(encoder.parameters()) if a.mode == "fft" else [])

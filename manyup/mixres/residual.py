@@ -113,18 +113,44 @@ def listnet_loss(pred, target, valid, beta=2.0):
     return -(z.softmax(1) * lp.masked_fill(~valid, 0.0)).sum(1)[keep].mean()
 
 
+class PixConv(nn.Module):
+    """A window's C x P x P patch (flattened c p q) -> LayerNorm over the patch -> 3x3 conv (32)
+    -> 3x3 conv (64) -> [mean, max] over the patch -> linear (d): the conv alternative to
+    MonthQueries' one linear map."""
+
+    def __init__(self, C: int, P: int, d: int):
+        super().__init__()
+        self.C, self.P = C, P
+        self.norm = nn.LayerNorm(C * P * P)
+        self.net = nn.Sequential(nn.Conv2d(C, 32, 3, padding=1), nn.GELU(),
+                                 nn.Conv2d(32, 64, 3, padding=1), nn.GELU())
+        self.out = nn.Linear(128, d)
+
+    def forward(self, x):
+        lead = x.shape[:-1]
+        h = self.net(self.norm(x).reshape(-1, self.C, self.P, self.P))
+        h = torch.cat([h.mean((2, 3)), h.amax((2, 3))], 1)
+        return self.out(h).view(*lead, -1)
+
+
 class MonthQueries(nn.Module):
     """Per (window, month): the window's raw pixels -> LayerNorm -> linear (d) + window
     position; xattn also: those as queries cross-attending to the tile's season tokens (+ token
     position and season embeddings; unused seasons masked), [query, attended]. -> (B, S, S, T,
     d or 2d). The month path of ResidualScorer.window_vec before its mean over months (kept
-    separate: ResidualScorer's parameter names must match the legacy checkpoints)."""
+    separate: ResidualScorer's parameter names must match the legacy checkpoints).
+    pix_enc "conv": PixConv instead of the linear map."""
 
     def __init__(self, xattn: bool, dim: int, C: int, P: int, S: int, gh: int, NS: int,
-                 d: int = 64, heads: int = 4):
+                 d: int = 64, heads: int = 4, pix_enc: str = "linear"):
         super().__init__()
         self.xattn, self.heads = xattn, heads
-        self.pix = nn.Sequential(nn.LayerNorm(C * P * P), nn.Linear(C * P * P, d))
+        if pix_enc == "linear":
+            self.pix = nn.Sequential(nn.LayerNorm(C * P * P), nn.Linear(C * P * P, d))
+        elif pix_enc == "conv":
+            self.pix = PixConv(C, P, d)
+        else:
+            raise ValueError(f"MonthQueries pix_enc {pix_enc!r}: linear | conv")
         self.qpos = nn.Parameter(torch.zeros(S * S, d))
         nn.init.trunc_normal_(self.qpos, std=0.02)
         self.out = 2 * d if xattn else d
@@ -155,6 +181,25 @@ class MonthQueries(nn.Module):
         return torch.cat([q, att], -1)
 
 
+class SeasonMix(nn.Module):
+    """A small pre-norm transformer over each location's seasons (+ a season embedding; unused
+    seasons masked as keys): (N, NS, h) -> (N, NS, h), so a season's r can depend on the others'."""
+
+    def __init__(self, h: int, NS: int, layers: int, heads: int = 4):
+        super().__init__()
+        self.sea = nn.Parameter(torch.zeros(NS, h))
+        nn.init.trunc_normal_(self.sea, std=0.02)
+        self.enc = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(h, heads, 2 * h, dropout=0.0, activation="gelu",
+                                       batch_first=True, norm_first=True), layers,
+            enable_nested_tensor=False)
+
+    def forward(self, x, used):
+        pad = ~used
+        pad = pad & ~pad.all(1, keepdim=True)                # a location with no used season
+        return self.enc(x + self.sea, src_key_padding_mask=pad)
+
+
 class SeasonResidual(nn.Module):
     """r per (season, location) for time selection (selectors.SeasonResidualScorer): the
     spatial ResidualScorer's input sets, per season instead of per window --
@@ -165,27 +210,56 @@ class SeasonResidual(nn.Module):
                     over the season's present months) -> MLP
         xattn       hr's queries cross-attending to the tile's season tokens -> MLP
         xattn_conv  xattn's vector as extra channels of conv's stack
-    The last layer starts at zero (r = 0: the plain entropy ranking)."""
+    The last layer starts at zero (r = 0: the plain entropy ranking). Capacity knobs (the
+    defaults are the arms as first run):
+        pix_enc     linear | conv: MonthQueries' pixel encoder (PixConv)
+        month_pool  mean | attn: months -> season by a plain mean, or a learned attention over the
+                    season's present months (+ a month embedding; starts as the mean)
+        hidden, depth  the head's width and its number of 3x3 conv (MLP: hidden) layers
+        season_mix  layers of SeasonMix on the head's last hidden features, before the final
+                    layer (0: each season scored on its own)"""
 
     def __init__(self, dim: int, n_cls: int, arch: str = "conv", C: int = 0, P: int = 0,
-                 S: int = 0, gh: int = 0, NS: int = 0, hidden: int = 64):
+                 S: int = 0, gh: int = 0, NS: int = 0, hidden: int = 64, depth: int = 1,
+                 pix_enc: str = "linear", month_pool: str = "mean", season_mix: int = 0,
+                 T: int = 0):
         super().__init__()
-        self.arch = arch
+        self.arch, self.month_pool = arch, month_pool
+        if arch == "conv" and (pix_enc != "linear" or month_pool != "mean"):
+            raise ValueError("SeasonResidual conv reads no pixels: pix_enc / month_pool unused")
+        if month_pool not in ("mean", "attn"):
+            raise ValueError(f"SeasonResidual month_pool {month_pool!r}: mean | attn")
         q_out = 0
         if arch != "conv":
-            self.months = MonthQueries(arch in ("xattn", "xattn_conv"), dim, C, P, S, gh, NS)
+            self.months = MonthQueries(arch in ("xattn", "xattn_conv"), dim, C, P, S, gh, NS,
+                                       pix_enc=pix_enc)
             q_out = self.months.out
+            if month_pool == "attn":
+                self.tpos = nn.Parameter(torch.zeros(T, q_out))
+                nn.init.trunc_normal_(self.tpos, std=0.02)
+                self.pool = nn.Sequential(nn.LayerNorm(q_out), nn.Linear(q_out, 1))
+                nn.init.zeros_(self.pool[-1].weight)
+                nn.init.zeros_(self.pool[-1].bias)
         if arch in ("conv", "xattn_conv"):
             self.tok = nn.Linear(dim, 32)
-            self.net = nn.Sequential(nn.Conv2d(n_cls + 3 + 32 + (q_out if arch != "conv" else 0),
-                                               hidden, 1), nn.GELU(),
-                                     nn.Conv2d(hidden, hidden, 3, padding=1), nn.GELU(),
-                                     nn.Conv2d(hidden, 1, 1))
+            layers = [nn.Conv2d(n_cls + 3 + 32 + (q_out if arch != "conv" else 0), hidden, 1),
+                      nn.GELU()]
+            for _ in range(depth):
+                layers += [nn.Conv2d(hidden, hidden, 3, padding=1), nn.GELU()]
+            layers.append(nn.Conv2d(hidden, 1, 1))
         else:
-            self.net = nn.Sequential(nn.Linear(q_out, hidden), nn.GELU(), nn.Linear(hidden, hidden),
-                                     nn.GELU(), nn.Linear(hidden, 1))
+            layers = [nn.Linear(q_out, hidden), nn.GELU()]
+            for _ in range(depth):
+                layers += [nn.Linear(hidden, hidden), nn.GELU()]
+            layers.append(nn.Linear(hidden, 1))
+        self.net = nn.Sequential(*layers)
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
+        self.mix = None
+        if season_mix:
+            if not NS:
+                raise ValueError("SeasonResidual season_mix: needs the number of seasons NS")
+            self.mix = SeasonMix(hidden, NS, season_mix)
 
     def forward(self, feats, lr_F, used, pix=None, season=None, valid=None):
         """feats (B, NS, n_cls + 3, S, S) per-season map features, lr_F (B, NS, gh, gw, D),
@@ -197,12 +271,29 @@ class SeasonResidual(nn.Module):
             q = self.months(pix, lr_F, used)                                # (B, S, S, T, q)
             w = (torch.nn.functional.one_hot(season.clamp(min=0), NS).bool()
                  & valid[..., None]).float()                                # (B, T, NS)
-            qv = torch.einsum("bxytq,bts->bsxyq", q, w) / w.sum(1)[:, :, None, None, None].clamp(min=1)
+            if self.month_pool == "mean":
+                qv = torch.einsum("bxytq,bts->bsxyq", q, w) / w.sum(1)[:, :, None, None, None].clamp(min=1)
+            else:                                    # softmax over each season's present months
+                q = q + self.tpos
+                wt = w.permute(0, 2, 1)[:, :, None, None]                   # (B, NS, 1, 1, T)
+                a = self.pool(q)[..., 0][:, None].masked_fill(wt == 0, -1e4)
+                a = a.softmax(-1) * (wt.sum(-1, keepdim=True) > 0)          # (B, NS, S, S, T)
+                qv = torch.einsum("bxytq,bsxyt->bsxyq", q, a)
         if self.arch in ("conv", "xattn_conv"):
             t = self.tok(lr_F.float())                                       # (B, NS, gh, gw, 32)
             t = F.interpolate(t.permute(0, 1, 4, 2, 3).flatten(0, 1), size=(S, S), mode="nearest")
             x = [feats.float().flatten(0, 1), t]
             if qv is not None:
                 x.append(qv.flatten(0, 1).permute(0, 3, 1, 2))
-            return self.net(torch.cat(x, 1))[:, 0].view(B, NS, S, S)
-        return self.net(qv)[..., 0]
+            h = self.net[:-1](torch.cat(x, 1))                               # (B*NS, h, S, S)
+            if self.mix is not None:
+                h = h.view(B, NS, -1, S, S).permute(0, 3, 4, 1, 2).flatten(0, 2)
+                h = self.mix(h, used[:, None, None].expand(B, S, S, NS).flatten(0, 2))
+                h = h.view(B, S, S, NS, -1).permute(0, 3, 4, 1, 2).flatten(0, 1)
+            return self.net[-1](h)[:, 0].view(B, NS, S, S)
+        h = self.net[:-1](qv)                                                # (B, NS, S, S, h)
+        if self.mix is not None:
+            h = h.permute(0, 2, 3, 1, 4).flatten(0, 2)
+            h = self.mix(h, used[:, None, None].expand(B, S, S, NS).flatten(0, 2))
+            h = h.view(B, S, S, NS, -1).permute(0, 3, 1, 2, 4)
+        return self.net[-1](h)[..., 0]

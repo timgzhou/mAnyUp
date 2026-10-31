@@ -1,0 +1,7 @@
+run,q_s,tau_stored,share_train,tau_train,share_val,tau_val,share_test,tau_test,miou_stored,crops_stored,gmacs_stored,miou_val,crops_val,gmacs_val,miou_test,crops_test,gmacs_test
+mixres_pastis_ps16_quadg-skip-qs0.125-qt0.5-hhone-crop-score_n0_c8_warm_seed0_fd3a147c,0.125,0.8755,0.1221,0.8688,0.1442,0.9193,0.1506,0.9351,0.4786,28.9,4.498,0.4752,25.2,4.358,0.47395,24.0,4.31
+mixres_pastis_ps16_quadg-skip-qs0.5-qt0.5-hhone-crop-score_n0_c8_warm_seed0_3de1af95,0.5,0.4003,0.5084,0.4095,0.5257,0.4286,0.5204,0.4244,0.52774,99.7,7.501,0.52548,95.1,7.289,0.5256,95.8,7.32
+mixres_pastis_ps16_quadg-skip-qs0.25-qt0.5-hhone-crop-score_n0_c8_warm_seed0_2f11b48e,0.25,0.6257,0.2665,0.6429,0.2797,0.6564,0.2862,0.6633,0.49982,54.9,5.531,0.49842,49.3,5.299,0.49812,48.0,5.248
+mixres_pastis_ps8_quadg-skip-qs0.25-qt0.5-hhone-crop-score_n0_c4_warm_seed0_88a0ba20,0.25,0.6075,0.254,0.6126,0.2643,0.6249,0.2643,0.6248,0.55502,199.0,37.065,0.5544,188.2,36.06,0.5544,188.2,36.062
+mixres_pastis_ps8_quadg-skip-qs0.125-qt0.5-hhone-crop-score_n0_c4_warm_seed0_b3482345,0.125,0.6793,0.1287,0.6845,0.1463,0.7092,0.1528,0.7216,0.56286,117.1,29.804,0.562,100.4,28.455,0.56152,95.7,28.077
+mixres_pastis_ps8_quadg-skip-qs0.5-qt0.5-hhone-crop-score_n0_c4_warm_seed0_4c348615,0.5,0.279,0.5001,0.2791,0.5127,0.296,0.5101,0.2922,0.57822,391.5,57.704,0.57812,381.6,56.51,0.57793,383.8,56.768

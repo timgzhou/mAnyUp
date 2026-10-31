@@ -54,8 +54,11 @@ class Pa2PxHead(nn.Module):
     barely move the head. Still linear in the features at eval (running statistics)."""
 
     def __init__(self, reduction: str, embed_dim: int, num_outputs: int, patch_size: int,
-                 norm: bool = False):
+                 norm: bool = False, out_px: int | None = None):
+        """out_px: the sample's side when the encoder padded it (a patch that does not divide
+        it): the map is cropped back, centred, to out_px x out_px."""
         super().__init__()
+        self.out_px = out_px
         if reduction not in REDUCTIONS:
             raise ValueError(f"reduction {reduction!r} not in {REDUCTIONS}")
         self.reduction, self.num_outputs, self.patch_size = reduction, num_outputs, patch_size
@@ -76,8 +79,14 @@ class Pa2PxHead(nn.Module):
         if self.norm is not None:
             x = self.norm(x.flatten(0, 2).float()).view(x.shape)
         p = self.patch_size
-        return rearrange(self.linear(x), "b gh gw (c i j) -> b c (gh i) (gw j)",
-                         c=self.num_outputs, i=p, j=p)
+        return self._crop(rearrange(self.linear(x), "b gh gw (c i j) -> b c (gh i) (gw j)",
+                                    c=self.num_outputs, i=p, j=p))
+
+    def _crop(self, m: torch.Tensor) -> torch.Tensor:
+        if self.out_px is None or m.shape[-1] == self.out_px:
+            return m
+        lo = (m.shape[-1] - self.out_px) // 2
+        return m[..., lo:lo + self.out_px, lo:lo + self.out_px]
 
     def _pairs(self, tokens, pairs):
         if pairs is None:
@@ -98,4 +107,4 @@ class Pa2PxHead(nn.Module):
         pooled = torch.logsumexp(logits.masked_fill(none[:, None, None, None, None], 0.0), 1)
         bias = self.linear.bias.float().view(self.num_outputs, p, p).repeat(
             1, tokens.shape[2], tokens.shape[3])
-        return torch.where(none[:, None, None, None], bias, pooled)
+        return self._crop(torch.where(none[:, None, None, None], bias, pooled))

@@ -26,8 +26,9 @@ ARMS = {    # (season patch, crop patch) -> (label, colour)
 TILE_PX = 64
 INK, MUTED, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
 COV_COUNTS = (64, 128, 256, 512, 1024, 2048)        # crop counts whose coverage is printed
-MONTHLY = {ps: f"$S_{{{ps}}}T_{{month}}$" for ps in (16, 8, 4)}
-SEASONAL = {ps: f"$S_{{{ps}}}T_{{season}}$" for ps in (16, 8, 4)}
+PATCHES = (16, 14, 12, 10, 8, 6, 4, 2)     # 14 / 12 / 10 / 6: the 64 px sample padded to whole patches
+MONTHLY = {ps: f"$S_{{{ps}}}T_{{month}}$" for ps in PATCHES}
+SEASONAL = {ps: f"$S_{{{ps}}}T_{{season}}$" for ps in PATCHES}
 MODE_LABEL = {"shared": "ps4grid", "c2f": "c2f"}   # display name only; CLI value / filenames unchanged
 
 
@@ -72,7 +73,7 @@ def fixed(task, base):
     """-> [(label, GMACs, metric, monthly?)]"""
     f = pd.read_csv(f"results/{task}/inject_fft.csv", low_memory=False)
     f_all = f
-    f = f[f.run.astype(str).str.contains("_none_native_set_(?:lrps\\d_)?lr0.001_ep\\d+(?:_seed1)?$")]
+    f = f[f.run.astype(str).str.contains("_none_native_set_(?:lrps\\d+_)?lr0.001_ep\\d+(?:_seed1)?$")]
     nc = pd.read_csv(f"results/{task}/inject_ncrops.csv")
     zero = nc[(nc.n_test == 0) & (nc.n_max == 2048)]
     out = []
@@ -83,6 +84,15 @@ def fixed(task, base):
         else:                                               # = a mixed model with 0 crops
             x = zero[zero.run.str.contains("_lrps8") == (ps == 8)].gmacs.mean()
         out.append((SEASONAL[ps], x, y, False))
+    # the finer patch-size sweep (pastis): GMACs traced by finetune_inject --flops
+    ifl = Path(f"results/{task}/inject_flops.csv")
+    if ifl.exists():
+        ifl = pd.read_csv(ifl, usecols=range(6)).drop_duplicates("run", keep="last").set_index("run").gmacs
+        for ps in (14, 12, 10, 6, 2):
+            r = f[f.lr_patch == ps].drop_duplicates("run", keep="last")
+            name = f"inject_fft_{task}_tiny_none_native_set_lrps{ps}_lr0.001_ep50"
+            if len(r) and name in ifl.index:
+                out.append((SEASONAL[ps], ifl[name], r.test_primary.mean(), False))
     if task == "yieldsat_raw":      # monthly models on the SAME data as the mixed ones (the
         # ml24 baselines see one chosen date per month); GMACs traced with --flops
         gm = {16: 2.10, 8: 13.60, 4: 137.80}
@@ -93,13 +103,16 @@ def fixed(task, base):
                 out.append((MONTHLY[ps], gm[ps], r.test_primary.iloc[-1], True))
         return out
     o = pd.read_csv(f"results/{base}/olmoearth.csv")
-    o = o[(o["mode"] == "fft") & (o.model_size == "tiny") & (o.temporal_mode == "series") & (o.tile_size == 64)
+    o = o[(o["mode"] == "fft") & (o.model_size == "tiny") & (o.temporal_mode == "series")
           & (o.lr == 1e-3) & (o.epochs == o.epochs.min())]
+    # one tile per sample: 64 px, or the sample padded to whole patches (ps12: 72)
+    o = o[o.tile_size == (-(-64 // o.patch_size) * o.patch_size).clip(lower=64)]
     fl = pd.read_csv(f"results/{base}/flops.csv", usecols=range(6))
     fl = fl[fl.model_size == "tiny"].drop_duplicates("run", keep="last").set_index("run").gmacs
-    for ps in (16, 8, 4):
-        y = o[o.patch_size == ps].test_primary.iloc[0]
-        out.append((MONTHLY[ps], fl[f"ps{ps}ts64_ts"], y, True))
+    for ps in PATCHES:
+        r, ts = o[o.patch_size == ps], -(-64 // ps) * ps
+        if len(r) and f"ps{ps}ts{ts}_ts" in fl.index:
+            out.append((MONTHLY[ps], fl[f"ps{ps}ts{ts}_ts"], r.test_primary.iloc[0], True))
     return out
 
 

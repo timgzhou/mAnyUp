@@ -1,0 +1,63 @@
+{
+ "tile": "30201@r64c0",
+ "run": "mixres_pastis_ps8_quadg-skip-qs0.5-qt0.5-hhone-crop-score-xhr-s1o50xhr_n0_c4_seed0_a736def1",
+ "windows": 138,
+ "crops": 414,
+ "windows_per_season": {
+  "Oct-Dec": 0,
+  "Jan-Mar": 31,
+  "Apr-Jun": 106,
+  "Jul-Sep": 1
+ },
+ "months_with_picks": [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep"
+ ],
+ "months_present": [
+  "Oct",
+  "Nov",
+  "Dec",
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep"
+ ],
+ "pixel_acc_lr_pass": 0.7833459883573779,
+ "pixel_acc_final": 0.7967603138445963,
+ "pca": "3 principal components of this tile's season tokens + crop tokens",
+ "s2": "median composites of the raw acquisitions (display only)",
+ "stack_order_front_first": {
+  "months": [
+   "Apr",
+   "May",
+   "Jun",
+   "Jul",
+   "Aug",
+   "Sep",
+   "Oct",
+   "Nov",
+   "Dec",
+   "Jan",
+   "Feb",
+   "Mar"
+  ],
+  "seasons": [
+   "Apr-Jun",
+   "Jul-Sep",
+   "Oct-Dec",
+   "Jan-Mar"
+  ]
+ }
+}

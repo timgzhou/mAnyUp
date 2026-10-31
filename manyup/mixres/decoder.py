@@ -38,7 +38,7 @@ class NativeSetReadout(nn.Module):
     """
 
     def __init__(self, dim: int, lr_px: int = LR_PS, crop_px: int = LOOKUP_PS,
-                 base_px: int | None = None, mean: bool = False):
+                 base_px: int | None = None, mean: bool = False, out_px: int | None = None):
         """mean (--readout native_mean): no score -- NO parameters. Weights = the priors alone
         (a season token its present months, a crop 1: per month the mean of the tokens
         covering the pixel, then the mean over months), pooled in PROBABILITY space
@@ -49,6 +49,9 @@ class NativeSetReadout(nn.Module):
         # a lr_px x lr_px map; a smaller token's map is average-pooled to its footprint, the
         # same rule the crops follow.
         self.base_px = base_px or lr_px
+        # out_px: season tokens that do not divide the tile (ps12 on 64 px) were embedded from
+        # the tile padded to whole tokens (MixedResOE.embed); the map is cropped back, centred
+        self.out_px = out_px
         self.no_base = False            # --no_seasons: the season tokens are not candidates
         self.season_drop = 0.0          # --season_drop p: training drops each (sample, season)
         self.score = None if mean else nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, 1))
@@ -94,8 +97,9 @@ class NativeSetReadout(nn.Module):
         # -- season candidates: (B, NS, Q, C, c*c) logits of each season token over cell q
         s_log = linear(lr_F.float())
         if bp < self.lr_px:
-            s_log = F.avg_pool2d(s_log.reshape(-1, C, self.lr_px, self.lr_px),
-                                 self.lr_px // bp).reshape(B, NS, h, w, C * bp * bp)
+            s_log = s_log.reshape(-1, C, self.lr_px, self.lr_px)
+            s_log = (F.avg_pool2d(s_log, self.lr_px // bp) if self.lr_px % bp == 0
+                     else F.adaptive_avg_pool2d(s_log, bp)).reshape(B, NS, h, w, C * bp * bp)
         s_log = rearrange(s_log, "b s gh gw (k i j) -> b s k (gh i) (gw j)",
                           k=C, i=bp, j=bp)                                     # (B, NS, C, P, P)
         s_log = rearrange(s_log, "b s k (y i) (x j) -> b (y x) s k (i j)", i=c, j=c)  # (B,Q,NS,C,c*c)
@@ -136,7 +140,9 @@ class NativeSetReadout(nn.Module):
                 ar_n = (fps == fp).nonzero(as_tuple=True)[0]                  # crops of size fp
                 py, px, bg = py_all[ar_n], px_all[ar_n], b[ar_n]
                 maps = linear(hr[ar_n].float()).view(-1, C, self.lr_px, self.lr_px)
-                maps = F.avg_pool2d(maps, self.lr_px // fp) if fp < self.lr_px else maps
+                if fp < self.lr_px:
+                    maps = (F.avg_pool2d(maps, self.lr_px // fp) if self.lr_px % fp == 0
+                            else F.adaptive_avg_pool2d(maps, fp))
                 ar_l = torch.arange(len(ar_n), device=dev)
                 for da in range(fp // c + 1):
                     for db in range(fp // c + 1):
@@ -220,6 +226,9 @@ class NativeSetReadout(nn.Module):
         if prob:                            # log of a distribution: cross_entropy reads it exactly
             out = out.clamp(min=1e-8).log()
         img = rearrange(out, "b (y x) k (i j) -> b k (y i) (x j)", y=H, x=W, i=c, j=c)
+        if self.out_px is not None and img.shape[-1] > self.out_px:
+            lo = (img.shape[-1] - self.out_px) // 2
+            img = img[..., lo:lo + self.out_px, lo:lo + self.out_px]
         if parts:                                   # crop index (not entry) per crop slot
             cid = torch.where(idx >= 0, ecrop[idx.clamp(min=0)], -1) if N else None
             return img, (wgt, cand, out, cid)

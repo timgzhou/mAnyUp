@@ -1,0 +1,16 @@
+run,batch_size,peak_mem_gb,act_mem_gb,samples_per_s,ms_per_sample,bench_samples,gpu,crops_per_sample
+mixres_biomassters_ps10_quadg-skip-qs0.125-qt0.5-hhone-crop-score-xhr-s1o10_n0_c10p5_seed0_1a9703b2,64,1.2749,1.2427,1035.07,0.966,640,NVIDIA L40S,16.1
+mixres_biomassters_ps10_quadg-skip-qs0.25-qt0.5-hhone-crop-score-xhr-s1o10_n0_c10p5_seed0_14110710,64,1.4197,1.3874,916.9,1.091,640,NVIDIA L40S,31.5
+mixres_biomassters_ps10_quadg-skip-qs0.5-qt0.5-hhone-crop-score-xhr-s1o10_n0_c10p5_seed0_34c14e72,64,1.732,1.6998,728.34,1.373,640,NVIDIA L40S,58.4
+mixres_biomassters_ps16_quadg-skip-qs0.125-qt0.5-hhone-crop-score-xhr-s1o10_n0_c8_seed0_954e974a,64,0.7329,0.7006,773.54,1.293,640,NVIDIA L40S,20.6
+mixres_biomassters_ps16_quadg-skip-qs0.125-qt0.5-hhone-crop-score-xhr_n0_c8_warm_seed0_83959e5a,64,0.7338,0.7015,1184.03,0.845,640,NVIDIA L40S,20.8
+mixres_biomassters_ps16_quadg-skip-qs0.25-qt0.5-hhone-crop-score-xhr-s1o10_n0_c8_seed0_4da02e0c,64,0.7856,0.7534,1200.08,0.833,640,NVIDIA L40S,40.2
+mixres_biomassters_ps16_quadg-skip-qs0.25-qt0.5-hhone-crop-score-xhr_n0_c8_warm_seed0_83e10273,64,0.784,0.7518,1189.38,0.841,640,NVIDIA L40S,41.2
+mixres_biomassters_ps16_quadg-skip-qs0.5-qt0.5-hhone-crop-score-xhr-s1o10_n0_c8_seed0_fc145439,64,0.8932,0.8609,1184.63,0.844,640,NVIDIA L40S,76.1
+mixres_biomassters_ps16_quadg-skip-qs0.5-qt0.5-hhone-crop-score-xhr_n0_c8_warm_seed0_828ca145,64,0.8913,0.8591,1182.5,0.846,640,NVIDIA L40S,77.0
+mixres_biomassters_ps6_quadg-skip-qs0.125-qt0.5-hhone-crop-score-xhr-s1o10_n0_c6p3_seed0_2f2a6f3e,64,2.3404,2.3082,463.25,2.159,640,NVIDIA L40S,40.9
+mixres_biomassters_ps6_quadg-skip-qs0.25-qt0.5-hhone-crop-score-xhr-s1o10_n0_c6p3_seed0_0f1932cc,64,2.74,2.7077,396.17,2.524,640,NVIDIA L40S,75.5
+mixres_biomassters_ps8_quadg-skip-qs0.125-qt0.5-hhone-crop-score-xhr-s1o10_n0_c4_seed0_21825cde,64,1.4771,1.4449,987.65,1.013,640,NVIDIA L40S,80.7
+mixres_biomassters_ps8_quadg-skip-qs0.125-qt0.5-hhone-crop-score-xhr_n0_c4_warm_seed0_a8bb5c38,64,1.4897,1.4575,982.34,1.018,640,NVIDIA L40S,82.6
+mixres_biomassters_ps8_quadg-skip-qs0.25-qt0.5-hhone-crop-score-xhr_n0_c4_warm_seed0_889a8190,64,1.676,1.6438,614.85,1.626,640,NVIDIA L40S,159.2
+mixres_biomassters_ps8_quadg-skip-qs0.5-qt0.5-hhone-crop-score-xhr_n0_c4_warm_seed0_40c3a346,64,2.11,2.0777,616.16,1.623,640,NVIDIA L40S,301.6

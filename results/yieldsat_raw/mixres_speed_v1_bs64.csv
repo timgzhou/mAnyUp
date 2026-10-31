@@ -1,0 +1,19 @@
+run,batch_size,peak_mem_gb,act_mem_gb,samples_per_s,ms_per_sample,bench_samples,gpu,crops_per_sample
+mixres_yieldsat_raw_ps10_quadg-skip-qs0.125-qt0.5-hhone-crop-score-xhr-s1o50_n0_c10p5_seed0_820db81f,64,1.4352,1.403,1138.81,0.878,640,NVIDIA L40S,22.7
+mixres_yieldsat_raw_ps10_quadg-skip-qs0.25-qt0.5-hhone-crop-score-xhr-s1o50_n0_c10p5_seed0_68c95c6a,64,1.5216,1.4894,1071.01,0.934,640,NVIDIA L40S,43.7
+mixres_yieldsat_raw_ps10_quadg-skip-qs0.5-qt0.5-hhone-crop-score-xhr-s1o50_n0_c10p5_seed0_7f9a52aa,64,1.7058,1.6736,957.9,1.044,640,NVIDIA L40S,66.3
+mixres_yieldsat_raw_ps16_quadg-skip-qs0.125-qt0.5-hhone-crop-score-xhr-s1o50_n0_c8_seed0_8619a555,64,1.0329,1.0007,1231.05,0.812,640,NVIDIA L40S,20.9
+mixres_yieldsat_raw_ps16_quadg-skip-qs0.125-qt0.5-hhone-crop-score-xhr_n0_c8_warm_seed0_6230df81,64,1.0273,0.9951,755.79,1.323,640,NVIDIA L40S,20.7
+mixres_yieldsat_raw_ps16_quadg-skip-qs0.25-qt0.5-hhone-crop-score-xhr-s1o50_n0_c8_seed0_b09cafae,64,1.0585,1.0262,1033.21,0.968,640,NVIDIA L40S,54.7
+mixres_yieldsat_raw_ps16_quadg-skip-qs0.25-qt0.5-hhone-crop-score-xhr_n0_c8_warm_seed0_e145a790,64,1.0683,1.0361,1229.83,0.813,640,NVIDIA L40S,56.9
+mixres_yieldsat_raw_ps16_quadg-skip-qs0.5-qt0.5-hhone-crop-score-xhr-s1o50_n0_c8_seed0_311ee723,64,1.126,1.0938,765.21,1.307,640,NVIDIA L40S,90.3
+mixres_yieldsat_raw_ps16_quadg-skip-qs0.5-qt0.5-hhone-crop-score-xhr_n0_c8_warm_seed0_fc6241b7,64,1.1365,1.1042,1225.37,0.816,640,NVIDIA L40S,92.1
+mixres_yieldsat_raw_ps6_quadg-skip-qs0.125-qt0.5-hhone-crop-score-xhr-s1o50_n0_c6p3_seed0_e191f088,64,2.5203,2.488,660.75,1.513,640,NVIDIA L40S,59.9
+mixres_yieldsat_raw_ps6_quadg-skip-qs0.25-qt0.5-hhone-crop-score-xhr-s1o50_n0_c6p3_seed0_6e87eb4f,64,2.7281,2.6958,556.48,1.797,640,NVIDIA L40S,95.7
+mixres_yieldsat_raw_ps6_quadg-skip-qs0.5-qt0.5-hhone-crop-score-xhr-s1o50_n0_c6p3_seed0_a849adc4,64,3.1054,3.0732,430.51,2.323,640,NVIDIA L40S,161.3
+mixres_yieldsat_raw_ps8_quadg-skip-qs0.125-qt0.5-hhone-crop-score-xhr-s1o50_n0_c4_seed0_ec9ba6ee,64,1.7069,1.6746,1181.52,0.846,640,NVIDIA L40S,121.6
+mixres_yieldsat_raw_ps8_quadg-skip-qs0.125-qt0.5-hhone-crop-score-xhr_n0_c4_warm_seed0_7523fc8c,64,1.7218,1.6896,1171.28,0.854,640,NVIDIA L40S,124.2
+mixres_yieldsat_raw_ps8_quadg-skip-qs0.25-qt0.5-hhone-crop-score-xhr-s1o50_n0_c4_seed0_47bd2571,64,1.9028,1.8705,1052.6,0.95,640,NVIDIA L40S,217.1
+mixres_yieldsat_raw_ps8_quadg-skip-qs0.25-qt0.5-hhone-crop-score-xhr_n0_c4_warm_seed0_fd99c849,64,1.8499,1.8177,1068.85,0.936,640,NVIDIA L40S,212.9
+mixres_yieldsat_raw_ps8_quadg-skip-qs0.5-qt0.5-hhone-crop-score-xhr-s1o50_n0_c4_seed0_ee60c595,64,2.08,2.0478,857.05,1.167,640,NVIDIA L40S,352.2
+mixres_yieldsat_raw_ps8_quadg-skip-qs0.5-qt0.5-hhone-crop-score-xhr_n0_c4_warm_seed0_d45bde4a,64,2.0833,2.0511,868.56,1.151,640,NVIDIA L40S,342.5

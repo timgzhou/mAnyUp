@@ -6,8 +6,13 @@
 #   hr          the raw pixels of the season's months at the window
 #   xattn       those pixels as queries over the tile's season tokens
 #   xattn_conv  xattn + conv
-# trained e2e (task loss through each picked crop's gate logsigmoid(-r) - logsigmoid(0), Gumbel
-# exploration); r = 0 at the start = the lowest-entropy time arm (exp.mixres.check_season_residual).
+# trained by MODES (default e2e): e2e = the task loss through each picked crop's gate
+# logsigmoid(-r) - logsigmoid(0) + Gumbel exploration; oracle = a ListNet ranking of each
+# location's seasons by their actual loss (lowest first), no gate; both = oracle fading into e2e.
+# r = 0 at the start = the lowest-entropy time arm (exp.mixres.check_season_residual).
+#   MODES=oracle bash scripts/slurm/mixres_time_residual.sh
+# PRIOR=none drops the entropy term: score = r alone (ties broken at random at the start).
+#   MODES=oracle PRIOR=none bash scripts/slurm/mixres_time_residual.sh
 # keep one / half, PASTIS s16m8 + s8m4, same checkpoints and budgets, 3-link chains. Mail off.
 #   [DRY=1] bash scripts/slurm/mixres_time_residual.sh
 set -euo pipefail
@@ -31,11 +36,14 @@ fi
 [ -f "checkpoints/$LOC.pt" ] || { echo "missing $LOC" >&2; exit 1; }
 COMMON=(task=pastis select.n=0 "${GEO[@]}" train.epochs=50 train.max_hours=2.5 train.init_ckpt=$LOC)
 for K in half one; do
+for MD in ${MODES:-e2e}; do
+TAG=$([ "$MD" = e2e ] && echo "" || echo "$MD")$([ "${PRIOR:-entropy}" = entropy ] && echo "" || echo "np")
 for AR in conv hr xattn xattn_conv; do
   prev=""; for i in 1 2 3; do
-    prev=$(sub "mxtres${AR}_${K}_${S}_$i" "$prev" "${COMMON[@]}" select.scorer=season_residual \
-           select.residual.arch=$AR select.residual.train=e2e select.allocator=every_location \
-           select.keep=$K); done
+    prev=$(sub "mxtres${TAG}${AR}_${K}_${S}_$i" "$prev" "${COMMON[@]}" select.scorer=season_residual \
+           select.residual.arch=$AR select.residual.train=$MD select.allocator=every_location \
+           select.keep=$K ${PRIOR:+select.residual.prior=$PRIOR}); done
+done
 done
 done
 echo "$S queued"
