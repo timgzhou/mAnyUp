@@ -57,6 +57,21 @@ class ModelConfig:
     # the months of one season stay apart in the sin-cos time encoding (Prithvi has no month
     # encoding of its own; OlmoEarth's date crops already use fractional slots)
     crop_time: str = "slot"
+    # a token's time step: its slot ("slot": a season its season index, a month crop its season's)
+    # or its month index ("month": a month crop its own, a season token its season's mean month),
+    # one time axis as in the monthly baselines
+    time_step: str = "slot"
+    hr_type: bool = True        # False: the crop tokens' learned embedding stays at zero
+    months_prior: bool = True   # the readout's log(present months) prior on a season token
+    # the crop tokens' own copy of the blocks and final norm, for attn cross / cross_hr, starting
+    # from the encoder's weights at stage 2: twice the parameters, the same compute
+    second_pass: bool = False
+    # attn cross / cross_hr: the blended loss stops at the season tokens, in the crop pass and the
+    # readout, so they learn from train.lr_loss alone (with second_pass: no shared blocks)
+    detach_lr: bool = False
+    # attn cross / cross_hr, training: one season pass, in train mode with gradients, that the
+    # selector reads and the crops reuse, instead of a no-grad eval pass and then a second one
+    one_pass: bool = False
 
 
 @dataclass
@@ -115,6 +130,12 @@ class MixedResModel(nn.Module):
                 and not (cfg.lr_patch == 32 and task.per_step)):
             raise ValueError(f"lr_patch {cfg.lr_patch}: 16, 14, 12, 10, 8, 6 or 4 "
                              "(32: per-step tasks)")
+        if cfg.time_step not in ("slot", "month") or (cfg.time_step == "month"
+                                                      and cfg.crop_time != "slot"):
+            raise ValueError(f"time_step {cfg.time_step}, crop_time {cfg.crop_time}")
+        if (cfg.second_pass or cfg.detach_lr or cfg.one_pass) and not cfg.attn.startswith("cross"):
+            raise ValueError("second_pass, detach_lr, one_pass: attn cross or cross_hr, "
+                             f"not {cfg.attn}")
         self.task, self.cfg = task, cfg
         if cfg.model_size in PRITHVI:   # Prithvi-EO-2.0, PI-resized (manyup.encoders.prithvi)
             encoder = PrithviOE(cfg.model_size, pretrained)
@@ -124,7 +145,10 @@ class MixedResModel(nn.Module):
                                                       task.olmoearth.impute),
                                        LR_PS, TILE, name=cfg.model_size,
                                        pretrained=pretrained).encoder
-        self.mix = MixedResOE(encoder, cfg.inject_layer, "center", cfg.lr_patch, attn=cfg.attn)
+        self.mix = MixedResOE(encoder, cfg.inject_layer, "center", cfg.lr_patch, attn=cfg.attn,
+                              second_pass=cfg.second_pass)
+        self.mix.hr_type.requires_grad_(cfg.hr_type)
+        self.mix.detach_lr = cfg.detach_lr
         D = encoder.embedding_size
         # the head writes a head_px x head_px map per token: 16, or a ps32 token's own 32
         self.head_px = max(LR_PS, cfg.lr_patch)
@@ -133,6 +157,7 @@ class MixedResModel(nn.Module):
         # 2 px cells of that frame, crops placed lo px in, the map cropped back to the tile
         self.lo = (-(-TILE // cfg.lr_patch) * cfg.lr_patch - TILE) // 2
         self.readout = NativeSetReadout(D, lr_px=self.head_px, base_px=cfg.lr_patch,
+                                        months_prior=cfg.months_prior,
                                         **({"crop_px": 2, "out_px": TILE} if self.lo else {}))
         self.date_type = nn.Parameter(torch.zeros(D)) if cfg.date_tokens else None
         self.season_head = (nn.ModuleList(copy.deepcopy(self.head.linear)
@@ -144,6 +169,11 @@ class MixedResModel(nn.Module):
         self.exit = ExitHead(D, self.readout, self.head) if cfg.exit_layer else None
 
     @property
+    def reuses_pass(self) -> bool:
+        """Training on the crop-free pass's own tokens (model.one_pass, stage 2)."""
+        return self.cfg.one_pass and self.training and self.mix.attn != "joint"
+
+    @property
     def readout0(self) -> nn.Module:
         """The readout of the crop-free pass (the exit head's under exit_layer)."""
         return self.readout if self.exit is None else self.exit.readout
@@ -153,13 +183,19 @@ class MixedResModel(nn.Module):
         return self.head.linear.weight.device
 
     # -- tokenize ---------------------------------------------------------------------------
-    def tokenize_seasons(self, ss) -> Packed:
+    def tokenize_seasons(self, ss, season=None) -> Packed:
         """The season composites at the season patch size; blocks [0, L) applied.
         independent_steps: B x NS one-step sequences (encode(steps=NS) joins them back)."""
+        times = None
+        if self.cfg.time_step == "month":   # (B, NS) the season's mean month index
+            NS = ss.timestamps.shape[1]
+            hot = F.one_hot(season.clamp(min=0), NS).float() * (season >= 0).float()[..., None]
+            t = torch.arange(season.shape[1], device=season.device, dtype=torch.float32)
+            times = ((hot * t[None, :, None]).sum(1) / hot.sum(1).clamp(min=1))
         if self.cfg.independent_steps:
             ss = split_steps(ss)
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            return self.mix.head_blocks(self.mix.embed(ss, self.cfg.lr_patch))
+            return self.mix.head_blocks(self.mix.embed(ss, self.cfg.lr_patch, times=times))
 
     def tokenize_crops(self, ms, plan: Plan, season, lr: Packed, dates=None,
                        season_ts=None) -> Packed:
@@ -176,6 +212,8 @@ class MixedResModel(nn.Module):
         st = plan.t if plan.src_t is None else plan.src_t
         crops = crop_patches(src, plan.b, st, plan.py, plan.px, plan.patch, pixels=True)
         slot = season[plan.b, plan.t] if plan.slot is None else plan.slot
+        if self.cfg.time_step == "month" and plan.slot is None and plan.src == "months":
+            slot = plan.t
         if self.cfg.crop_time == "frac" and plan.slot is None and plan.src == "months":
             # month middle vs season middle (season_ts: the season steps' mid timestamps)
             mid = _days(crops.timestamps[:, 0].to(slot.device)) + 15.2
@@ -269,12 +307,20 @@ class MixedResModel(nn.Module):
         if torch.is_autocast_enabled():
             raise RuntimeError("MixedResModel.uniform inside an autocast region (see docstring)")
         ms, ss, season, present = self._inputs(ms, ss, season, present)
+        if self.reuses_pass:
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                lr = self.tokenize_seasons(ss, season)
+                lr_enc = self.mix.lr_trace(lr)
+                lr_F = lr.pooled(lr_enc[1]).float()
+                hr_F = lr_F.new_zeros(0, lr_F.shape[-1])
+                logits = self.decode(lr_F, hr_F, [], season, present).float()
+            return Out(logits, lr_F, hr_F, lr, lr_enc)
         was = self.training
         if was:             # (eval() walks every module: skipped when already in eval mode)
             self.eval()
         try:
             with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-                lr = self.tokenize_seasons(ss)
+                lr = self.tokenize_seasons(ss, season)
                 if self.exit is not None:
                     xL = self.mix.blocks(lr.x, lr.seqlens, 0, self.cfg.exit_layer)
                     return self.exit(self.mix.encoder.norm, lr, xL, season, present)
@@ -300,7 +346,7 @@ class MixedResModel(nn.Module):
         self.eval()
         try:
             with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-                lr = self.tokenize_seasons(ss)
+                lr = self.tokenize_seasons(ss, season)
                 trace, x = self.mix._lr_trace(lr.x, lr.seqlens, 0, len(self.mix.encoder.blocks))
                 lr_F = lr.pooled(self.mix.encoder.norm(x)).float()
                 full = self.decode(lr_F, lr_F.new_zeros(0, lr_F.shape[-1]), [], season,
@@ -337,16 +383,17 @@ class MixedResModel(nn.Module):
         dates: the batch's raw acquisitions, for date crop groups. seasons: the uniform pass's
         embedded season tokens, reused at inference (they carry no gradient: never in
         training)."""
-        if (seasons is not None or lr_enc is not None) and (self.training
-                                                             or torch.is_grad_enabled()):
+        if ((seasons is not None or lr_enc is not None) and not self.reuses_pass
+                and (self.training or torch.is_grad_enabled())):
             raise ValueError("forward(seasons=/lr_enc=...) reuses no-grad tokens: inference only")
         ms, ss, season, present = self._inputs(ms, ss, season, present)
         plans, logw = self.split(plan, logw)
-        lr = self.tokenize_seasons(ss) if seasons is None else seasons
+        lr = self.tokenize_seasons(ss, season) if seasons is None else seasons
         crops = [(self.tokenize_crops(ms, p, season, lr, dates, ss.timestamps), p)
                  for p in plans]
         lr_F, hr_F = self.encode(lr, crops, ss.timestamps.shape[1], lr_enc)
-        return Out(self.decode(lr_F, hr_F, plans, season, present, logw), lr_F, hr_F)
+        blend = lr_F.detach() if self.cfg.detach_lr and self.mix.attn != "joint" else lr_F
+        return Out(self.decode(blend, hr_F, plans, season, present, logw), lr_F, hr_F)
 
 
 _MONTH_START = (0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)

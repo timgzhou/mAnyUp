@@ -49,12 +49,15 @@ def main():
     ap.add_argument("--limit_batches", type=int, default=0)
     ap.add_argument("--shard", default="0/1", help="i/n: every n-th test batch, from the i-th")
     ap.add_argument("--merge", type=int, default=0, help="add n shards' meters, write the row")
+    ap.add_argument("--space", default="features", choices=("features", "predictions"),
+                    help="predictions: the fixed model's output upsampled, its head unused")
     a = ap.parse_args()
     task = TASKS[a.task]
     head_run = best_bilinear(task, a.patch, a.tokens, a.seed)
     ck = torch.load(f"checkpoints/{head_run}.pt", map_location="cpu", weights_only=False)
     cfg = from_dict(RunConfig, ck["config"])
     cfg.baseline.upsampler = "upa"
+    cfg.baseline.space = a.space
     cfg.train.head_only, cfg.train.epochs, cfg.train.freeze_model = False, 0, True
     cfg.train.init_ckpt = head_run
     name = cfg.name()

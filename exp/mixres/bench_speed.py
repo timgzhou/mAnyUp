@@ -140,7 +140,6 @@ def main():
         bs = a.batch_size
         while True:
             if bs not in speed_batches:
-                speed_batches.clear()       # (one batch size's batches held at a time)
                 # (no workers, no pinning: their prefetch and the CUDA host allocator's kept
                 # blocks went over a 64 GB job limit when the batch size changed)
                 dl = loader(task, "test", bs, 0, False)

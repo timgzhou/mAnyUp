@@ -38,13 +38,15 @@ class NativeSetReadout(nn.Module):
     """
 
     def __init__(self, dim: int, lr_px: int = LR_PS, crop_px: int = LOOKUP_PS,
-                 base_px: int | None = None, mean: bool = False, out_px: int | None = None):
+                 base_px: int | None = None, mean: bool = False, out_px: int | None = None,
+                 months_prior: bool = True):
         """mean (--readout native_mean): no score -- NO parameters. Weights = the priors alone
         (a season token its present months, a crop 1: per month the mean of the tokens
         covering the pixel, then the mean over months), pooled in PROBABILITY space
         (classification: the weighted mean of each candidate's softmax; returns its log)."""
         super().__init__()
         self.lr_px, self.crop_px, self.mean = lr_px, crop_px, mean
+        self.months_prior = months_prior    # False: no prior on the season tokens
         # base_px: px side of a SEASON token (--lr_patch 8: ps8 seasons). The head still writes
         # a lr_px x lr_px map; a smaller token's map is average-pooled to its footprint, the
         # same rule the crops follow.
@@ -105,7 +107,9 @@ class NativeSetReadout(nn.Module):
         s_log = rearrange(s_log, "b s k (y i) (x j) -> b (y x) s k (i j)", i=c, j=c)  # (B,Q,NS,C,c*c)
         n_s = (F.one_hot(season.clamp(min=0), NS).float()
                * (present & (season >= 0)).float()[..., None]).sum(1)          # (B, NS) months
-        s_a = self._score(lr_F.float()) + n_s.clamp(min=1).log()[:, :, None, None]
+        s_a = self._score(lr_F.float())
+        if self.months_prior:
+            s_a = s_a + n_s.clamp(min=1).log()[:, :, None, None]
         s_a = s_a.masked_fill((n_s == 0)[:, :, None, None], float("-inf"))     # unused seasons
         if self.no_base:                                                       # crops only
             s_a = torch.full_like(s_a, float("-inf"))

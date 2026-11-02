@@ -56,6 +56,7 @@ Everything runs through OlmoEarth's varlen FlashAttention: sequences are packed 
 """
 from __future__ import annotations
 
+import copy
 import math
 from dataclasses import dataclass
 
@@ -145,7 +146,7 @@ def _positions(seqlens: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 class MixedResOE(nn.Module):
     def __init__(self, encoder: nn.Module, inject_layer: int, pos: str = "corner",
                  lr_ps: int = 16, doy: bool = False, attn: str = "joint",
-                 head_attn: str = "alone"):
+                 head_attn: str = "alone", second_pass: bool = False):
         super().__init__()
         if pos not in POS:
             raise ValueError(f"pos {pos!r} not in {POS}")
@@ -162,6 +163,13 @@ class MixedResOE(nn.Module):
             raise ValueError("MixedResOE packs sequences for varlen FlashAttention")
         self.encoder, self.L = encoder, inject_layer
         self.hr_type = nn.Parameter(torch.zeros(encoder.embedding_size))
+        # second_pass: the crop tokens' own copy of blocks [L, n) and the final norm, in step
+        # with the encoder until sync_second_pass; None: the crops use the encoder's blocks
+        self.second_pass = self.second_norm = None
+        self.detach_lr = False      # cross attn modes: the crops' gradients stop at the lr tokens
+        if second_pass:
+            self.second_pass = copy.deepcopy(encoder.blocks[inject_layer:])
+            self.second_norm = copy.deepcopy(encoder.norm)
         self.pos, self.lr_ps = pos, lr_ps
         if pos == "box":
             self.box = nn.Linear(encoder.composite_encodings.embedding_dim_per_embedding_type,
@@ -173,13 +181,22 @@ class MixedResOE(nn.Module):
             nn.init.zeros_(self.doy.weight)
         self.use_doy = doy
 
+    def sync_second_pass(self):
+        """The second pass restarts as a copy of the encoder's blocks [L, n) and final norm."""
+        self.second_pass.load_state_dict(self.encoder.blocks[self.L:].state_dict())
+        self.second_norm.load_state_dict(self.encoder.norm.state_dict())
+
     # -- embedding ------------------------------------------------------------------------
     def embed(self, sample: MaskedOlmoEarthSample, patch_size: int, slot: torch.Tensor | None = None,
-              py: torch.Tensor | None = None, px: torch.Tensor | None = None) -> Packed:
+              py: torch.Tensor | None = None, px: torch.Tensor | None = None,
+              times: torch.Tensor | None = None) -> Packed:
         """Patch embedding + OlmoEarth's encodings, packed. For crops (T = 1, one patch each),
         `slot` (S,) replaces time slot 0 and (py, px) (S,) top-left pixel positions replace
-        (0, 0) (moved to the crop's centre in the lr frame under pos "center")."""
+        (0, 0) (moved to the crop's centre in the lr frame under pos "center"). `times` (S, T)
+        replaces the time slots 0 .. T - 1 of a whole sequence."""
         enc = self.encoder
+        if times is not None and hasattr(enc, "mixres_embed"):
+            raise ValueError(f"{type(enc).__name__}: no time override for the season tokens")
         if slot is None and _spatial_size(sample) % patch_size:   # ps12 seasons on 64 px: the
             hs = _spatial_size(sample)                            # tile padded (readout out_px)
             sample = _pad_space(sample, -(-hs // patch_size) * patch_size)
@@ -194,6 +211,18 @@ class MixedResOE(nn.Module):
         x = enc.patch_embeddings.forward(sample, patch_size)
         tokens, masks, dims = enc.split_tokens_masks_and_dims(x)
         tokens = enc.composite_encodings.forward(tokens, sample.timestamps, patch_size, BASE_GSD)
+        if times is not None:
+            n = enc.composite_encodings.embedding_dim_per_embedding_type
+            S, T = times.shape
+            d_time = (get_1d_sincos_pos_encoding(times.reshape(-1).float(), n).view(S, T, n)
+                      - get_1d_sincos_pos_encoding(torch.arange(T, device=times.device), n))
+            for m, t in tokens.items():
+                if not Modality.get(m).is_multitemporal:
+                    continue
+                delta = t.new_zeros(S, T, t.shape[-1])
+                delta[:, :, n:2 * n] = d_time.to(t.dtype)
+                lead = (1,) * (t.ndim - 4)                                     # h, w if spatial
+                tokens[m] = t + delta.view((S,) + lead + (T, 1, t.shape[-1]))
         if slot is not None:
             n = enc.composite_encodings.embedding_dim_per_embedding_type
             dev = next(iter(tokens.values())).device
@@ -357,11 +386,14 @@ class MixedResOE(nn.Module):
         """tail_multi for attn "oneway" / "overlap" / "cross" / "cross_hr": the lr sequence on
         its own (or lr_enc, its earlier run), the crops reading it."""
         trace, x_lr = self.lr_trace(lr) if lr_enc is None else lr_enc
+        if self.detach_lr:
+            trace = [t.detach() for t in trace]
         if self.attn in ("cross", "cross_hr"):
             outs = self._cross_blocks(lr, trace, crop_sets, self.L, self.attn == "cross_hr")
         else:
             outs = self._crop_blocks(lr, trace, crop_sets, self.L, self.attn == "overlap")
-        return x_lr, [self.encoder.norm(o) for o in outs]
+        norm = self.encoder.norm if self.second_norm is None else self.second_norm
+        return x_lr, [norm(o) for o in outs]
 
     def _cross_blocks(self, lr: Packed, trace: list[torch.Tensor],
                       crop_sets: list[tuple[Packed, torch.Tensor]], lo: int, with_hr: bool
@@ -385,7 +417,8 @@ class MixedResOE(nn.Module):
                                t_s[order]])
             k_order = torch.argsort(k_seq, stable=True)
         max_q, max_k = int(n_q.max()), int(n_k.max())     # (once: a GPU -> CPU sync each)
-        for blk, x_lr in zip(self.encoder.blocks[lo:], trace):
+        tail = self.encoder.blocks[lo:] if self.second_pass is None else self.second_pass
+        for blk, x_lr in zip(tail, trace):
             a = blk.attn
             if a.attn_drop.p or PositionEncoding.is_rope(a.position_encoding):
                 raise ValueError("cross attention: no attention dropout, absolute positions")

@@ -1056,7 +1056,9 @@ class Quadrant:
             months = (F.one_hot(ctx.season.clamp(min=0), ctx.NS).float()
                       * ctx.valid.float()[..., None]).sum(1)                     # (B, NS)
             score = ctx.model.readout0._score(lr_F)
-            a = score + months.clamp(min=1).log()[:, :, None, None]
+            a = score
+            if ctx.model.readout0.months_prior:
+                a = a + months.clamp(min=1).log()[:, :, None, None]
             unused = (months == 0)[:, :, None, None]
             a = a.masked_fill(unused, float("-inf"))
             w = a.softmax(1)
@@ -1067,6 +1069,7 @@ class Quadrant:
         if not rank:
             return u_s, u_t, top
         r = score.masked_fill(unused, float("-inf")) if self.cfg.rank == "score" else a
+        self.attention = w
         return u_s, u_t, top, r
 
     @staticmethod
@@ -1186,6 +1189,9 @@ class Quadrant:
         gh = ht.shape[-1]
         sidx = ctx.season.clamp(min=0)[:, :, None, None].expand(B, T, gh, gh)
         def months(keep):           # the kept seasons' present months per cell (B, T, gh, gw)
+            if q.time_thr:
+                kept = (self.attention >= q.time_thr) | self._seasons(r, "one")
+                return kept.gather(1, sidx) & valid[:, :, None, None]
             if keep == "all":
                 return valid[:, :, None, None].expand(B, T, gh, gh)
             return self._seasons(r, keep).gather(1, sidx) & valid[:, :, None, None]

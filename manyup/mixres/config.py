@@ -78,6 +78,9 @@ class QuadrantConfig:
     offgrid: bool = False
     unc: str = "entropy"        # spatial uncertainty (classification): pixel entropy, or msr =
     #                             softmax response, 1 - the top class probability
+    # > 0: instead of hs_ht / hs_lt, every season whose readout attention at that cell is at
+    # least time_thr, always the top-ranked one (each window its own number of seasons)
+    time_thr: float = 0.0
 
 
 @dataclass
@@ -140,6 +143,8 @@ class TrainConfig:
     stage1_epochs: int = 0
     stage1_n: int = 0
     stage1_attn: str = "joint"
+    lr_loss: float = 0.0               # stage 2: + that weight x the loss of the crop-free output
+    head_lr: float = 0.0               # > 0: stage 2's learning rate of the head and the readout
     #                                    <key> (exp.mixres.early_exit_probe heads, e.g. distill_4)
     season_loss: float = 0.0           # weight of the per-season loss: every used season token's
     #                                    OWN map (selectors.season_maps) against the label, on the
@@ -207,7 +212,8 @@ class RunConfig:
                    + ("-crop" if q.space == "crop" else "")
                    + ("-score" if q.rank == "score" else "-orT" if q.rank == "oracle" else "")
                    + ("-msr" if q.unc == "msr" else "")
-                   + ("-og" if q.offgrid else ""))
+                   + ("-og" if q.offgrid else "")
+                   + (f"-tt{q.time_thr:g}" if q.time_thr else ""))
         elif s.time_allocator is None:
             tag = part(s.scorer, s.allocator)
         else:
@@ -236,6 +242,14 @@ class RunConfig:
             + {"joint": "", "cross": "-xlr", "cross_hr": "-xhr"}[self.model.attn] \
             + (f"-ex{self.model.exit_layer}" if self.model.exit_layer else "") \
             + ("-ctf" if self.model.crop_time == "frac" else "") \
+            + ("-tm" if self.model.time_step == "month" else "") \
+            + ("" if self.model.hr_type else "-nht") \
+            + ("" if self.model.months_prior else "-npr") \
+            + ("-p2" if self.model.second_pass else "") \
+            + ("-dl" if self.model.detach_lr else "") \
+            + ("-1p" if self.model.one_pass else "") \
+            + (f"-ll{self.train.lr_loss:g}" if self.train.lr_loss else "") \
+            + (f"-hl{self.train.head_lr:g}" if self.train.head_lr else "") \
             + (f"-s1o{self.train.stage1_epochs}"
                + {"joint": "", "cross": "xlr", "cross_hr": "xhr"}[self.train.stage1_attn]
                if self.train.stage1_epochs else "") \
@@ -275,6 +289,10 @@ class RunConfig:
         if self.model.attn not in ("joint", "cross", "cross_hr"):
             raise ValueError(f"model.attn {self.model.attn!r}: joint | cross | cross_hr")
         t = self.train
+        if (t.lr_loss or t.head_lr or self.model.detach_lr) and not t.stage1_epochs:
+            raise ValueError("train.lr_loss, train.head_lr, model.detach_lr: stage 2 options")
+        if self.model.detach_lr and not t.lr_loss:
+            raise ValueError("model.detach_lr: needs train.lr_loss (the season tokens' only loss)")
         if t.stage1_epochs and not (0 < t.stage1_epochs < t.epochs and t.stage1_n > 0
                                     and t.stage1_attn in ("joint", "cross", "cross_hr")
                                     and not t.init_ckpt and not t.freeze_model):
@@ -405,7 +423,8 @@ HASHED = {
 # fields added to a section hashed whole (quadrant): hashed only when off these defaults
 LATE_DEFAULTS = {"select.quadrant.hs_ht": "all", "select.quadrant.hs_lt": "one",
                  "select.quadrant.space": "cell", "select.quadrant.rank": "weight",
-                 "select.quadrant.unc": "entropy", "select.quadrant.offgrid": False}
+                 "select.quadrant.unc": "entropy", "select.quadrant.offgrid": False,
+                 "select.quadrant.time_thr": 0.0}
 NOT_HASHED = {"train.num_workers", "train.max_hours", "train.limit_batches",
               "train.compute_batches", "train.compute_split"}
 

@@ -8,11 +8,13 @@
 #   anyup_ft   AnyUp, the backbone fine-tuned through it (warm lr x 0.1)
 #   upa        Upsample Anything, test-time: bilinear's best head, kernels fit per test frame;
 #              waits on this call's bilinear runs (ARMS=upa alone: on none)
+#   upa_pred   pred's Upsample Anything through the same sharded eval, test only: needs a
+#              finished bilinear run; for the tasks where one pass over val + test overruns 3 h
 #   tldr       vid-TLDR on the fixed monthly models, evaluation only, one sequence over the months
 #   apt        APT at the MiSTR pairs, keep share of coarse patches, warm from the fixed model
 # Mail off, <= 3 h links, 8 CPUs.
 #   [SEEDS="0 1 2"] [TASKS="pastis biomassters"] [ARMS=...] [DRY=1] [PS="16 8"] [LRS=..]
-#   [FAMS=seasons] [KEEPS=..] [RS=..] [FT_LINKS=n] bash scripts/slurm/baselines.sh
+#   [FAMS=seasons] [UPSAMPLERS=bilinear] [KEEPS=..] [RS=..] [FT_LINKS=n] bash scripts/slurm/baselines.sh
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source env_setup/env_olmo.sh >/dev/null 2>&1
@@ -53,7 +55,7 @@ for T in ${TASKS:-pastis biomassters}; do
   for SEED in ${SEEDS:-0}; do
     for P in ${PS:-$DPS}; do
       bil=""
-      if [[ " $ARMS " == *" upsample "* ]]; then for U in bilinear anyup; do for F in ${FAMS:-seasons months}; do
+      if [[ " $ARMS " == *" upsample "* ]]; then for U in ${UPSAMPLERS:-bilinear anyup}; do for F in ${FAMS:-seasons months}; do
         for LR in ${LRS:-1e-2 1e-3 1e-4}; do
           id=$(chain "up_${T}_${U}_${F}_p${P}_lr${LR}_s$SEED" $LINKS "" "${C[@]}" model.lr_patch=$P \
             train.init_ckpt=$(fixed $T $F $P $EPS $SEED) train.seed=$SEED train.head_only=1 train.lr=$LR \
@@ -73,15 +75,17 @@ for T in ${TASKS:-pastis biomassters}; do
           baseline.upsampler=$U baseline.space=predictions >/dev/null
       done
       fi
-      if [[ " $ARMS " == *" upa "* ]]; then
+      for SPACE in features predictions; do
+        arm=upa; [ $SPACE = features ] || arm=upa_pred
+        [[ " $ARMS " == *" $arm "* ]] || continue
         ids=""
         for i in $(seq 0 $((SHARDS - 1))); do
-          id=$(sub "bl_upa_${T}_p${P}_${i}of$SHARDS" "${bil:+afterany$bil}" exp.baselines.eval_upa --task $T --patch $P \
-               --seed $SEED --shard $i/$SHARDS); ids="$ids:$id"
+          id=$(sub "bl_${arm}_${T}_p${P}_${i}of$SHARDS" "${bil:+afterany$bil}" exp.baselines.eval_upa --task $T --patch $P \
+               --seed $SEED --space $SPACE --shard $i/$SHARDS); ids="$ids:$id"
         done
-        sub "bl_upa_${T}_p${P}_merge" "afterok$ids" exp.baselines.eval_upa --task $T --patch $P \
-            --seed $SEED --merge $SHARDS >/dev/null
-      fi
+        sub "bl_${arm}_${T}_p${P}_merge" "afterok$ids" exp.baselines.eval_upa --task $T --patch $P \
+            --seed $SEED --space $SPACE --merge $SHARDS >/dev/null
+      done
       if [[ " $ARMS " == *" tldr "* ]]; then
         # upstream's schedules as shares of its 2352 tokens (b16 MSVD, MSRVTT), lighter and heavier
         for R in ${RS:-0.1 0.19,0.1,0.085 0.25,0.085,0.043 0.4,0.1 0.5,0.25,0.125}; do

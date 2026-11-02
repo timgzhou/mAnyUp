@@ -60,11 +60,14 @@ class Composer:
         return slot, len(months)
 
     def raw_batches(self, split: str, batch_size: int, n: int) -> list[Raw]:
-        """The first n batches of the split (unshuffled, so the loader's batches), every frame."""
+        """The first n batches of the split (unshuffled, so the loader's batches: the last can
+        be short, or missing), every frame."""
         ds = self.task.open(split, {m: All() for m in self.spec.modalities})
         out = []
         for k in range(n):
-            items = [ds[i] for i in range(k * batch_size, (k + 1) * batch_size)]
+            items = [ds[i] for i in range(k * batch_size, min((k + 1) * batch_size, len(ds)))]
+            if not items:
+                break
             mods = mtmm_collate(items).modalities
             raw = {}
             for m, mb in mods.items():

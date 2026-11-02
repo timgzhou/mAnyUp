@@ -11,6 +11,9 @@
 #           mixres_quadrant_rep.sh SETUPS=s6m3)
 #   s14m7   ps14 seasons (70 px frame), 14 px windows as four ps7 crops
 #   s12m6   ps12 seasons (72 px frame), 12 px windows as four ps6 crops
+# TT=t: select.quadrant.time_thr t (every season at that readout attention or more, at least the
+# top one; job names gain _ttT), at half the batch (bs 16, ps6 q_s 1/2 bs 8: ~2x the crops), PASTIS
+# s6m3 included.
 # SEEDS="0 1 2": train.seed (job names gain _seedS for S != 0; default 0).
 # A patch that does not divide the 64 px tile tiles it padded to whole patches (ps10 seasons: 70
 # px, 12 px windows: 72); a crop window that does not tile its season cell reads the time
@@ -46,7 +49,7 @@ n=0
 for D in ${DATASETS:-pastis planteur biomassters yieldsat_raw}; do
   E=$([ $D = biomassters ] && echo 10 || echo 50)
   for S in ${PAIRS:-s16m12 s10m8 s10m5 s8m6 s6m4 s6m3}; do
-    [ $D = pastis ] && [ $S = s6m3 ] && continue         # (mixres_quadrant_rep.sh SETUPS=s6m3)
+    [ $D = pastis ] && [ $S = s6m3 ] && [ -z "${TT:-}" ] && continue         # (mixres_quadrant_rep.sh SETUPS=s6m3)
     read -r P C CP L <<<"$(pair $S)"
     [ $D = planteur ] && L=$((L + 1))                    # (~1.3 x PASTIS per epoch)
     NW=$(python3 -c "import math; print(math.ceil(64 / $C) ** 2)")   # crop windows per sample
@@ -54,12 +57,16 @@ for D in ${DATASETS:-pastis planteur biomassters yieldsat_raw}; do
       SX=$([ $SD = 0 ] || echo _seed$SD)
       BS=()
       [[ $P = 6 && $Q = 0.5 ]] && BS=(train.batch_size=16)   # (ps4+ps2 / ps6+ps3 OOM at 32)
+      TX=()
+      if [ -n "${TT:-}" ]; then
+        TX=(select.quadrant.time_thr=$TT)
+        BS=(train.batch_size=$([[ $P = 6 && $Q = 0.5 ]] && echo 8 || echo 16)); fi
       prev=""
       for i in $(seq 1 $L); do
-        prev=$(sub "mxpair_${D}_${S}_qs${Q}${SX}_$i" "$prev" task=$D model.lr_patch=$P \
+        prev=$(sub "mxpair_${D}_${S}_qs${Q}${TT:+_tt$TT}${SX}_$i" "$prev" task=$D model.lr_patch=$P \
                select.crop_px=$C $([ $CP != 0 ] && echo model.crop_patch=$CP) "${QUAD[@]}" \
                select.quadrant.q_s=$Q train.epochs=$((2 * E)) train.stage1_epochs=$E \
-               train.stage1_n=$(python3 -c "print(round($Q * $NW))") "${BS[@]}" train.seed=$SD)
+               train.stage1_n=$(python3 -c "print(round($Q * $NW))") "${BS[@]}" "${TX[@]}" train.seed=$SD)
       done
       n=$((n + 1))
     done; done

@@ -25,7 +25,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.ticker import FuncFormatter, NullFormatter  # noqa: E402
+from matplotlib.ticker import LogLocator, FuncFormatter, NullFormatter  # noqa: E402
 from matplotlib.transforms import Bbox  # noqa: E402
 import pandas as pd  # noqa: E402
 
@@ -60,13 +60,14 @@ PAIRS = [k for k in PAIR if half_pair(*k) and k[0] > 4]
 PAIR_COL = dict(zip(PAIRS, plt.get_cmap("Set2").colors))
 ATTN_TAG = {"joint": "", "cross_hr": "-xhr"}
 XT = ""     # the run-name tag of the mixed arms' attention (main --attn)
-K = 1.0     # marker / line / font scale of the panels (the half-page paper figure: smaller)
-LABEL_PS = None     # family -> the fixed patch sizes labelled (the paper figure); None: all
+K = 1.0     # marker / line / font scale of the panels (the paper figure: smaller)
+LABEL_PS = None     # True: only each curve's two end points labelled (the paper figure); None: all
 JOIN = True         # MiSTR's q_s points joined by a line (the paper figure: lone stars)
+LABEL_PT = None     # point label size in pt (the paper figure); None: scaled by K
 XM = "gmacs"        # the x axis: GMACs, or a measured column of exp.mixres.bench_speed (main --x)
 X_COL = {"mem": "peak_mem_gb", "speed": "samples_per_s"}
-X_LABEL = {"gmacs": "GMACs per sample", "mem": "peak memory (GB, batch 64)",
-           "speed": "throughput (samples/s, batch 512)"}
+X_LABEL = {"gmacs": "GMACs per sample", "mem": "peak memory (GB)",
+           "speed": "throughput (samples/s)"}
 
 def rows(task):
     d = pd.read_csv(f"results/{task}/mixres.csv", low_memory=False)
@@ -278,6 +279,21 @@ SIDE_FIX = {("planteur", 8): "above", ("biomassters", 16): "right",    # (clear 
             ("euromine", 16): "right"}
 
 
+def overlap(fx, d, task):
+    """The paper figure: the fixed models within a factor 2 of MiSTR's most expensive point, not
+    the ones far past it."""
+    lr = {ps: x for f, ps, x, _ in fx if f == "sea"}
+    p = [t for ps in (16, 8) for t in ours(d, task, ps, "one", lr.get(ps)) or []]
+    for ps, geo in PAIRS:
+        if (ps, geo) not in ((16, "c8"), (8, "c4")):
+            p += sched_pair(d, task, ps, geo, lr.get(ps)) or []
+    if XM == "speed":                           # (cost: the lower throughputs)
+        low = min(t[0] for t in p) / 2
+        return [t for t in fx if t[2] >= low]
+    top = 2 * max(t[0] for t in p)
+    return [t for t in fx if t[2] <= top]
+
+
 def panel(ax, task, title, ylabel, lower):
     """One dataset, in the style of spacetime_tradeoff.draw_baselines: the fixed models (monthly
     solid diamonds, seasonal dashed squares), grid / random in gray, ours as a starred curve per
@@ -286,6 +302,9 @@ def panel(ax, task, title, ylabel, lower):
     tm, ts, tc = T_UNIT.get(task, ("mon", "sea", "mon"))
     ours_col = XHR[2] if XT else QUAD_COL
     fx = fixed(task, d)
+    lr_all = fx
+    if LABEL_PS is not None:
+        fx = overlap(fx, d, task)
     for fam in FAM:
         pts = sorted((x, y) for f, _, x, y in fx if f == fam)
         if not pts:
@@ -298,17 +317,25 @@ def panel(ax, task, title, ylabel, lower):
     # the lower right of its point, clear of MiSTR's curves above the fixed ones)
     for fam, ps, x, y in fx:
         up = FAM[fam][0] != "--"
-        if LABEL_PS is not None and ps not in LABEL_PS.get(fam, ()):
+        if LABEL_PS is not None and ps not in (16, min(p for f, p, *_ in fx if f == fam)):
+            continue
+        if LABEL_PS is not None and ps < 16 and not up and any(   # (the ends side by side: one)
+                f != fam and p == min(q for g, q, *_ in fx if g == f) and 1 / 2.5 < x2 / x < 2.5
+                for f, p, x2, _ in fx):
             continue
         xy, ha, va = (((4, -4), "left", "top") if LABEL_PS is not None else
                       ((0, 7 if up else -7), "center", "bottom" if up else "top"))
+        if LABEL_PS is not None and XM == "speed" and (up or ps < 16):  # (clear of the stars)
+            xy, ha, va = (((0, -8), "center", "top") if up and ps < 16 else
+                          ((0, 8), "center", "bottom") if ps < 16 else
+                          ((-4, -4), "right", "top"))
         ax.annotate(rf"$S_{{{ps}}}T_{{{FAM_UNIT.get(fam, 'mon')}}}$", (x, y),
                     xytext=(xy[0] * K, xy[1] * K), textcoords="offset points", ha=ha, va=va,
-                    fontsize=8.5 * K, zorder=5)
+                    fontsize=LABEL_PT or 8.5 * K, zorder=5)
     # the crop-free pass of a mixed model at season patch ps: the fixed model of that patch on
     # the season tokens (euromine: its years jointly; geoid: month tokens)
     lr_fam = {"euromine": "year", "geoidseries_flood": "gmon"}.get(task, "sea")
-    lr_pass = {ps: x for f, ps, x, _ in fx if f == lr_fam}
+    lr_pass = {ps: x for f, ps, x, _ in lr_all if f == lr_fam}
     base = {"grid": ("--", "o"), "random": (":", "d")}
     # (euromine: no ps8 + ps4, ps4 already hurts at fixed resolution)
     for ps in (32, 16) if task == "euromine" else (16, 8):
@@ -351,7 +378,7 @@ def panel(ax, task, title, ylabel, lower):
     ax.set_axisbelow(True)
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
-    ax.set_title(title, fontsize=12 * K, color="black", loc="left", fontweight="bold")
+    ax.set_title(title, fontsize=9 if LABEL_PT else 12 * K, color="black", loc="left", fontweight="bold")
     ax.set_xlabel("GMACs per sample (log scale)")
     ax.set_ylabel(ylabel + (" (flipped direction)" if lower else ""))
 
@@ -364,34 +391,45 @@ FIGS = {   # name -> datasets, grid, figsize, title
 
 
 def draw_paper(name):
-    """The half-page paper version of a figure: square panels, no title, a few fixed points
-    named, MiSTR's resolution pairs (colour) and the fixed-resolution models in legends below."""
-    global K, LABEL_PS, JOIN
-    specs, (nr, nc), _, _ = FIGS[name]
-    K, LABEL_PS, JOIN = 0.55, {"mon": (16, 8, 4), "sea": (16, 8, 2)}, False
+    """The paper version of a figure, one row across the CVPR text width (6.875 in): tall
+    panels, no title, a few fixed points named, MiSTR's resolution pairs (colour) and the fixed-resolution models in legends below."""
+    global K, LABEL_PS, JOIN, LABEL_PT
+    specs, *_ = FIGS[name]
+    K, LABEL_PS, JOIN, LABEL_PT = 0.55, True, False, 7.5
     # (CVPR typesets in Times: Liberation Serif = Times New Roman metrics, STIX maths; DejaVu
     # for the legend's star; TrueType in the PDF, no Type 3 fonts)
-    with plt.rc_context({"font.size": 7, "axes.titlesize": 7.5, "axes.labelsize": 7,
-                         "xtick.labelsize": 6.5, "ytick.labelsize": 6.5,
+    with plt.rc_context({"font.size": 9, "axes.titlesize": 9, "axes.labelsize": 9,
+                         "xtick.labelsize": 8, "ytick.labelsize": 8,
                          "font.family": ["Liberation Serif", "DejaVu Sans"],
                          "mathtext.fontset": "stix", "pdf.fonttype": 42}):
-        fig, axes = plt.subplots(nr, nc, figsize=(7.0, 5.6), facecolor=rp.SURFACE)
+        fig, axes = plt.subplots(1, len(specs), figsize=(6.875, 3.75), facecolor=rp.SURFACE,
+                                 squeeze=False)
         fams = set()
         for ax, spec in zip(axes.flatten(), specs):
             ax.set_facecolor(rp.SURFACE)
             panel(ax, *spec)
-            ax.set_box_aspect(1)
-            ax.margins(0.08)      # (room for the labels of the end points)
+            ax.set_box_aspect(1.6)
+            ax.margins(0.1)      # (room for the labels of the end points)
+            lo, hi = ax.get_xlim()
+            ax.set_xlim(lo / 1.8, hi * 2.6) if XM == "speed" else ax.set_xlim(lo, hi * 3.2)
+            ax.xaxis.set_major_locator(LogLocator(base=10, numticks=12))
+            ax.xaxis.set_minor_formatter(NullFormatter())   # (no 2 x 10^2 under a decade)
             ax.set_xlabel(X_LABEL[XM] if ax in axes[-1] else "")
+            # (one y label for all: up is better; each panel names its metric in its title)
+            ax.set_ylabel("test metric $\\rightarrow$" if ax is axes[0, 0] else "")
+            name_, kind = spec[1].rstrip(")").split(" (")
+            ax.set_title(name_, loc="left", fontweight="bold", pad=13)
+            ax.text(0, 1.02, f"{kind}, {spec[2].removeprefix('test ')}"
+                    f"{' (flipped)' if spec[3] else ''}", fontsize=9,
+                    transform=ax.transAxes, va="bottom")
             if XM == "mem":     # (under a decade per panel: plain GB ticks, no 3x10^-1 labels)
                 lo, hi = ax.get_xlim()
-                ax.set_xticks([t for t in (0.25, 0.5, 1, 2, 4, 8) if lo <= t <= hi])
+                ax.set_xticks([t for t in (0.5, 1, 2, 4, 8) if lo <= t <= hi])
                 ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
                 ax.xaxis.set_minor_formatter(NullFormatter())
             fams |= {f for f, *_ in fixed(spec[0], rows(spec[0]))}
         # (cells as wide as tall: no gap beside the square panels)
-        fig.subplots_adjust(left=0.16, right=0.80, bottom=0.17, top=0.96, wspace=0.3,
-                            hspace=0.3)
+        fig.subplots_adjust(left=0.065, right=0.985, bottom=0.29, top=0.9, wspace=0.3)
         # (left: MiSTR, one colour per resolution pair; right: the fixed-resolution models; the
         # two side by side, centred under the panels with their tick and axis labels)
         star = dict(marker="*", ls="none", ms=13 * K, mew=0)
@@ -425,7 +463,7 @@ def draw_paper(name):
         for o, dpi in ((out, 300), (out.with_suffix(".pdf"), None)):   # (no empty margin)
             fig.savefig(o, dpi=dpi, facecolor=rp.SURFACE, bbox_inches="tight", pad_inches=0.02)
         plt.close(fig)
-    K, LABEL_PS, JOIN = 1.0, None, True
+    K, LABEL_PS, JOIN, LABEL_PT = 1.0, None, True, None
     print(out)
 
 

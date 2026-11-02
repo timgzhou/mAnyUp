@@ -9,6 +9,7 @@ olmo_bootstrap.apply()
 
 import argparse  # noqa: E402
 import json  # noqa: E402
+from itertools import islice  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import torch  # noqa: E402
@@ -34,6 +35,11 @@ def frames(batch, tokens: str, patch: int, task):
     return rgb_frames(task, s, patch)[valid].cuda()
 
 
+def sample(x, n: int):
+    """n random rows of x, on the CPU."""
+    return x[torch.randperm(len(x), device=x.device)[:n]].cpu()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--task", required=True)
@@ -42,24 +48,22 @@ def main():
     a = ap.parse_args()
     task = TASKS[a.task]
     dl = loader(task, "train", 32, a.num_workers, True)
-    batches = []
-    for i, b in enumerate(dl):
-        if i >= a.batches:
-            break
-        batches.append(b)
-    x = torch.cat([frames(b, "months", 16, task).permute(1, 0, 2, 3).flatten(1) for b in batches], 1)
-    x = x[:, torch.randperm(x.shape[1], device=x.device)[:N_MAX]]
-    lo, hi = torch.quantile(x, 0.02, dim=1).cpu(), torch.quantile(x, 0.98, dim=1).cpu()
-    del x
+    n = min(a.batches, len(dl))
+    each = N_MAX // n                   # samples per batch: a batch is far too big to keep
+    x = torch.cat([sample(frames(b, "months", 16, task).permute(1, 0, 2, 3).flatten(1).T, each)
+                   for b in islice(dl, n)]).T
+    lo, hi = torch.quantile(x, 0.02, dim=1), torch.quantile(x, 0.98, dim=1)
+    ents = {(tokens, p): [] for tokens in ("months", "seasons") for p in PATCHES}
+    for b in islice(dl, n):
+        for (tokens, p), e in ents.items():
+            e.append(sample(patch_entropy(grayscale(frames(b, tokens, p, task), lo, hi), p).flatten(),
+                            each))
     out = {"lo": lo.tolist(), "hi": hi.tolist(), "tau": {}}
-    for tokens in ("months", "seasons"):
-        for p in PATCHES:
-            ent = torch.cat([patch_entropy(grayscale(frames(b, tokens, p, task), lo, hi), p).flatten()
-                             for b in batches])
-            ent = ent[torch.randperm(len(ent), device=ent.device)[:N_MAX]]
-            out["tau"][f"{tokens}_ps{p}"] = {f"{k:g}": round(torch.quantile(ent, k).item(), 4)
-                                             for k in KEEPS}
-            print(tokens, p, out["tau"][f"{tokens}_ps{p}"], flush=True)
+    for (tokens, p), e in ents.items():
+        ent = torch.cat(e)
+        out["tau"][f"{tokens}_ps{p}"] = {f"{k:g}": round(torch.quantile(ent, k).item(), 4)
+                                         for k in KEEPS}
+        print(tokens, p, out["tau"][f"{tokens}_ps{p}"], flush=True)
     path = Path(f"results/{a.task}/apt.json")
     path.write_text(json.dumps(out, indent=1))
     print(f"wrote {path}")

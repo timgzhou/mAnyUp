@@ -45,12 +45,15 @@ def n_crops(plan) -> int:
     return sum(len(p) for p in plan) if isinstance(plan, list) else len(plan)
 
 
-def step(model, selector, batch, season_loss: float = 0.0, detach: bool = False):
+def step(model, selector, batch, season_loss: float = 0.0, detach: bool = False,
+         lr_loss: float = 0.0, loss_fn=None):
     """One batch -> (logits, auxiliary loss or None, crops). season_loss: + that weight x the
-    cross-entropy of every used season token's own map (training only)."""
+    cross-entropy of every used season token's own map (training only). lr_loss: + that weight
+    x loss_fn of the season tokens' crop-free output (training only)."""
     ctx = Context.from_batch(model, batch)
     sel = selector(ctx)
-    reuse = not model.training and not torch.is_grad_enabled()     # inference: embed once
+    reuse = (model.reuses_pass                                     # inference: embed once
+             or (not model.training and not torch.is_grad_enabled()))
     if reuse and ctx.seasons is not None and n_crops(sel.plan) == 0:
         return ctx.out0.logits, sel.aux, 0      # no crops: the crop-free pass IS the output
     out = model(batch.ms, batch.ss, batch.season, batch.present, sel.plan, sel.logw,
@@ -59,6 +62,12 @@ def step(model, selector, batch, season_loss: float = 0.0, detach: bool = False)
     if model.exit is not None and model.training:      # the exit head tracks the full pass
         ex = model.exit_loss(batch.ms, batch.ss, batch.season, batch.present)
         aux = ex if aux is None else aux + ex
+    if lr_loss and model.training:
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            lo = model.decode(out.lr_F, out.lr_F.new_zeros(0, out.lr_F.shape[-1]), [],
+                              batch.season.cuda(), batch.present.cuda())
+        ll = lr_loss * loss_fn(lo.float(), batch.target.cuda())
+        aux = ll if aux is None else aux + ll
     if season_loss and model.training:
         with torch.autocast("cuda", dtype=torch.bfloat16):
             m = season_maps(model, out.lr_F.detach() if detach else out.lr_F)   # (B NS, C, 64, 64)
@@ -194,6 +203,8 @@ def run(cfg: RunConfig) -> dict:
     if tc.init_ckpt:
         unused = load_legacy(model, tc.init_ckpt)
         print(f"warm start from {tc.init_ckpt} (unused keys: {len(unused)})")
+        if not cfg.model.hr_type:   # a checkpoint trained with the crop embedding: dropped here
+            model.mix.hr_type.data.zero_()
     if tc.init_exit:
         f, key = tc.init_exit.rsplit(":", 1)
         sd = torch.load(f"checkpoints/{f}.pt", map_location="cpu", weights_only=False)
@@ -221,6 +232,8 @@ def run(cfg: RunConfig) -> dict:
         if tc.epochs and not len(nets):
             raise ValueError("train.freeze_model with epochs > 0: the selector has nothing to train")
     S1 = tc.stage1_epochs           # selector schedule: epochs [0, S1) the location oracle
+    if cfg.model.second_pass and not S1:
+        raise ValueError("model.second_pass: needs train.stage1_epochs (it starts at stage 2)")
     oracle = oracle_selector(cfg, model, example) if S1 else None
     stage_attn = lambda e: tc.stage1_attn if e < S1 else cfg.model.attn       # noqa: E731
 
@@ -231,11 +244,15 @@ def run(cfg: RunConfig) -> dict:
         elif warm:          # loaded weights at the fine-tune rate, new modules at the full rate
             own = [p for k, p in model.named_parameters()   # a baseline's new modules
                    if model.new_modules and k.startswith(model.new_modules)]
-            ids = {id(p) for p in own}
+            head = ([p for k, p in model.named_parameters() if k.startswith(("head.", "readout."))]
+                    if tc.head_lr else [])
+            ids = {id(p) for p in own + head}
             groups = [{"params": [p for p in model.parameters() if id(p) not in ids],
                        "lr": tc.lr * UNFREEZE_LR_FACTOR}]
             if own or any(True for _ in nets.parameters()):
                 groups.append({"params": own + list(nets.parameters()), "lr": tc.lr})
+            if head:
+                groups.append({"params": head, "lr": tc.head_lr})
             opt = torch.optim.AdamW(groups)
         else:
             opt = torch.optim.AdamW(list(model.parameters()) + list(nets.parameters()),
@@ -276,6 +293,8 @@ def run(cfg: RunConfig) -> dict:
             print(f"STOPPED before epoch {epoch + 1} (train.max_hours); rerun to resume")
             return {}
         if S1 and epoch == S1:      # stage 2: the configured selector, a warm restart
+            if cfg.model.second_pass:
+                model.mix.sync_second_pass()
             opt, sched = make_opt(True)
             set_attn(model, cfg.model.attn)
             print(f"epoch {epoch + 1}: stage 2 (selector {cfg.select.scorer}"
@@ -313,7 +332,8 @@ def run(cfg: RunConfig) -> dict:
                     raise ValueError("train.freeze_model: the selector gives no training loss")
                 loss, aux, nc = sel.aux, sel.aux, n_crops(sel.plan)
             else:
-                logits, aux, nc = step(model, active, batch, tc.season_loss, tc.season_loss_detach)
+                logits, aux, nc = step(model, active, batch, tc.season_loss, tc.season_loss_detach,
+                                       tc.lr_loss if epoch >= S1 else 0.0, loss_fn)
                 loss = loss_fn(logits, target)
                 if aux is not None:
                     loss = loss + aux
